@@ -5,3 +5,5 @@ test-results/
 *.log
 *.tsbuildinfo
 .env*
+.scratch/
+dist-web/

@@ -1,5 +1,5 @@
 'use strict';
-const { MusicError } = require('./providers/shared.cjs');
+const { MusicError, cleanSecret } = require('./providers/shared.cjs');
 const { validateProvider } = require('./credentials.cjs');
 
 const MUSIC_ENDPOINT = 'https://api.elevenlabs.io/v1/music?output_format=mp3_44100_128';
@@ -21,10 +21,9 @@ function validateInput(input) {
 }
 
 function validateApiKey(key) {
-  if (typeof key !== 'string' || key.trim().length < 10 || key.trim().length > 512 || !/^[\x21-\x7E]+$/.test(key.trim())) {
-    throw new MusicError('API Key 格式不正确，请粘贴完整密钥。');
-  }
-  return key.trim();
+  const text = cleanSecret(key);
+  if (!text) throw new MusicError('API Key 格式不正确，请粘贴完整密钥。');
+  return text;
 }
 
 function statusMessage(status) {
@@ -72,6 +71,16 @@ async function readAudio(response, maxBytes) {
   return { audio: audio.buffer, mimeType: 'audio/mpeg' };
 }
 
+/** The promise's result, or a rejection as soon as the signal aborts (the promise itself is left to finish). */
+function untilAborted(promise, signal) {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new Error('aborted'));
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
 function createMusicService({ fetchImpl = globalThis.fetch, timeoutMs = 300_000, maxBytes = MAX_AUDIO_BYTES } = {}) {
   let active = null;
   return {
@@ -79,21 +88,32 @@ function createMusicService({ fetchImpl = globalThis.fetch, timeoutMs = 300_000,
     cancel() {
       if (active) { active.cancelled = true; active.controller.abort(); }
     },
+    /**
+     * `credentials` is the stored configuration (or a bare ElevenLabs key), or a
+     * function returning it. The function form is read only after the lock is
+     * taken, so a cancel that arrives while the key store is being read still
+     * cancels this job instead of being lost.
+     */
     async generate(input, credentials) {
       // Keep the lock until the original request has settled, including cancellation.
       if (active) throw new MusicError('已有一首 AI 音乐正在生成，请等待完成或取消。');
       const provider = validateProvider(input?.provider);
       if (!input || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 4100 || typeof input.duration !== 'number' || !Number.isFinite(input.duration) || input.duration < 3 || input.duration > 600) throw new MusicError('音乐描述或时长无效，请检查参数。');
-      const config = typeof credentials === 'string' ? { apiKey: credentials } : credentials;
-      const body = provider === 'elevenlabs' ? validateInput({ ...input, model: input.model ?? config?.model }) : null;
-      const key = provider === 'elevenlabs' ? validateApiKey(config?.apiKey) : null;
-      const job = { controller: new AbortController(), cancelled: false, timedOut: false };
+      const job = { controller: new AbortController(), cancelled: false, timedOut: false, taskRef: '' };
       active = job;
       const timer = setTimeout(() => { job.timedOut = true; job.controller.abort(); }, timeoutMs);
+      // An adapter that has a server-side task id reports it, so it can be quoted if we stop waiting.
+      const reference = () => (job.taskRef ? `（任务编号 ${job.taskRef}）` : '');
       try {
+        // Nothing has been sent yet, so a cancel or timeout during the read may answer at once.
+        const loaded = typeof credentials === 'function' ? await untilAborted(credentials(), job.controller.signal) : credentials;
+        if (job.cancelled || job.timedOut) throw new Error('aborted');
+        const config = typeof loaded === 'string' ? { apiKey: loaded } : loaded;
+        const body = provider === 'elevenlabs' ? validateInput({ ...input, model: input.model ?? config?.model }) : null;
+        const key = provider === 'elevenlabs' ? validateApiKey(config?.apiKey) : null;
         if (provider !== 'elevenlabs') {
           const adapter = require(`./providers/${provider}.cjs`);
-          const result = await adapter.generate({ input, credentials: config, signal: job.controller.signal, fetchImpl, maxBytes });
+          const result = await adapter.generate({ input, credentials: config, signal: job.controller.signal, fetchImpl, maxBytes, onTask: taskRef => { job.taskRef = String(taskRef); } });
           if (job.cancelled || job.timedOut) throw new Error('aborted');
           return result;
         }
@@ -111,8 +131,8 @@ function createMusicService({ fetchImpl = globalThis.fetch, timeoutMs = 300_000,
         if (job.cancelled || job.timedOut) throw new Error('aborted');
         return result;
       } catch (error) {
-        if (job.timedOut) throw new MusicError('AI 生成等待超过 5 分钟，已停止等待。服务端任务可能仍在运行，请先检查账户记录再重试。');
-        if (job.cancelled) throw new MusicError('已取消等待生成。服务端可能仍会完成并计费，请先检查账户记录再重试。');
+        if (job.timedOut) throw new MusicError(`AI 生成等待超过 5 分钟，已停止等待。服务端任务可能仍在运行，请先检查账户记录再重试。${reference()}`);
+        if (job.cancelled) throw new MusicError(`已取消等待生成。服务端可能仍会完成并计费，请先检查账户记录再重试。${reference()}`);
         if (error instanceof MusicError) throw error;
         // Do not forward upstream response bodies, headers, URLs, or raw network errors.
         throw new MusicError('无法连接音乐服务，请检查网络。请求结果未确认，先查看服务控制台记录，再决定是否手动重试。');
@@ -149,6 +169,19 @@ const EXTERNAL_URLS = new Set([
   'https://help.aliyun.com/zh/model-studio/fun-music',
   'https://help.aliyun.com/zh/model-studio/get-api-key',
   'https://bailian.console.aliyun.com/',
+  // Producer agent: where to get a key for each large-language-model preset.
+  'https://platform.claude.com/settings/keys',
+  'https://console.anthropic.com/settings/keys',
+  'https://platform.deepseek.com/api_keys',
+  'https://bailian.console.aliyun.com/?tab=model#/api-key',
+  'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
+  'https://bigmodel.cn/usercenter/proj-mgmt/apikeys',
+  'https://platform.moonshot.cn/console/api-keys',
+  'https://cloud.siliconflow.cn/account/ak',
+  'https://platform.openai.com/api-keys',
+  'https://openrouter.ai/settings/keys',
+  'https://ollama.com/download',
+  'https://ollama.com/library',
 ]);
 
 function isAllowedExternal(url) { return typeof url === 'string' && EXTERNAL_URLS.has(url); }

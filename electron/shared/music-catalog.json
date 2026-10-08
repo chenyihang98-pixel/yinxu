@@ -1,0 +1,828 @@
+{
+  "version": 2,
+  "limits": {
+    "bpm": [
+      50,
+      200
+    ],
+    "duration": [
+      15,
+      120
+    ],
+    "promptChars": 1500
+  },
+  "styles": [
+    {
+      "id": "bright",
+      "label": "青春欢快",
+      "english": "Sunny days",
+      "description": "轻盈的旋律与跳动的节奏，给日常多一点阳光。",
+      "tags": [
+        "青春",
+        "欢快",
+        "日常"
+      ],
+      "titles": [
+        "晴天漫游",
+        "夏日小事",
+        "今天有好心情",
+        "风吹过操场"
+      ],
+      "bpm": 112,
+      "bpmRange": [
+        96,
+        132
+      ],
+      "key": "C major",
+      "instrument": "piano",
+      "energy": 0.62,
+      "complexity": 0.5,
+      "reverb": 0.25,
+      "palette": [
+        "#f6c177",
+        "#b4a1fa"
+      ]
+    },
+    {
+      "id": "chill",
+      "label": "慵懒松弛",
+      "english": "Slow afternoon",
+      "description": "温暖的电钢琴和弦、轻轻摇摆的 Lo-fi 鼓点，适合慢一点的时光。",
+      "tags": [
+        "松弛",
+        "咖啡",
+        "Lo-fi"
+      ],
+      "titles": [
+        "午后留白",
+        "街角咖啡",
+        "慢一点也很好",
+        "雨停之前"
+      ],
+      "bpm": 80,
+      "bpmRange": [
+        66,
+        92
+      ],
+      "key": "F major",
+      "instrument": "epiano",
+      "energy": 0.32,
+      "complexity": 0.45,
+      "reverb": 0.3,
+      "palette": [
+        "#7bafa5",
+        "#d3ac76"
+      ]
+    },
+    {
+      "id": "cinematic",
+      "label": "电影叙事",
+      "english": "A little story",
+      "description": "钢琴与弦乐缓缓铺陈，逐渐推进的和声，营造有故事感的氛围。",
+      "tags": [
+        "电影",
+        "叙事",
+        "氛围"
+      ],
+      "titles": [
+        "故事的序章",
+        "远方来信",
+        "光影之间",
+        "长镜头"
+      ],
+      "bpm": 84,
+      "bpmRange": [
+        60,
+        104
+      ],
+      "key": "A minor",
+      "instrument": "piano",
+      "energy": 0.5,
+      "complexity": 0.45,
+      "reverb": 0.55,
+      "palette": [
+        "#5b6c8f",
+        "#c9a27a"
+      ]
+    },
+    {
+      "id": "dreamy",
+      "label": "梦幻空灵",
+      "english": "Into a dream",
+      "description": "清澈的钟琴和流动的琶音，像缓缓展开的一场梦。",
+      "tags": [
+        "梦幻",
+        "空灵",
+        "治愈"
+      ],
+      "titles": [
+        "星河入梦",
+        "漂浮的云",
+        "月光收藏家",
+        "软着陆"
+      ],
+      "bpm": 74,
+      "bpmRange": [
+        56,
+        88
+      ],
+      "key": "D major",
+      "instrument": "bell",
+      "energy": 0.28,
+      "complexity": 0.42,
+      "reverb": 0.65,
+      "palette": [
+        "#8fa8e8",
+        "#d8b4f0"
+      ]
+    },
+    {
+      "id": "focus",
+      "label": "安静专注",
+      "english": "In the flow",
+      "description": "克制的旋律与稳定的律动，让思绪自然流动。",
+      "tags": [
+        "专注",
+        "学习",
+        "极简"
+      ],
+      "titles": [
+        "安静的片刻",
+        "思绪缓缓流动",
+        "留一束光",
+        "第二杯水"
+      ],
+      "bpm": 90,
+      "bpmRange": [
+        70,
+        104
+      ],
+      "key": "C major",
+      "instrument": "piano",
+      "energy": 0.24,
+      "complexity": 0.25,
+      "reverb": 0.3,
+      "palette": [
+        "#6f8f86",
+        "#a7b5c9"
+      ]
+    },
+    {
+      "id": "retro",
+      "label": "复古电子",
+      "english": "Neon memories",
+      "description": "温暖的合成器、循环琶音与 80 年代的电子鼓。",
+      "tags": [
+        "复古",
+        "合成器",
+        "律动"
+      ],
+      "titles": [
+        "霓虹回声",
+        "午夜磁带",
+        "昨日未来",
+        "高速公路夜航"
+      ],
+      "bpm": 116,
+      "bpmRange": [
+        96,
+        128
+      ],
+      "key": "A minor",
+      "instrument": "synth",
+      "energy": 0.68,
+      "complexity": 0.6,
+      "reverb": 0.35,
+      "palette": [
+        "#e06c9f",
+        "#5f6fe0"
+      ]
+    },
+    {
+      "id": "epic",
+      "label": "史诗燃向",
+      "english": "Rise up",
+      "description": "厚重的弦乐与铜管、行进的大鼓，层层推向高潮。",
+      "tags": [
+        "史诗",
+        "热血",
+        "预告片"
+      ],
+      "titles": [
+        "破晓之前",
+        "王者归来",
+        "群山回响",
+        "最后一程"
+      ],
+      "bpm": 128,
+      "bpmRange": [
+        96,
+        150
+      ],
+      "key": "D minor",
+      "instrument": "strings",
+      "energy": 0.82,
+      "complexity": 0.55,
+      "reverb": 0.5,
+      "palette": [
+        "#b5523b",
+        "#e2b866"
+      ]
+    },
+    {
+      "id": "chiptune",
+      "label": "像素 8-bit",
+      "english": "Pixel quest",
+      "description": "方波主旋律、三角波贝斯和噪声鼓，像一台老掌机里的冒险。",
+      "tags": [
+        "8-bit",
+        "像素",
+        "游戏"
+      ],
+      "titles": [
+        "像素远征",
+        "第一关",
+        "存档点",
+        "金币雨"
+      ],
+      "bpm": 140,
+      "bpmRange": [
+        108,
+        180
+      ],
+      "key": "C major",
+      "instrument": "chip",
+      "energy": 0.72,
+      "complexity": 0.62,
+      "reverb": 0.08,
+      "palette": [
+        "#58c48a",
+        "#f2d15c"
+      ]
+    },
+    {
+      "id": "guofeng",
+      "label": "国风古韵",
+      "english": "Ink and river",
+      "description": "五声音阶的古筝与竹笛，留白的节奏，带着山水的气息。",
+      "tags": [
+        "国风",
+        "古风",
+        "东方"
+      ],
+      "titles": [
+        "山水之间",
+        "长安月",
+        "听雨轩",
+        "一苇渡江"
+      ],
+      "bpm": 78,
+      "bpmRange": [
+        56,
+        104
+      ],
+      "key": "D major",
+      "instrument": "guzheng",
+      "energy": 0.4,
+      "complexity": 0.5,
+      "reverb": 0.5,
+      "palette": [
+        "#a44a3f",
+        "#d9c5a0"
+      ]
+    },
+    {
+      "id": "jazz",
+      "label": "爵士小馆",
+      "english": "After hours",
+      "description": "摇摆的行走贝斯、七和弦与刷子鼓，深夜小酒馆的松弛感。",
+      "tags": [
+        "爵士",
+        "摇摆",
+        "酒馆"
+      ],
+      "titles": [
+        "深夜特调",
+        "蓝调时分",
+        "最后一桌",
+        "转角的萨克斯"
+      ],
+      "bpm": 108,
+      "bpmRange": [
+        72,
+        150
+      ],
+      "key": "F major",
+      "instrument": "vibes",
+      "energy": 0.45,
+      "complexity": 0.65,
+      "reverb": 0.3,
+      "palette": [
+        "#3f5a7a",
+        "#d9a35b"
+      ]
+    },
+    {
+      "id": "acoustic",
+      "label": "治愈木吉他",
+      "english": "Warm morning",
+      "description": "木吉他分解和弦与轻柔的打击乐，温暖、干净、有人情味。",
+      "tags": [
+        "治愈",
+        "木吉他",
+        "温暖"
+      ],
+      "titles": [
+        "清晨的窗",
+        "回家路上",
+        "小日子",
+        "向阳而坐"
+      ],
+      "bpm": 96,
+      "bpmRange": [
+        72,
+        120
+      ],
+      "key": "G major",
+      "instrument": "guitar",
+      "energy": 0.42,
+      "complexity": 0.45,
+      "reverb": 0.28,
+      "palette": [
+        "#c98f5a",
+        "#8fb39a"
+      ]
+    },
+    {
+      "id": "tension",
+      "label": "悬疑紧张",
+      "english": "Something is off",
+      "description": "低沉的脉冲、不协和的弦乐与稀疏的打击，让空气慢慢收紧。",
+      "tags": [
+        "悬疑",
+        "紧张",
+        "惊悚"
+      ],
+      "titles": [
+        "门后有人",
+        "倒计时",
+        "第十三层",
+        "无人接听"
+      ],
+      "bpm": 96,
+      "bpmRange": [
+        60,
+        132
+      ],
+      "key": "E minor",
+      "instrument": "strings",
+      "energy": 0.5,
+      "complexity": 0.4,
+      "reverb": 0.55,
+      "palette": [
+        "#3b3f52",
+        "#8a5a5a"
+      ]
+    },
+    {
+      "id": "cute",
+      "label": "可爱俏皮",
+      "english": "Tiny steps",
+      "description": "马林巴与八音盒的跳音、轻快的拨弦，像小动物蹦蹦跳跳。",
+      "tags": [
+        "可爱",
+        "俏皮",
+        "萌系"
+      ],
+      "titles": [
+        "小步快跑",
+        "布丁午后",
+        "口袋里的糖",
+        "猫咪巡逻队"
+      ],
+      "bpm": 124,
+      "bpmRange": [
+        100,
+        148
+      ],
+      "key": "F major",
+      "instrument": "marimba",
+      "energy": 0.58,
+      "complexity": 0.5,
+      "reverb": 0.2,
+      "palette": [
+        "#f2a0b8",
+        "#f7d488"
+      ]
+    },
+    {
+      "id": "battle",
+      "label": "热血战斗",
+      "english": "Boss fight",
+      "description": "高速的合成器主音、驱动的贝斯与密集鼓点，适合战斗与追逐。",
+      "tags": [
+        "战斗",
+        "Boss",
+        "追逐"
+      ],
+      "titles": [
+        "最终防线",
+        "全速突进",
+        "红色警报",
+        "对决时刻"
+      ],
+      "bpm": 160,
+      "bpmRange": [
+        136,
+        188
+      ],
+      "key": "E minor",
+      "instrument": "synth",
+      "energy": 0.9,
+      "complexity": 0.7,
+      "reverb": 0.22,
+      "palette": [
+        "#d14b4b",
+        "#6b4bd1"
+      ]
+    },
+    {
+      "id": "ambient",
+      "label": "氛围冥想",
+      "english": "Stillness",
+      "description": "缓慢呼吸的长音铺底与零星的钟声，几乎没有节拍，适合冥想与睡前。",
+      "tags": [
+        "氛围",
+        "冥想",
+        "助眠"
+      ],
+      "titles": [
+        "深呼吸",
+        "潮汐之间",
+        "无风之地",
+        "晚安频率"
+      ],
+      "bpm": 60,
+      "bpmRange": [
+        50,
+        76
+      ],
+      "key": "C major",
+      "instrument": "bell",
+      "energy": 0.15,
+      "complexity": 0.2,
+      "reverb": 0.8,
+      "palette": [
+        "#5a7f9e",
+        "#9fc5c0"
+      ]
+    },
+    {
+      "id": "corporate",
+      "label": "科技商务",
+      "english": "Next chapter",
+      "description": "明亮的钢琴、干净的电子拨弦和稳定的四拍，积极、现代、有前进感。",
+      "tags": [
+        "科技",
+        "商务",
+        "发布会"
+      ],
+      "titles": [
+        "新的一页",
+        "向前一步",
+        "产品时刻",
+        "连接未来"
+      ],
+      "bpm": 110,
+      "bpmRange": [
+        96,
+        126
+      ],
+      "key": "D major",
+      "instrument": "pluck",
+      "energy": 0.6,
+      "complexity": 0.45,
+      "reverb": 0.3,
+      "palette": [
+        "#4f8fd9",
+        "#7fd9c4"
+      ]
+    },
+    {
+      "id": "sad",
+      "label": "伤感抒情",
+      "english": "Left unsaid",
+      "description": "缓慢的钢琴独白与绵长的弦乐，克制地诉说离别与思念。",
+      "tags": [
+        "伤感",
+        "抒情",
+        "离别"
+      ],
+      "titles": [
+        "没说出口的话",
+        "末班车",
+        "旧相册",
+        "雨夜回信"
+      ],
+      "bpm": 68,
+      "bpmRange": [
+        54,
+        84
+      ],
+      "key": "A minor",
+      "instrument": "piano",
+      "energy": 0.28,
+      "complexity": 0.38,
+      "reverb": 0.55,
+      "palette": [
+        "#5d6d8a",
+        "#b7a6c9"
+      ]
+    },
+    {
+      "id": "dance",
+      "label": "动感电音",
+      "english": "Hands up",
+      "description": "四拍底鼓、侧链呼吸的合成器和弦与明亮的主音，适合运动、快剪与派对。",
+      "tags": [
+        "电音",
+        "运动",
+        "派对"
+      ],
+      "titles": [
+        "心率一百二",
+        "霓虹跑道",
+        "周五夜晚",
+        "再来一组"
+      ],
+      "bpm": 126,
+      "bpmRange": [
+        116,
+        138
+      ],
+      "key": "F minor",
+      "instrument": "synth",
+      "energy": 0.85,
+      "complexity": 0.55,
+      "reverb": 0.3,
+      "palette": [
+        "#3fb6d9",
+        "#b24be0"
+      ]
+    },
+    {
+      "id": "hiphop",
+      "label": "嘻哈律动",
+      "english": "Head nod",
+      "description": "厚实的 808 低音、松弛的鼓点和简短的旋律采样感，适合街头与日常记录。",
+      "tags": [
+        "嘻哈",
+        "街头",
+        "节拍"
+      ],
+      "titles": [
+        "街角律动",
+        "慢速点头",
+        "城市漫游者",
+        "夜班地铁"
+      ],
+      "bpm": 88,
+      "bpmRange": [
+        70,
+        100
+      ],
+      "key": "C minor",
+      "instrument": "epiano",
+      "energy": 0.55,
+      "complexity": 0.45,
+      "reverb": 0.22,
+      "palette": [
+        "#7a6ad8",
+        "#e0a04b"
+      ]
+    },
+    {
+      "id": "rock",
+      "label": "摇滚能量",
+      "english": "Loud and free",
+      "description": "失真吉他强力和弦、扎实的鼓组与贝斯，直接、有冲劲。",
+      "tags": [
+        "摇滚",
+        "热血",
+        "运动"
+      ],
+      "titles": [
+        "全力以赴",
+        "公路尽头",
+        "不服输",
+        "夏夜演出"
+      ],
+      "bpm": 132,
+      "bpmRange": [
+        108,
+        168
+      ],
+      "key": "E minor",
+      "instrument": "guitar",
+      "energy": 0.85,
+      "complexity": 0.5,
+      "reverb": 0.25,
+      "palette": [
+        "#c2452f",
+        "#3a3f5c"
+      ]
+    },
+    {
+      "id": "romantic",
+      "label": "浪漫温馨",
+      "english": "Just us",
+      "description": "温柔的钢琴与弦乐，明亮的大调和声，适合婚礼、纪念日与告白。",
+      "tags": [
+        "浪漫",
+        "婚礼",
+        "温馨"
+      ],
+      "titles": [
+        "我愿意",
+        "并肩的午后",
+        "写给你",
+        "光落在你肩上"
+      ],
+      "bpm": 76,
+      "bpmRange": [
+        60,
+        96
+      ],
+      "key": "Eb major",
+      "instrument": "piano",
+      "energy": 0.38,
+      "complexity": 0.42,
+      "reverb": 0.5,
+      "palette": [
+        "#e8a0a8",
+        "#f1d6b8"
+      ]
+    },
+    {
+      "id": "festive",
+      "label": "节日喜庆",
+      "english": "Lights on",
+      "description": "清脆的铃声、跳跃的节奏与明亮的旋律，适合新年、圣诞与庆典。",
+      "tags": [
+        "节日",
+        "喜庆",
+        "新年"
+      ],
+      "titles": [
+        "张灯结彩",
+        "雪夜铃声",
+        "团圆饭",
+        "烟花升起"
+      ],
+      "bpm": 120,
+      "bpmRange": [
+        96,
+        144
+      ],
+      "key": "G major",
+      "instrument": "bell",
+      "energy": 0.7,
+      "complexity": 0.55,
+      "reverb": 0.3,
+      "palette": [
+        "#d9453b",
+        "#e9c46a"
+      ]
+    }
+  ],
+  "instruments": [
+    {
+      "id": "piano",
+      "label": "柔和钢琴",
+      "english": "Piano"
+    },
+    {
+      "id": "epiano",
+      "label": "电钢琴",
+      "english": "Electric piano"
+    },
+    {
+      "id": "guitar",
+      "label": "清新木吉他",
+      "english": "Acoustic guitar"
+    },
+    {
+      "id": "synth",
+      "label": "合成器主音",
+      "english": "Synth lead"
+    },
+    {
+      "id": "pluck",
+      "label": "电子拨弦",
+      "english": "Synth pluck"
+    },
+    {
+      "id": "bell",
+      "label": "空灵钟琴",
+      "english": "Bell / celesta"
+    },
+    {
+      "id": "musicbox",
+      "label": "八音盒",
+      "english": "Music box"
+    },
+    {
+      "id": "marimba",
+      "label": "马林巴",
+      "english": "Marimba"
+    },
+    {
+      "id": "vibes",
+      "label": "颤音琴",
+      "english": "Vibraphone"
+    },
+    {
+      "id": "flute",
+      "label": "长笛",
+      "english": "Flute"
+    },
+    {
+      "id": "strings",
+      "label": "弦乐",
+      "english": "Strings"
+    },
+    {
+      "id": "guzheng",
+      "label": "古筝",
+      "english": "Guzheng"
+    },
+    {
+      "id": "dizi",
+      "label": "竹笛",
+      "english": "Dizi (bamboo flute)"
+    },
+    {
+      "id": "chip",
+      "label": "8-bit 方波",
+      "english": "Chiptune square"
+    }
+  ],
+  "keys": [
+    "C major",
+    "Db major",
+    "D major",
+    "Eb major",
+    "E major",
+    "F major",
+    "F# major",
+    "G major",
+    "Ab major",
+    "A major",
+    "Bb major",
+    "B major",
+    "C minor",
+    "C# minor",
+    "D minor",
+    "Eb minor",
+    "E minor",
+    "F minor",
+    "F# minor",
+    "G minor",
+    "G# minor",
+    "A minor",
+    "Bb minor",
+    "B minor"
+  ],
+  "sectionTypes": [
+    "intro",
+    "verse",
+    "chorus",
+    "bridge",
+    "breakdown",
+    "build",
+    "outro"
+  ],
+  "drumFeels": [
+    "auto",
+    "none",
+    "light",
+    "straight",
+    "halftime",
+    "fourfloor",
+    "swing",
+    "shuffle",
+    "breakbeat",
+    "march",
+    "cinematic"
+  ],
+  "bassFeels": [
+    "auto",
+    "none",
+    "root",
+    "octave",
+    "walking",
+    "arpeggio",
+    "syncopated",
+    "pedal"
+  ]
+}

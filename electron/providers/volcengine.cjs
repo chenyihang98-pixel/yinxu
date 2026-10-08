@@ -11,6 +11,11 @@ const API_VERSION = '2024-08-12';
 const SIGNED_HEADERS = 'content-type;host;x-content-sha256;x-date';
 const AUDIO_HOSTS = Array.from({ length: 50 }, (_, index) => `v${index + 1}-default.douyinvod.com`);
 const ALLOWED_ACTIONS = new Set(['GenBGM', 'GenBGMForTime', 'QuerySong']);
+const MAX_POLLS = 150;
+const POLL_INTERVAL_MS = 2000;
+// QuerySong is free and idempotent: a short network blip must not abandon a paid task.
+const MAX_POLL_FAILURES = 5;
+const MAX_POLL_BACKOFF_MS = 15000;
 
 const hash = value => crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 const hmac = (key, value) => crypto.createHmac('sha256', key).update(value, 'utf8').digest();
@@ -19,11 +24,9 @@ function validateCredentials(credentials) {
   if (!credentials || typeof credentials !== 'object') throw new MusicError('请先保存火山引擎 Access Key ID 和 Secret Access Key。');
   const result = {};
   for (const name of ['accessKeyId', 'secretAccessKey']) {
-    const value = credentials[name];
-    if (typeof value !== 'string' || value.trim().length < 8 || value.trim().length > 512 || !/^[\x21-\x7e]+$/.test(value.trim())) {
-      throw new MusicError('火山引擎 AK/SK 格式不正确，请重新粘贴完整密钥。');
-    }
-    result[name] = value.trim();
+    const value = shared.cleanSecret(credentials[name]);
+    if (!value) throw new MusicError('火山引擎 AK/SK 格式不正确，请重新粘贴完整密钥。');
+    result[name] = value;
   }
   const billingMode = credentials.billingMode ?? 'postpaid';
   if (!['prepaid', 'postpaid'].includes(billingMode)) throw new MusicError('请选择火山引擎预付费或按量后付费模式。');
@@ -90,12 +93,30 @@ function failureMessage(code) {
   return '火山引擎未能完成音乐任务，请检查服务开通、计费模式、账户额度和输入描述后手动重试。';
 }
 
+const KNOWN_ERROR_CODE = /^(?:InvalidAccessKeyId|InvalidAccessKey|SignatureDoesNotMatch|SignatureMismatch|InvalidAuthorization|Unauthorized|MissingAuthenticationToken|AccessDenied|InvalidTimestamp|RequestExpired|SignatureExpired|InvalidXDate|50000001|300061)$/i;
+
+/** Non-2xx answers: map only enumerated vendor codes, keep the request id, drop everything else. */
+function httpFailure({ status, body }) {
+  const metadata = body?.ResponseMetadata;
+  const code = String(metadata?.Error?.Code ?? body?.Code ?? '');
+  const message = KNOWN_ERROR_CODE.test(code) ? failureMessage(code) : shared.httpMessage(status);
+  return shared.withReference(message, '请求编号', metadata?.RequestId);
+}
+
 function assertSuccess(data) {
   if (!data || typeof data !== 'object') throw new MusicError('火山引擎返回了无法识别的结果。');
   const metadataError = data.ResponseMetadata?.Error;
-  if (metadataError || data.Code !== 0) throw new MusicError(failureMessage(metadataError?.Code ?? data.Code));
+  if (metadataError || data.Code !== 0) throw new MusicError(shared.withReference(failureMessage(metadataError?.Code ?? data.Code), '请求编号', data.ResponseMetadata?.RequestId));
   if (!data.Result || typeof data.Result !== 'object') throw new MusicError('火山引擎响应缺少任务结果。');
   return data.Result;
+}
+
+/** Enough of the TaskID to find the job in the console without printing a 256-char id. */
+function shortTaskId(id) { return id.length <= 24 ? id : `${id.slice(0, 12)}…${id.slice(-8)}`; }
+
+function isTransient(error) {
+  if (!(error instanceof MusicError)) return true; // network failure raised by fetch
+  return error.invalidBody === true || error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
 function checkAbort(signal) { if (signal?.aborted) throw new MusicError('已取消等待火山引擎音乐生成，服务端任务可能仍在运行或计费。'); }
@@ -113,7 +134,7 @@ function wait(milliseconds, signal) {
   });
 }
 
-async function generate({ input, credentials, signal, fetchImpl = globalThis.fetch, maxBytes = 64 * 1024 * 1024, helpers = {} }) {
+async function generate({ input, credentials, signal, fetchImpl = globalThis.fetch, maxBytes = 64 * 1024 * 1024, helpers = {}, onTask }) {
   const body = buildBody(input);
   const verifiedCredentials = validateCredentials(credentials);
   const sleep = helpers.sleep ?? wait;
@@ -122,16 +143,32 @@ async function generate({ input, credentials, signal, fetchImpl = globalThis.fet
   const request = async (action, requestBody) => {
     checkAbort(signal);
     const signed = signRequest({ action, body: requestBody, credentials: verifiedCredentials });
-    const data = await requestJson(fetchImpl, signed.url, { ...signed.options, signal });
+    const data = await requestJson(fetchImpl, signed.url, { ...signed.options, signal }, { onHttpError: httpFailure });
     checkAbort(signal);
     return assertSuccess(data);
   };
+  let taskRef = '';
+  const tagged = message => (taskRef && !message.includes(taskRef) ? `${message}（任务编号 ${taskRef}）` : message);
   try {
     // Do not retry this billable submission or switch billing modes automatically.
     const submission = await request(verifiedCredentials.billingMode === 'prepaid' ? 'GenBGM' : 'GenBGMForTime', body);
     if (typeof submission.TaskID !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(submission.TaskID)) throw new MusicError('火山引擎响应缺少有效任务编号，未自动重试，请先检查账户任务记录。');
-    for (let attempt = 0; attempt < 150; attempt++) {
-      const task = await request('QuerySong', { TaskID: submission.TaskID });
+    taskRef = shortTaskId(submission.TaskID);
+    if (typeof onTask === 'function') onTask(taskRef);
+    let failures = 0;
+    for (let attempt = 0; attempt < MAX_POLLS; attempt++) {
+      let task;
+      try {
+        task = await request('QuerySong', { TaskID: submission.TaskID });
+        failures = 0;
+      } catch (error) {
+        checkAbort(signal);
+        if (!isTransient(error)) throw error;
+        failures++;
+        if (failures >= MAX_POLL_FAILURES) throw new MusicError(`火山引擎任务状态连续 ${MAX_POLL_FAILURES} 次查询失败，已停止等待。音乐可能仍会生成并计费，请到控制台按任务编号查看，不要重复提交。`);
+        if (attempt < MAX_POLLS - 1) await sleep(Math.min(POLL_INTERVAL_MS * 2 ** (failures - 1), MAX_POLL_BACKOFF_MS), signal);
+        continue;
+      }
       if (task.Status === 2) {
         const detail = task.SongDetail;
         let audioUrl;
@@ -146,14 +183,15 @@ async function generate({ input, credentials, signal, fetchImpl = globalThis.fet
       }
       if (task.Status === 3) throw new MusicError(failureMessage(task.FailureReason?.Code));
       if (task.Status !== 0 && task.Status !== 1) throw new MusicError('火山引擎返回了未知任务状态，未重新提交，请先检查账户任务记录。');
-      if (attempt < 149) await sleep(2000, signal);
+      if (attempt < MAX_POLLS - 1) await sleep(POLL_INTERVAL_MS, signal);
     }
     throw new MusicError('火山引擎音乐任务等待超过 5 分钟。任务可能仍在运行，请先检查账户记录再重试。');
   } catch (error) {
     checkAbort(signal);
-    if (error instanceof MusicError) throw error;
-    throw new MusicError('无法连接火山引擎音乐服务，请检查网络。任务未自动重试，请先检查账户记录。');
+    // After a successful submission every failure names the task so it can be found in the console.
+    if (error instanceof MusicError) throw new MusicError(tagged(error.message));
+    throw new MusicError(tagged('无法连接火山引擎音乐服务，请检查网络。任务未自动重试，请先检查账户记录。'));
   }
 }
 
-module.exports = { generate, buildBody, signRequest, validateCredentials, AUDIO_HOSTS };
+module.exports = { generate, buildBody, signRequest, validateCredentials, AUDIO_HOSTS, MAX_POLL_FAILURES };

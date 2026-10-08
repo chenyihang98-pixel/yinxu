@@ -1,6 +1,6 @@
 'use strict';
 
-const { MusicError, requestJson, decodeAudioBytes } = require('./shared.cjs');
+const { MusicError, requestJson, decodeAudioBytes, cleanSecret, httpMessage, withReference } = require('./shared.cjs');
 
 const ENDPOINT = 'https://tokenhub.tencentmaas.com/v1/wand/minimax-music/generation';
 const DEFAULT_MODEL = 'minimax-music-v3.0';
@@ -37,20 +37,28 @@ function serviceError(code) {
   return `腾讯云音乐生成失败${suffix}，请检查 TokenHub 模型权限和账户状态后手动重试。`;
 }
 
+/** The vendor asks users to quote `trace_id`; only an id-shaped value is ever echoed. */
+function traceId(body) { return body?.trace_id ?? body?.base_resp?.trace_id ?? body?.request_id; }
+
+/** Non-200 answers may still carry `base_resp.status_code`: map the enumerated codes, keep the trace id. */
+function httpFailure({ status, body }) {
+  const code = body?.base_resp?.status_code;
+  const message = typeof code === 'number' && code !== 0 ? serviceError(code) : httpMessage(status);
+  return withReference(message, '追踪编号', traceId(body));
+}
+
 async function generate({ input, credentials, signal, fetchImpl = globalThis.fetch, maxBytes = DEFAULT_MAX_BYTES }) {
   const body = buildRequest({ ...input, model: input?.model ?? credentials?.model });
-  const key = typeof credentials?.apiKey === 'string' ? credentials.apiKey.trim() : '';
-  if (typeof key !== 'string' || key.length < 10 || key.length > 4096 || !/^[\x21-\x7e]+$/.test(key)) {
-    throw new MusicError('请填写完整的腾讯云 TokenHub API Key。');
-  }
+  const key = cleanSecret(credentials?.apiKey);
+  if (!key) throw new MusicError('请填写完整的腾讯云 TokenHub API Key。');
   signal?.throwIfAborted();
   const result = await requestJson(fetchImpl, ENDPOINT, {
     method: 'POST', redirect: 'error', signal,
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }, { maxBytes: maxBytes * 2 + 65536 });
+  }, { maxBytes: maxBytes * 2 + 65536, onHttpError: httpFailure });
   signal?.throwIfAborted();
-  if (result?.base_resp?.status_code !== 0) throw new MusicError(serviceError(result?.base_resp?.status_code));
+  if (result?.base_resp?.status_code !== 0) throw new MusicError(withReference(serviceError(result?.base_resp?.status_code), '追踪编号', traceId(result)));
   if (result?.data?.status !== 2) throw new MusicError('腾讯云尚未返回完整音乐。为避免重复计费，本次不会自动重发；请检查控制台记录后手动重试。');
   const hex = result.data.audio;
   if (typeof hex === 'string' && hex.length / 2 > maxBytes) throw new MusicError('腾讯云返回的音乐文件过大，请缩短期望时长后重试。');

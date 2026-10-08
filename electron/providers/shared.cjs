@@ -2,6 +2,25 @@
 
 class MusicError extends Error { constructor(message) { super(message); this.name = 'MusicError'; } }
 
+/** One limit for every stored or transmitted secret (API keys, AK/SK, bearer tokens). */
+const SECRET_MIN = 10;
+const SECRET_MAX = 4096;
+/** Trimmed printable-ASCII secret without spaces, or null when it cannot be one. */
+function cleanSecret(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length >= SECRET_MIN && text.length <= SECRET_MAX && /^[\x21-\x7e]+$/.test(text) ? text : null;
+}
+
+/** Vendor request / trace / task ids are echoed only when they look like an id, never as free text. */
+function safeReference(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{8,80}$/.test(value) ? value : '';
+}
+function withReference(message, label, value) {
+  const reference = safeReference(value);
+  return reference ? `${message}（${label} ${reference}）` : message;
+}
+
 function httpMessage(status) {
   if (status === 401) return 'API Key 无效或已过期，请检查所选服务的密钥。';
   if (status === 403) return '没有音乐模型访问权限，请确认模型已开通、密钥权限和所属地域。';
@@ -31,15 +50,36 @@ async function readBounded(response, maxBytes) {
   return data;
 }
 
-async function requestJson(fetchImpl, url, options, { maxBytes = 2 * 1024 * 1024 } = {}) {
+const ERROR_BODY_BYTES = 64 * 1024;
+/** Best-effort JSON object from a failed response; never throws and never reads more than 64 KiB. */
+async function readErrorBody(response) {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(await readBounded(response, ERROR_BODY_BYTES)));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch { await response.body?.cancel().catch(() => {}); return null; }
+}
+
+/**
+ * `onHttpError({status, body, headers})` lets an adapter turn an enumerated vendor
+ * error code into its own safe message. It receives the bounded JSON body (or
+ * null) and must return a fixed string or nothing; upstream text is never forwarded.
+ */
+async function requestJson(fetchImpl, url, options, { maxBytes = 2 * 1024 * 1024, onHttpError } = {}) {
   options?.signal?.throwIfAborted();
   const response = await fetchImpl(url, { ...options, redirect: 'error' });
   if (options?.signal?.aborted) { await response.body?.cancel().catch(() => {}); options.signal.throwIfAborted(); }
-  if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new MusicError(httpMessage(response.status)); }
+  if (!response.ok) {
+    let message;
+    if (typeof onHttpError === 'function') {
+      const body = await readErrorBody(response);
+      try { message = onHttpError({ status: response.status, body, headers: response.headers }); } catch { message = undefined; }
+    } else await response.body?.cancel().catch(() => {});
+    throw Object.assign(new MusicError(typeof message === 'string' && message ? message : httpMessage(response.status)), { status: response.status });
+  }
   const bytes = await readBounded(response, maxBytes);
   options?.signal?.throwIfAborted();
   try { const value = JSON.parse(new TextDecoder().decode(bytes)); if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(); return value; }
-  catch { throw new MusicError('音乐服务返回了无效结果。请检查服务记录，避免重复提交。'); }
+  catch { throw Object.assign(new MusicError('音乐服务返回了无效结果。请检查服务记录，避免重复提交。'), { invalidBody: true }); }
 }
 
 function decodeAudioBytes(value) {
@@ -62,18 +102,19 @@ async function readAudio(response, maxBytes = 80 * 1024 * 1024) {
   return decodeAudioBytes(await readBounded(response, maxBytes));
 }
 
-function downloadUrl(raw, allowedHostSuffixes, upgradeHttp) {
+function downloadUrl(raw, allowedHostSuffixes, upgradeHttp, hostAllowed) {
   let url; try { url = new URL(raw); } catch { throw new MusicError('服务返回的下载地址无效。'); }
   const host = url.hostname.toLowerCase();
-  const allowed = allowedHostSuffixes.some(s => {const suffix=s.replace(/^\./,'').toLowerCase();return host===suffix || host.endsWith(`.${suffix}`);});
+  const allowed = allowedHostSuffixes.some(s => {const suffix=s.replace(/^\./,'').toLowerCase();return host===suffix || host.endsWith(`.${suffix}`);}) && (!hostAllowed || hostAllowed(host) === true);
   if (!allowed || url.username || url.password || (url.port && url.port !== '443') || !['https:', 'http:'].includes(url.protocol)) throw new MusicError('服务返回了非官方音频下载地址，已停止下载。');
   if (url.protocol === 'http:') { if (!upgradeHttp) throw new MusicError('音频下载地址必须使用 HTTPS。'); url.protocol = 'https:'; }
   return url;
 }
 
-async function downloadAudio(rawUrl, { fetchImpl = globalThis.fetch, signal, maxBytes = 80 * 1024 * 1024, allowedHostSuffixes, upgradeHttp = true }) {
+/** `hostAllowed(hostname)` optionally narrows the suffix allowlist; it is applied to every hop. */
+async function downloadAudio(rawUrl, { fetchImpl = globalThis.fetch, signal, maxBytes = 80 * 1024 * 1024, allowedHostSuffixes, upgradeHttp = true, hostAllowed }) {
   if (!Array.isArray(allowedHostSuffixes) || !allowedHostSuffixes.length) throw new MusicError('缺少音频下载域名配置。');
-  let current = downloadUrl(rawUrl, allowedHostSuffixes, upgradeHttp);
+  let current = downloadUrl(rawUrl, allowedHostSuffixes, upgradeHttp, hostAllowed);
   for (let n = 0; n < 5; n++) {
     signal?.throwIfAborted();
     // No credentials are ever sent to a result/CDN URL.
@@ -82,7 +123,7 @@ async function downloadAudio(rawUrl, { fetchImpl = globalThis.fetch, signal, max
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get('location'); await response.body?.cancel().catch(() => {});
       if (!location) throw new MusicError('音频下载重定向无效。');
-      current = downloadUrl(new URL(location, current).href, allowedHostSuffixes, upgradeHttp); continue;
+      current = downloadUrl(new URL(location, current).href, allowedHostSuffixes, upgradeHttp, hostAllowed); continue;
     }
     const result = await readAudio(response, maxBytes);
     signal?.throwIfAborted();
@@ -91,4 +132,4 @@ async function downloadAudio(rawUrl, { fetchImpl = globalThis.fetch, signal, max
   throw new MusicError('音频下载重定向次数过多，请检查服务记录。');
 }
 
-module.exports = { MusicError, httpMessage, readBounded, requestJson, decodeAudioBytes, readAudio, downloadAudio };
+module.exports = { MusicError, SECRET_MIN, SECRET_MAX, cleanSecret, safeReference, withReference, httpMessage, readBounded, readErrorBody, requestJson, decodeAudioBytes, readAudio, downloadAudio };

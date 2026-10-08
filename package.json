@@ -1,6 +1,6 @@
 {
   "name": "muse-bgm",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "音序 Muse — 从一句灵感，到你的背景音乐",
   "author": "Muse",
@@ -10,17 +10,18 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "build:web": "tsc -b && vite build --mode web",
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "npm run build && electron .",
+    "typecheck": "node scripts/typecheck.mjs",
     "test": "tsx --test tests/*.test.ts && node --test tests/*.test.cjs",
-    "dist": "npm run build && electron-builder --win portable --x64",
+    "test:ui": "node scripts/ui-smoke.cjs",
+    "test:web": "node scripts/web-smoke.cjs",
     "desktop:smoke": "node scripts/desktop-smoke.cjs",
-    "test:ui": "node scripts/ui-smoke.cjs"
+    "dist": "npm run build && electron-builder --win --x64 --publish never"
   },
   "dependencies": {
-    "lucide-react": "^0.577.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "@anthropic-ai/sdk": "0.132.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -29,7 +30,11 @@
     "@vitejs/plugin-react": "^5.1.0",
     "electron": "^41.0.0",
     "electron-builder": "^26.15.3",
+    "fake-indexeddb": "^6.2.5",
+    "lucide-react": "^0.577.0",
     "playwright": "^1.58.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.0",
     "vite": "^7.3.0"
@@ -50,15 +55,40 @@
     ],
     "asar": true,
     "npmRebuild": false,
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
     "win": {
-      "target": "portable",
-      "artifactName": "Muse-BGM-${version}-Windows.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "electron/assets/muse.ico",
       "signExecutable": false,
       "requestedExecutionLevel": "asInvoker"
     },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "Muse-BGM-Setup-${version}-x64.${ext}",
+      "shortcutName": "音序 Muse",
+      "createDesktopShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": false
+    },
     "portable": {
-      "artifactName": "Muse-BGM-${version}-Windows.${ext}",
+      "artifactName": "Muse-BGM-Portable-${version}-x64.${ext}",
       "requestExecutionLevel": "user"
     }
   }
