@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "592dd0d3-9594-4779-b6ab-196f90c3dba2",
+  "title": "夏日小事",
+  "createdAt": "2026-10-08T00:08:46.752Z",
+  "updatedAt": "2026-10-08T00:08:46.752Z",
+  "config": {
+    "prompt": "阳光下的校园午后，青春、欢快，带一点轻盈的钢琴，适合日常 Vlog。",
+    "mood": "bright",
+    "bpm": 112,
+    "duration": 30,
+    "key": "C major",
+    "instrument": "piano",
+    "energy": 0.62,
+    "complexity": 0.5,
+    "reverb": 0.25,
+    "seed": 660822875,
+    "loop": true,
+    "volumes": {
+      "melody": 0.8,
+      "chords": 0.64,
+      "bass": 0.68,
+      "drums": 0.56
+    }
+  },
+  "provider": "local",
+  "favorite": false,
+  "revision": 1,
+  "tags": [
+    "青春欢快",
+    "112 BPM",
+    "柔和钢琴"
+  ]
+}
