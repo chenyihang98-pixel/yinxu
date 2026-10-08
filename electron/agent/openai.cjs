@@ -9,7 +9,7 @@
 const { MusicError, readBounded, readErrorBody } = require('../providers/shared.cjs');
 const { safeModelId } = require('../credentials.cjs');
 const { validateBaseUrl, assertPublicHost } = require('./base-url.cjs');
-const { buildMessages, completePlan, validatePlan, PLAN_SCHEMA } = require('./plan-schema.cjs');
+const { buildMessages, buildSystemPrompt, completePlan, validatePlan, PLAN_SCHEMA } = require('./plan-schema.cjs');
 
 const MAX_TOKENS = 4096;
 const RETRY_DELAY_MS = 1500;
@@ -152,7 +152,7 @@ async function plan({ settings, input, signal, fetchImpl = globalThis.fetch, max
     let data;
     try { data = JSON.parse(new TextDecoder().decode(bytes)); } catch { throw unrecognised(); }
     const { text, finishReason } = messageText(data);
-    if (finishReason === 'content_filter') throw new MusicError('大模型拒绝了这次请求。请换一种描述，或改用内置规则生成。');
+    if (finishReason === 'content_filter') throw new MusicError('大模型拒绝了这次请求。请换一种描述，或改用离线规则生成。');
     const raw = extractPlanObject(text);
     if (!raw) {
       if (finishReason === 'length') throw new MusicError('大模型的回答被截断，没有得到完整方案。请换一个模型，或关闭它的深度思考后重试。');
@@ -162,4 +162,18 @@ async function plan({ settings, input, signal, fetchImpl = globalThis.fetch, max
   }
 }
 
-module.exports = { plan, extractPlanObject, MAX_TOKENS };
+/**
+ * Load a model on this computer before the first real request: one request for a
+ * single token. It carries the same system prompt as a plan request, so Ollama
+ * also has that long, constant prefix evaluated and cached. Only for kind
+ * "ollama" (a hosted service would bill it); the answer is discarded unread.
+ */
+async function warmUp({ settings, signal, fetchImpl = globalThis.fetch }) {
+  if (settings.kind !== 'ollama') return;
+  const baseUrl = validateBaseUrl('ollama', settings.baseUrl);
+  const body = { model: settings.model, messages: [{ role: 'system', content: buildSystemPrompt() }, { role: 'user', content: '你好' }], max_tokens: 1 };
+  const response = await fetchImpl(`${baseUrl}/chat/completions`, { method: 'POST', redirect: 'error', signal, headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) });
+  await response.body?.cancel().catch(() => {});
+}
+
+module.exports = { plan, warmUp, extractPlanObject, MAX_TOKENS };

@@ -7,6 +7,7 @@
  * module answers WorkerRequest messages one at a time — the voices keep
  * module state and are not re-entrant — and hands the finished stems over by
  * TRANSFER, so two minutes of audio cross the thread boundary without a copy.
+ * The same worker also mixes and encodes exports (mixdown.ts).
  */
 import type { MusicConfig } from "../types";
 import { compose, summarize } from "../music/compose";
@@ -14,6 +15,7 @@ import { DEFAULT_CONFIG } from "../music/defaults";
 import { TRACKS } from "../music/score";
 import type { Score } from "../music/score";
 import { DRUMS } from "./drums";
+import { mixdownToWav } from "./mixdown";
 import { renderScoreWith } from "./render";
 import type { RenderReport } from "./render";
 import type {
@@ -147,6 +149,11 @@ async function handle(scope: WorkerScope, request: WorkerRequest): Promise<void>
   try {
     if (request.type === "warm") {
       scope.postMessage({ type: "warmed", id: request.id, ms: await warmUp() });
+      return;
+    }
+    if (request.type === "mixdown") {
+      const wav = mixdownToWav(request.job);
+      scope.postMessage({ type: "mixed", id: request.id, wav }, [wav]);
       return;
     }
     let lastPost = -Infinity;

@@ -6,6 +6,8 @@
 //
 //   npm run build && node scripts/cloud-workflow.cjs
 //   node scripts/cloud-workflow.cjs --ollama     also talk to a local Ollama, if one is running
+//   node scripts/cloud-workflow.cjs --ollama-cold   the same, after asking Ollama to unload the model,
+//                                                so the first message meets a model that still has to load
 //
 // The app is started with MUSE_NETWORK=node and a module preloaded into the
 // main process that replaces globalThis.fetch (see tests/helpers/
@@ -23,7 +25,8 @@ const path = require('node:path');
 const { ROOT, DEFAULT_PLAN, until, launchApp, removeProfile, wavInfo, createRun, describeFailure } = require('../tests/helpers/electron-harness.cjs');
 
 const PREFIX = 'muse-cloud-workflow-';
-const WITH_OLLAMA = process.argv.includes('--ollama');
+const COLD_OLLAMA = process.argv.includes('--ollama-cold');
+const WITH_OLLAMA = COLD_OLLAMA || process.argv.includes('--ollama');
 const FAKE = {
   tencent: 'tokenhub-fake-key-never-live-001',
   accessKeyId: 'AKfakeonly123456789',
@@ -393,9 +396,9 @@ async function mockedRun(run, shared) {
     assert.ok(next.config.energy > DEFAULT_PLAN.energy, 'the rules understood the request');
     assert.equal(next.chat.at(-1).brain, 'rules');
     const notice = await page.locator('[data-testid="turn-fallback"]').last().innerText();
-    assert.match(notice, /^大模型不可用（.+），已改用内置规则$/);
-    assert.doesNotMatch(notice, /Error invoking|remote method/);
-    assert.match(await app.toast(/已改用内置规则/), /大模型不可用/);
+    // one clause of what happened, then what was done: no advice, no brackets, no IPC wrapper
+    assert.equal(notice, 'Claude 服务暂时不可用，已改用离线规则');
+    assert.equal(await app.toast(/已改用离线规则/), notice);
     assert.equal(await page.locator('[data-testid="turn-brain"]').last().innerText(), '离线规则');
     if ((await pressed('play-button')) === 'true') await $('play-button').click();
     await app.clearToasts();
@@ -409,12 +412,13 @@ async function mockedRun(run, shared) {
     await $('composer-input').fill('换成长笛');
     await $('composer-input').press('Enter');
     await page.waitForSelector('[data-testid="job-status"][data-stage="planning"]');
+    assert.equal(await $('job-phase').innerText(), '制作人（大模型）正在理解你的想法，本机模型可能需要一两分钟');
     await until(app.state, (state) => state.llm.calls === calls + 1, 'the request reached the model');
     await $('job-cancel').click();
     await app.idle(15000);
     await app.toast(/已取消本次编排/);
     await app.setState({ llm: { hang: false } });
-    assert.deepEqual((await app.toasts()).filter((text) => /已改用内置规则|生成失败/.test(text)), []);
+    assert.deepEqual((await app.toasts()).filter((text) => /已改用离线规则|生成失败/.test(text)), []);
     assert.equal((await app.records()).length, countBefore);
     assert.equal(await $('composer-input').inputValue(), '换成长笛');
     assert.equal(await $('player-card').getAttribute('data-revision'), '3');
@@ -450,7 +454,7 @@ async function mockedRun(run, shared) {
     await $('composer-input').press('Enter');
     await app.loaded(2, 'stems', 60000);
     const notice = await page.locator('[data-testid="turn-fallback"]').last().innerText();
-    assert.match(notice, /API Key 无效或已过期/);
+    assert.equal(notice, 'API Key 无效或已过期，已改用离线规则');
     if ((await pressed('play-button')) === 'true') await $('play-button').click();
     await app.clearToasts();
   });
@@ -475,6 +479,7 @@ async function mockedRun(run, shared) {
     assert.deepEqual(state.unknown, [], 'requests the mock did not know');
     assert.deepEqual(state.denied, [], 'requests through Chromium');
     assert.deepEqual(state.loopback, [], 'requests to this computer');
+    assert.deepEqual(state.warmUps, [], 'saving a hosted model never calls it');
     assert.deepEqual(app.errors, []);
     const hosts = [...new Set(state.requests.map((request) => new URL(request.url).host))].sort();
     assert.deepEqual(hosts, ['api.anthropic.com', 'api.deepseek.com', 'llm-cloud-fixture.cn-beijing.maas.aliyuncs.com', 'muse-fixture.oss-cn-beijing.aliyuncs.com', 'open.volcengineapi.com', 'tokenhub.tencentmaas.com', 'v3-default.douyinvod.com']);
@@ -506,17 +511,27 @@ async function ollamaRun(run, shared) {
     shared.ollama = { skipped: true };
     return;
   }
+  const loaded = async () => {
+    const ps = await (await fetch('http://127.0.0.1:11434/api/ps', { signal: AbortSignal.timeout(3000) })).json();
+    return (ps?.models ?? []).some((entry) => entry.name === model);
+  };
+  const facts = { model };
+  if (COLD_OLLAMA) {
+    // keep_alive 0 with no prompt: Ollama drops the model from memory (it loads again on the next request)
+    await fetch('http://127.0.0.1:11434/api/generate', { method: 'POST', body: JSON.stringify({ model, keep_alive: 0 }), signal: AbortSignal.timeout(30000) }).then((response) => response.text());
+    await until(loaded, (value) => value === false, 'the model is unloaded', 30000, 500);
+  }
+  facts.coldStart = !(await loaded());
   const app = await launchApp({ prefix: PREFIX, allowLoopback: true });
   shared.app = app;
   shared.profile = app.profile;
   const { page, $ } = app;
-  const facts = { model };
-  /** Send and wait. The first call may be a cold model: 90 s is the app's limit, then the rules answer. */
+  /** Send and wait. A model on this computer has 240 s to answer; after that the rules do. */
   const converse = async (text, revision) => {
     const started = Date.now();
     await $('composer-input').fill(text);
     await $('send-button').click();
-    await page.waitForSelector(`[data-testid="player-card"][data-revision="${revision}"][data-audio="stems"]`, { timeout: 150000 });
+    await page.waitForSelector(`[data-testid="player-card"][data-revision="${revision}"][data-audio="stems"]`, { timeout: 300000 });
     await app.idle(60000);
     const work = (await app.records()).find((record) => record.revision === revision);
     return { work, turn: work.chat.at(-1), seconds: +((Date.now() - started) / 1000).toFixed(1) };
@@ -530,19 +545,17 @@ async function ollamaRun(run, shared) {
     await until(app.settings, (settings) => settings.llm.kind === 'ollama', 'saved');
     await app.closeModal();
     assert.equal(await $('composer-brain').inputValue(), 'llm');
+    // saving started the warm-up: the model is being loaded before the first message is written
+    const warm = await until(async () => (await app.state()).loopback, (list) => list.length >= 1, 'the warm-up request');
+    assert.deepEqual(warm, ['http://127.0.0.1:11434/v1/chat/completions']);
   });
 
   let first;
-  await run.step('Ollama: a real "new" conversation (a cold model may time out once and fall back)', async () => {
-    let result = await converse('雨天咖啡馆里的慵懒爵士，30 秒，不要鼓', 1);
+  await run.step('Ollama: a real "new" conversation — the first message after a start is answered by the model, not by the rules', async () => {
+    const result = await converse('雨天咖啡馆里的慵懒爵士，30 秒，不要鼓', 1);
     facts.coldFallback = result.turn.brain !== 'llm';
-    if (facts.coldFallback) {
-      assert.match(await page.locator('[data-testid="turn-fallback"]').last().innerText(), /已改用内置规则/);
-      await app.newPiece();
-      await $('composer-brain').selectOption('llm');
-      result = await converse('雨天咖啡馆里的慵懒爵士，30 秒，不要鼓', 1);
-    }
-    assert.equal(result.turn.brain, 'llm', 'the model answered');
+    if (facts.coldFallback) facts.coldNotice = await page.locator('[data-testid="turn-fallback"]').last().innerText().catch(() => '');
+    assert.equal(result.turn.brain, 'llm', `the model answered the first message (${result.seconds} s; ${facts.coldNotice ?? ''})`);
     first = result.work;
     assert.ok(/[一-龥]/.test(result.turn.text));
     assert.ok(first.config.duration >= 15 && first.config.duration <= 120);

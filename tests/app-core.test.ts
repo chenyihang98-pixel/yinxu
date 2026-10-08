@@ -184,7 +184,7 @@ test("应用调整 keeps the seed even after typing in the composer (APP-04)", a
   assert.equal(studio(h).composerText, "完全不相干的一句话 90 BPM 吉他", "the composer is left alone");
   assert.equal(h.plans.length, 1, "direct controls do not ask a brain");
   const [, , request, reply] = studio(h).thread;
-  assert.equal(request.text, `应用调整：速度 ${first.config.bpm} → 96 BPM，主奏换成古筝`);
+  assert.equal(request.text, `应用调整：速度 ${first.config.bpm} → 96 BPM，主奏乐器换成古筝`);
   assert.equal(reply.brain, undefined);
   assert.equal(reply.revision, 2);
   // Nothing changed now: nothing to apply.
@@ -1084,8 +1084,9 @@ test("the language model plans only when it is selected and configured; failures
   assert.equal(await h.core.actions.send("快一点"), true);
   const fallback = studio(h).thread.at(-1);
   assert.equal(fallback?.brain, "rules");
-  assert.match(studio(h).turnNotes[fallback?.id ?? ""]?.fallbackReason ?? "", /已改用内置规则/);
-  assert.ok(toasts(h).some((text) => /已改用内置规则/.test(text)));
+  // one clause of what happened, then what was done about it: no advice, nothing in brackets
+  assert.equal(studio(h).turnNotes[fallback?.id ?? ""]?.fallbackReason, "大模型超过 90 秒没有回应，已改用离线规则");
+  assert.ok(toasts(h).includes("大模型超过 90 秒没有回应，已改用离线规则"));
   // Direct controls never ask the model.
   const asked = bridge.calls.filter((call) => call === "agentPlan").length;
   assert.equal(await h.core.actions.variation(), true);

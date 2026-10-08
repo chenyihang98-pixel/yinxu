@@ -36,6 +36,8 @@ export interface DamagedRecord {
 
 /** DamagedRecord.reason of a work saved by a newer build (unknown style, key…). */
 export const NEWER_VERSION_REASON = "由更新版本的音序创建，请升级后打开";
+/** DamagedRecord.reason of a stored value that is not a work at all. */
+export const NOT_A_PROJECT_REASON = "不是音序的工程数据";
 /** Written by exportProject; importProject accepts 1..SCHEMA_VERSION. */
 export const SCHEMA_VERSION = 2;
 
@@ -56,10 +58,11 @@ const PROVIDERS: readonly Provider[] = [
 /** Ranges of the frozen v0.2 engine. */
 const LEGACY_BPM = [60, 160] as const;
 const LEGACY_DURATION = [15, 120] as const;
+/** As the mixer names them. */
 const TRACK_LABELS: Record<TrackName, string> = {
   melody: "旋律",
   chords: "和声",
-  bass: "低音",
+  bass: "贝斯",
   drums: "鼓组",
 };
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
@@ -72,6 +75,14 @@ class NewerVersionError extends Error {
   constructor() {
     super(NEWER_VERSION_REASON);
     this.name = "NewerVersionError";
+  }
+}
+
+/** The value is no work at all: nothing in it is worth a field-level message. */
+class NotAProjectError extends Error {
+  constructor() {
+    super(NOT_A_PROJECT_REASON);
+    this.name = "NotAProjectError";
   }
 }
 
@@ -236,9 +247,9 @@ function normalizeConfig(value: unknown): MusicConfig {
     duration: numberValue(source.duration, "时长", durationLow, durationHigh),
     key,
     instrument,
-    energy: numberValue(source.energy, "活力", 0, 1),
-    complexity: numberValue(source.complexity, "丰富度", 0, 1),
-    reverb: numberValue(source.reverb, "空间感", 0, 1),
+    energy: numberValue(source.energy, "情绪能量", 0, 1),
+    complexity: numberValue(source.complexity, "旋律丰富度", 0, 1),
+    reverb: numberValue(source.reverb, "空间混响", 0, 1),
     seed: numberValue(source.seed, "随机种子", 0, 0xffffffff, true),
     loop: booleanValue(source.loop, "循环设置"),
     volumes: Object.fromEntries(
@@ -313,7 +324,16 @@ const isBlob = (value: unknown): value is Blob =>
   typeof Blob !== "undefined" && value instanceof Blob;
 
 function normalize(value: unknown, requireAudio: boolean): Project {
-  const source = record(value, "工程");
+  // A work is told by its engine and its recipe. Without them the value is
+  // something else (a stray entry, another program's data): say that, rather
+  // than complain about whichever field happens to be checked first.
+  if (
+    !isRecord(value) ||
+    typeof value.provider !== "string" ||
+    !isRecord(value.config)
+  )
+    throw new NotAProjectError();
+  const source = value;
   const provider = choice(source.provider, PROVIDERS, "生成方式");
   const config = normalizeConfig(source.config);
   if (
@@ -869,6 +889,10 @@ export function importProject(text: string): Project {
   } catch (error) {
     if (error instanceof NewerVersionError)
       throw new Error("此工程文件由更新版本的音序创建，请升级后再导入。");
+    if (error instanceof NotAProjectError)
+      throw new Error(
+        "这个文件不是音序的工程数据，请选择由音序导出的工程 JSON 文件。",
+      );
     throw error;
   }
   const now = new Date().toISOString();

@@ -266,11 +266,11 @@ test("the pending user turn lives with its job", () => {
     type: "thread/append",
     job: 2,
     turns: [mine, { id: "a1", role: "agent", text: "没听懂", at: "2026-10-09T00:00:01.000Z" }],
-    notes: { a1: { fallbackReason: "大模型暂时不可用，已改用内置规则" } },
+    notes: { a1: { fallbackReason: "大模型暂时不可用，已改用离线规则" } },
   });
   assert.equal(answered.studio.pendingTurn, null);
   assert.equal(answered.studio.thread.length, 2);
-  assert.equal(answered.studio.turnNotes.a1.fallbackReason, "大模型暂时不可用，已改用内置规则");
+  assert.equal(answered.studio.turnNotes.a1.fallbackReason, "大模型暂时不可用，已改用离线规则");
   state = run(state, { type: "job/cancel", job: 2, phase: "正在取消" });
   assert.equal(state.studio.pendingTurn, null);
   assert.equal(state.studio.thread.length, 0);

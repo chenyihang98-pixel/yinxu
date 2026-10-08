@@ -1,6 +1,10 @@
 /**
  * Putting a configuration into Chinese words: the prompt sent to a cloud
  * text-to-music model, and the short "what changed" phrases shown in the chat.
+ *
+ * Parameters and tracks are called what the inspector and the mixer call them
+ * (情绪能量, 旋律丰富度, 空间混响, 主奏乐器, 旋律 / 和声 / 贝斯 / 鼓组), so a
+ * reasoning chip can be found on screen by its name.
  */
 import type { ArrangementHints, MusicConfig, TrackName } from "../types";
 import {
@@ -17,12 +21,19 @@ export const CLOUD_PROMPT_MAX = 1800;
 /** Every cloud prompt ends with this, whatever the user wrote. */
 export const INSTRUMENTAL_ONLY = "纯音乐，无人声，无歌词";
 
+/** The four mixer tracks, as the mixer and the export menu name them. */
 export const TRACK_LABELS: Record<TrackName, string> = {
-  melody: "主旋律",
+  melody: "旋律",
   chords: "和声",
-  bass: "低音",
+  bass: "贝斯",
   drums: "鼓组",
 };
+/** The three 0–1 controls, as the inspector names them. */
+export const AMOUNT_LABELS = {
+  energy: "情绪能量",
+  complexity: "旋律丰富度",
+  reverb: "空间混响",
+} as const;
 const TRACK_ORDER: TrackName[] = ["melody", "chords", "bass", "drums"];
 
 export const DRUM_FEEL_LABELS: Record<DrumFeel, string> = {
@@ -156,16 +167,14 @@ export function describeChanges(
   if (before.key !== after.key)
     out.push(`调性 ${keyLabel(before.key)} → ${keyLabel(after.key)}`);
   if (before.instrument !== after.instrument)
-    out.push(`主奏换成${instrumentLabel(after.instrument)}`);
+    out.push(`主奏乐器换成${instrumentLabel(after.instrument)}`);
   if (before.duration !== after.duration)
     out.push(`时长 ${before.duration} → ${after.duration} 秒`);
-  for (const [field, label] of [
-    ["energy", "能量"],
-    ["complexity", "复杂度"],
-    ["reverb", "混响"],
-  ] as const)
+  for (const field of ["energy", "complexity", "reverb"] as const)
     if (Math.abs(before[field] - after[field]) > 1e-6)
-      out.push(`${label} ${percent(before[field])} → ${percent(after[field])}`);
+      out.push(
+        `${AMOUNT_LABELS[field]} ${percent(before[field])} → ${percent(after[field])}`,
+      );
   if (before.loop !== after.loop)
     out.push(after.loop ? "改为无缝循环" : "改为带结尾的完整版本");
   for (const track of TRACK_ORDER) {
@@ -236,22 +245,22 @@ const reverbWord = (value: number) =>
   );
 
 const MUTED: Record<TrackName, string> = {
-  melody: "不要突出的主旋律，以伴奏氛围为主",
+  melody: "不要突出的旋律，以伴奏氛围为主",
   chords: "不要和声铺底",
-  bass: "不要贝斯低音",
+  bass: "不要贝斯",
   drums: "不要鼓组",
 };
 const LOUD: Record<TrackName, string> = {
-  melody: "主旋律要突出",
+  melody: "旋律要突出",
   chords: "和声铺底厚一些",
-  bass: "低音要厚实突出",
-  drums: "鼓点要突出有力",
+  bass: "贝斯要厚实突出",
+  drums: "鼓组要突出有力",
 };
 const QUIET: Record<TrackName, string> = {
-  melody: "主旋律靠后一些",
+  melody: "旋律靠后一些",
   chords: "和声轻一些",
-  bass: "低音轻一些",
-  drums: "鼓点轻一些",
+  bass: "贝斯轻一些",
+  drums: "鼓组轻一些",
 };
 
 function trackEmphasis(config: MusicConfig): string[] {
@@ -268,7 +277,7 @@ function trackEmphasis(config: MusicConfig): string[] {
   if (hints?.drums === "fourfloor") notes.push("四拍底鼓");
   if (hints?.drums === "none" && config.volumes.drums > 0.02)
     notes.push(MUTED.drums);
-  if (hints?.bass === "walking") notes.push("行走低音贝斯");
+  if (hints?.bass === "walking") notes.push("行走贝斯");
   if (hints?.layers?.pad) notes.push("有长音铺底");
   return notes;
 }

@@ -79,7 +79,7 @@ function readPlan(response, requestedModel) {
   const invalid = () => new MusicError('Claude 返回的方案无法识别，请重试。');
   if (!response || typeof response !== 'object') throw invalid();
   // Check why the model stopped before trusting the content.
-  if (response.stop_reason === 'refusal') throw new MusicError('Claude 出于安全策略拒绝了这次请求。请换一种描述，或改用内置规则生成。');
+  if (response.stop_reason === 'refusal') throw new MusicError('Claude 出于安全策略拒绝了这次请求。请换一种描述，或改用离线规则生成。');
   if (response.stop_reason === 'max_tokens') throw new MusicError('Claude 的回答被截断，没有得到完整方案。请简化描述后重试。');
   const block = Array.isArray(response.content) ? response.content.find(item => item?.type === 'text' && typeof item.text === 'string') : null;
   if (!block) throw invalid();

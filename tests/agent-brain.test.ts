@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -571,32 +571,114 @@ test("producePlan uses the model when it works", async () => {
 
 test("producePlan falls back to the rules brain on any failure and says why", async () => {
   const rules = planWithRules(request());
-  const failures: [string, () => Promise<AgentPlanOutput>, RegExp][] = [
-    ["rejects in Chinese", async () => { throw new Error("尚未配置大模型，请先在设置中填写"); }, /尚未配置大模型/],
-    ["electron ipc wrapper", async () => { throw new Error("Error invoking remote method 'agent:plan': Error: 大模型密钥无效"); }, /（大模型密钥无效）/],
-    ["english timeout", async () => { throw new Error("Request timed out after 60000ms"); }, /请求超时/],
-    ["http 401", async () => { throw new Error("401 Unauthorized: invalid x-api-key"); }, /密钥无效/],
-    ["rate limit", async () => { throw new Error("429 rate limit exceeded"); }, /额度不足/],
-    ["network", async () => { throw new TypeError("fetch failed"); }, /网络连接失败/],
-    ["throws a string", async () => { throw "已取消"; }, /已取消/],
-    ["throws nothing useful", async () => { throw undefined; }, /大模型暂时不可用/],
-    ["sync throw", () => { throw new Error("boom"); }, /大模型暂时不可用/],
-    ["returns garbage", async () => ({ plan: { foo: "bar" }, model: "m" }) as unknown as AgentPlanOutput, /没有可用的编曲方案/],
-    ["returns null", async () => null as unknown as AgentPlanOutput, /没有返回可用的编曲方案/],
-    ["returns a string plan", async () => ({ plan: "jazz" }) as unknown as AgentPlanOutput, /没有返回可用的编曲方案/],
+  const failures: [string, () => Promise<AgentPlanOutput>, string][] = [
+    ["rejects in Chinese", async () => { throw new Error("尚未配置大模型，请先在设置中填写"); }, "尚未配置大模型"],
+    ["electron ipc wrapper", async () => { throw new Error("Error invoking remote method 'agent:plan': Error: 大模型密钥无效"); }, "大模型密钥无效"],
+    ["english timeout", async () => { throw new Error("Request timed out after 60000ms"); }, "大模型响应超时"],
+    ["http 401", async () => { throw new Error("401 Unauthorized: invalid x-api-key"); }, "大模型密钥无效或没有权限"],
+    ["rate limit", async () => { throw new Error("429 rate limit exceeded"); }, "大模型请求过于频繁或额度不足"],
+    ["network", async () => { throw new TypeError("fetch failed"); }, "无法连接大模型服务"],
+    ["throws a string", async () => { throw "已取消"; }, "大模型编排已取消"],
+    ["throws nothing useful", async () => { throw undefined; }, "大模型暂时不可用"],
+    ["sync throw", () => { throw new Error("boom"); }, "大模型暂时不可用"],
+    ["returns garbage", async () => ({ plan: { foo: "bar" }, model: "m" }) as unknown as AgentPlanOutput, "大模型返回的内容里没有可用的编曲方案"],
+    ["returns null", async () => null as unknown as AgentPlanOutput, "大模型没有返回可用的编曲方案"],
+    ["returns a string plan", async () => ({ plan: "jazz" }) as unknown as AgentPlanOutput, "大模型没有返回可用的编曲方案"],
   ];
-  for (const [name, llm, reason] of failures) {
+  for (const [name, llm, what] of failures) {
     const plan = await producePlan(request(), { llm });
     assert.equal(plan.brain, "rules", name);
-    assert.match(plan.fallbackReason ?? "", reason, name);
-    assert.match(plan.fallbackReason ?? "", /已改用内置规则/, name);
-    assert.ok((plan.fallbackReason ?? "").length <= 90, name);
-    assert.ok(!/Error|invoking|stack/i.test(plan.fallbackReason ?? ""), name);
+    assert.equal(plan.fallbackReason, `${what}，已改用离线规则`, name);
     // the user's request is still carried out
     const { fallbackReason: _reason, ...rest } = plan;
     assert.deepEqual(rest, rules, name);
     assert.equal(plan.config.mood, "jazz", name);
     assert.ok(plan.config.volumes.drums < current().volumes.drums, name);
+  }
+});
+
+/** The notice for an error message as the desktop bridge delivers it. */
+async function noticeFor(message: string): Promise<string> {
+  const plan = await producePlan(request(), {
+    llm: async () => {
+      throw new Error(message);
+    },
+  });
+  return plan.fallbackReason ?? "";
+}
+
+test("the fallback notice is one clause of what happened, for every way the main process can fail", async () => {
+  // what the main process says (electron/agent-service.cjs, electron/agent/*.cjs) → what the thread shows
+  const paths: [string, string, string][] = [
+    ["timeout, hosted", "大模型超过 90 秒没有回应，已停止等待。可以稍后重试，或先用离线规则生成。", "大模型超过 90 秒没有回应"],
+    ["timeout, local", "本机模型超过 240 秒没有回应，已停止等待。请确认 Ollama 运行正常，或换一个更小的模型；也可以先用离线规则生成。", "本机模型超过 240 秒没有回应"],
+    ["cancel", "已取消本次编排。", "大模型编排已取消"],
+    ["busy", "上一次编排还在进行，请等待完成或先取消。", "上一次编排还在进行"],
+    ["invalid key", "API Key 无效或已过期，请在设置中更新大模型的密钥。", "API Key 无效或已过期"],
+    ["invalid key, Claude", "Claude API Key 无效或已过期，请在设置中更新。", "Claude API Key 无效或已过期"],
+    ["no permission, Claude", "当前密钥没有使用这个 Claude 模型的权限（可能受所在地区或组织设置限制），请在 Claude 控制台确认。", "当前密钥没有使用这个 Claude 模型的权限"],
+    ["no balance", "大模型账户余额不足，请充值后重试。", "大模型账户余额不足"],
+    ["rate limit", "大模型请求过于频繁或额度已用尽，请稍后再试。", "大模型请求过于频繁或额度已用尽"],
+    ["network", "无法连接大模型服务。请检查网络和接口地址；如果需要代理，请确认系统代理已开启。", "无法连接大模型服务"],
+    ["network, Claude", "无法连接 Claude 服务。请检查网络；如果需要代理，请确认系统代理已开启。", "无法连接 Claude 服务"],
+    ["network, Ollama", "无法连接本机的 Ollama。请确认 Ollama 已启动，且设置里的地址和端口正确。", "无法连接本机的 Ollama"],
+    ["model missing, Ollama", "本机 Ollama 里没有这个模型。请先下载模型，或在设置中改成已安装的模型名称。", "本机 Ollama 里没有这个模型"],
+    ["wrong address", "找不到这个模型或接口地址。请检查设置里的模型名称和接口地址（多数服务需要以 /v1 结尾）。", "找不到这个模型或接口地址"],
+    ["server error", "大模型服务暂时不可用，请稍后重试。", "大模型服务暂时不可用"],
+    ["server error with request id", "Claude 服务暂时不可用，请稍后再试。（请求编号 req_011CSHoEeqs5C35K2UUqR7Fy）", "Claude 服务暂时不可用"],
+    ["overloaded, Claude", "Claude 服务当前繁忙（过载），请稍后再试。", "Claude 服务当前繁忙"],
+    ["other status", "大模型服务返回了错误（418），请检查设置。", "大模型服务返回了错误（418）"],
+    ["refusal", "大模型拒绝了这次请求。请换一种描述，或改用离线规则生成。", "大模型拒绝了这次请求"],
+    ["refusal, Claude", "Claude 出于安全策略拒绝了这次请求。请换一种描述，或改用离线规则生成。", "Claude 出于安全策略拒绝了这次请求"],
+    ["invalid JSON", "大模型没有按约定返回方案。请重试，或换一个更擅长结构化输出的模型。", "大模型没有按约定返回方案"],
+    ["invalid JSON, Claude", "Claude 返回的方案无法识别，请重试。", "Claude 返回的方案无法识别"],
+    ["not an OpenAI answer", "大模型返回了无法识别的内容。请确认接口地址是 OpenAI 兼容接口。", "大模型返回了无法识别的内容"],
+    ["invalid field", "大模型返回的方案里“bpm”缺失或格式不对。请重试，或换一个模型。", "大模型返回的方案里“bpm”缺失或格式不对"],
+    ["truncated", "大模型的回答被截断，没有得到完整方案。请换一个模型，或关闭它的深度思考后重试。", "大模型的回答被截断"],
+    ["too large", "大模型返回的内容过大，已停止读取。", "大模型返回的内容过大"],
+    ["too long, Claude", "这次对话内容太长，Claude 无法处理。请缩短描述后重试。", "这次对话内容太长"],
+    ["not configured", "还没有配置大模型。请先在设置中填写大模型的连接信息。", "还没有配置大模型"],
+    ["damaged settings", "无法解密大模型设置，请在当前 Windows 账户中重新保存。", "无法解密大模型设置"],
+    ["anything else", "大模型调用失败，请稍后重试，或先用离线规则生成。", "大模型调用失败"],
+    ["an error that is not the application's", "操作失败，请重试。", "大模型暂时不可用"],
+    ["advice only", "请填写大模型的接口地址。", "大模型暂时不可用"],
+  ];
+  for (const [name, message, what] of paths) {
+    const expected = `${what}，已改用离线规则`;
+    assert.equal(await noticeFor(message), expected, name);
+    // … also as Electron wraps a rejected handler
+    assert.equal(
+      await noticeFor(`Error invoking remote method 'muse:agent-plan': Error: ${message}`),
+      expected,
+      name,
+    );
+  }
+});
+
+test("no message of the main-process agent modules makes a long or nested notice", async () => {
+  // Every error sentence in the agent's own main-process modules, read from
+  // the source, so a message added there later is held to the same shape.
+  // (plan-schema.cjs also holds the model's instructions: only what it throws counts.)
+  const files = ["agent-service.cjs", "agent/anthropic.cjs", "agent/openai.cjs", "agent/plan-schema.cjs", "agent/base-url.cjs", "credentials.cjs", "key-store.cjs"];
+  const messages = new Set<string>();
+  for (const name of files) {
+    const text = readFileSync(fileURLToPath(new URL(`../electron/${name}`, import.meta.url)), "utf8");
+    const pattern = name === "agent/plan-schema.cjs"
+      ? /MusicError\((['`])((?:(?!\1)[^\\\n])*)\1/g
+      : /(['`])((?:(?!\1)[^\\\n])*[一-鿿](?:(?!\1)[^\\\n])*)\1/g;
+    for (const match of text.matchAll(pattern))
+      if (/。$/.test(match[2])) messages.add(match[2].replace(/\$\{[^}]*\}/g, "90"));
+  }
+  assert.ok(messages.size >= 60, `only ${messages.size} messages found`);
+  for (const message of messages) {
+    const notice = await noticeFor(message);
+    assert.match(notice, /，已改用离线规则$/, message);
+    const what = notice.replace(/，已改用离线规则$/, "");
+    assert.ok([...what].length >= 4 && [...what].length <= 30, `${notice} ← ${message}`);
+    // one clause: no sentence inside, no advice, no bracketed remark in words
+    assert.doesNotMatch(what, /[，。；：！？]/, `${notice} ← ${message}`);
+    assert.doesNotMatch(what, /[（(][^）)]*[一-鿿]/, `${notice} ← ${message}`);
+    assert.doesNotMatch(what, /^请|重试|稍后|内置规则/, `${notice} ← ${message}`);
   }
 });
 
@@ -901,7 +983,7 @@ test("pins travel with the request and hold on both paths of producePlan", async
   });
   assert.equal(viaRules.brain, "rules");
   assert.equal(viaRules.model, undefined);
-  assert.match(viaRules.fallbackReason ?? "", /请求超时/);
+  assert.equal(viaRules.fallbackReason, "大模型响应超时，已改用离线规则");
   for (const plan of [viaModel, viaRules, planWithRules(pinned)]) {
     assert.equal(plan.config.mood, "guofeng", plan.brain);
     assert.equal(plan.config.duration, 60, plan.brain);
@@ -1014,7 +1096,7 @@ test("refinement: tiny drifts on parameters nobody mentioned are ignored", () =>
   const real = answer({ bpm: 96, instrument: "piano", reverb: 0.65, energy: 0.42, complexity: 0.67 });
   assert.equal(real.config.energy, 0.45);
   assert.equal(real.config.complexity, 0.65);
-  assert.deepEqual(describeChanges(piece, real.config), ["速度 108 → 96 BPM", "主奏换成柔和钢琴", "混响 32% → 65%"]);
+  assert.deepEqual(describeChanges(piece, real.config), ["速度 108 → 96 BPM", "主奏乐器换成柔和钢琴", "空间混响 32% → 65%"]);
   assert.deepEqual(real.config.arrangement, piece.arrangement);
 
   // the limits: energy / complexity / reverb below 0.06, tempo below 3 BPM
@@ -1131,17 +1213,19 @@ test("describeChanges speaks in short Chinese phrases", () => {
   assert.deepEqual(one({}), []);
   assert.deepEqual(one({ prompt: "别的描述" }), [], "the description alone is not audible");
   assert.deepEqual(one({ bpm: 96 }), ["速度 112 → 96 BPM"]);
-  assert.deepEqual(one({ instrument: "guzheng" }), ["主奏换成古筝"]);
+  assert.deepEqual(one({ instrument: "guzheng" }), ["主奏乐器换成古筝"]);
   assert.deepEqual(one({ volumes: { ...before.volumes, drums: 0 } }), ["关闭鼓组"]);
   assert.deepEqual(one({ mood: "jazz" }), ["风格改为「爵士小馆」"]);
   assert.deepEqual(one({ key: "F# minor" }), ["调性 C 大调 → F# 小调"]);
   assert.deepEqual(one({ duration: 60 }), ["时长 30 → 60 秒"]);
-  assert.deepEqual(one({ energy: 0.42 }), ["能量 62% → 42%"]);
-  assert.deepEqual(one({ complexity: 0.75 }), ["复杂度 50% → 75%"]);
-  assert.deepEqual(one({ reverb: 0.5 }), ["混响 25% → 50%"]);
+  assert.deepEqual(one({ energy: 0.42 }), ["情绪能量 62% → 42%"]);
+  assert.deepEqual(one({ complexity: 0.75 }), ["旋律丰富度 50% → 75%"]);
+  assert.deepEqual(one({ reverb: 0.5 }), ["空间混响 25% → 50%"]);
   assert.deepEqual(one({ loop: false }), ["改为带结尾的完整版本"]);
   assert.deepEqual(one({ seed: 7 }), ["换一组新的旋律"]);
-  assert.deepEqual(one({ volumes: { ...before.volumes, bass: 0.88 } }), ["低音音量 68% → 88%"]);
+  assert.deepEqual(one({ volumes: { ...before.volumes, bass: 0.88 } }), ["贝斯音量 68% → 88%"]);
+  assert.deepEqual(one({ volumes: { ...before.volumes, melody: 0.6 } }), ["旋律音量 80% → 60%"]);
+  assert.deepEqual(one({ volumes: { ...before.volumes, chords: 0 } }), ["关闭和声"]);
   assert.deepEqual(
     describeChanges({ ...before, volumes: { ...before.volumes, drums: 0 }, loop: false }, before),
     ["改为无缝循环", "恢复鼓组"],
@@ -1160,7 +1244,7 @@ test("describeChanges speaks in short Chinese phrases", () => {
     "风格改为「国风古韵」",
     "速度 112 → 96 BPM",
     "调性 C 大调 → D 大调",
-    "主奏换成古筝",
+    "主奏乐器换成古筝",
   ]);
 });
 
@@ -1185,8 +1269,8 @@ test("buildCloudPrompt describes the piece in natural Chinese, the user's words 
     "D 大调",
     "古筝",
     "不要鼓组",
-    "主旋律要突出",
-    "低音轻一些",
+    "旋律要突出",
+    "贝斯轻一些",
     "自然的结尾",
     "时长约 60 秒",
   ])
@@ -1208,7 +1292,7 @@ test("buildCloudPrompt puts energy, complexity and reverb into words", () => {
   assert.match(buildCloudPrompt({ ...base, reverb: 0.9 }), /大混响/);
   assert.match(buildCloudPrompt({ ...base, bpm: 60 }), /很慢/);
   assert.match(buildCloudPrompt({ ...base, bpm: 180 }), /非常快/);
-  assert.match(buildCloudPrompt({ ...base, arrangement: { swing: 0.5, bass: "walking" } }), /摇摆律动.*行走低音/);
+  assert.match(buildCloudPrompt({ ...base, arrangement: { swing: 0.5, bass: "walking" } }), /摇摆律动.*行走贝斯/);
 });
 
 test("buildCloudPrompt never exceeds 1800 characters and always ends instrumental", () => {

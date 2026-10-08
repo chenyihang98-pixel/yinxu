@@ -175,7 +175,7 @@ export function phaseText(
   switch (stage) {
     case "planning":
       return job.brain === "llm"
-        ? "制作人（大模型）正在理解你的想法"
+        ? "制作人（大模型）正在理解你的想法，本机模型可能需要一两分钟"
         : "制作人正在理解你的想法";
     case "rendering":
       return job.kind === "open" ? "正在重建这首作品" : "正在作曲与合成";

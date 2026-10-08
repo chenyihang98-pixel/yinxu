@@ -3,7 +3,13 @@
  * desktop) the Electron bridge. Tests build their own AppCore with fakes.
  */
 import { producePlan } from "../agent/brain";
-import { computePeaks, encodeWav, mixStems, renderMusic } from "../audio/engine";
+import {
+  computePeaks,
+  encodeWav,
+  mixStems,
+  mixdownInWorker,
+  renderMusic,
+} from "../audio/engine";
 import { randomSeed } from "../music/defaults";
 import { TRACKS } from "../music/score";
 import { desktop, newId, openExternal, platform, saveFile } from "../platform";
@@ -70,6 +76,7 @@ export function browserDeps(): CoreDeps {
     exporter: {
       mixStems,
       encodeWav,
+      mixdown: mixdownInWorker,
       saveFile,
       exportProject,
       breathe: nextPaint,

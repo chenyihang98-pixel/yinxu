@@ -10,6 +10,7 @@ import {
 import { INSTRUMENT_IDS, KEYS, STYLE_IDS } from "../src/music/catalog";
 import {
   NEWER_VERSION_REASON,
+  NOT_A_PROJECT_REASON,
   SCHEMA_VERSION,
   deleteProject,
   describeStorageError,
@@ -446,7 +447,7 @@ test("wrong types and absent values are rejected, never guessed", () => {
     );
   const missing = legacyRecord();
   delete ((missing.config as Loose).volumes as Loose).bass;
-  assert.throws(() => importProject(asJson(missing)), /低音音量必须是有效数字/);
+  assert.throws(() => importProject(asJson(missing)), /贝斯音量必须是有效数字/);
 
   for (const [field, value] of [
     ["id", ""],
@@ -464,9 +465,6 @@ test("wrong types and absent values are rejected, never guessed", () => {
     ["revision", "2"],
     ["tags", "青春"],
     ["tags", ["ok", 3]],
-    ["config", null],
-    ["config", []],
-    ["provider", null],
     ["audioDuration", "30"],
     ["audioDuration", null],
     ["parentId", 5],
@@ -485,8 +483,50 @@ test("wrong types and absent values are rejected, never guessed", () => {
       /工程文件格式不正确/,
       `${field}=${JSON.stringify(value)}`,
     );
-  for (const value of [null, undefined, 5, "project", [], () => 1])
-    assert.throws(() => normalizeProject(value), /工程必须是对象/);
+});
+
+test("a value that is no work at all is called that, not blamed for its first field", () => {
+  const notWorks: unknown[] = [
+    null,
+    undefined,
+    5,
+    "project",
+    [],
+    () => 1,
+    {},
+    { foo: 1 },
+    { id: "x", title: "只有名字" },
+    // one of the two marks of a work is not enough
+    { ...legacyRecord(), provider: undefined },
+    { ...legacyRecord(), provider: null },
+    { ...legacyRecord(), provider: 3 },
+    { ...legacyRecord(), config: undefined },
+    { ...legacyRecord(), config: null },
+    { ...legacyRecord(), config: [] },
+    { ...legacyRecord(), config: "bright" },
+    { id: "no-recipe", provider: "local" },
+  ];
+  for (const value of notWorks) {
+    const thrown = (() => {
+      try {
+        normalizeProject(value);
+        return null;
+      } catch (error) {
+        return error as Error;
+      }
+    })();
+    assert.equal(thrown?.message, NOT_A_PROJECT_REASON, JSON.stringify(value));
+  }
+  assert.equal(NOT_A_PROJECT_REASON, "不是音序的工程数据");
+  // a work with a wrong detail still gets the detail
+  // an engine this build does not know is a newer build's work, not a stray value
+  assert.throws(() => normalizeProject({ ...legacyRecord(), provider: "suno" }), new RegExp(NEWER_VERSION_REASON));
+  assert.throws(() => normalizeProject({ ...legacyRecord(), title: 5 }), /工程文件格式不正确：作品名称必须是文字/);
+  assert.throws(() => normalizeProject({ ...legacyRecord(), config: {} }), /工程文件格式不正确/);
+  // exporting and importing say the same in their own words
+  assert.throws(() => exportProject({ title: "x" } as unknown as Project), new RegExp(NOT_A_PROJECT_REASON));
+  for (const text of ['{"schemaVersion":2}', '{"schemaVersion":1,"title":"笔记","items":[1,2]}', '{"schemaVersion":2,"config":{"bpm":120}}'])
+    assert.throws(() => importProject(text), /这个文件不是音序的工程数据，请选择由音序导出的工程 JSON 文件。/, text);
 });
 
 test("non-finite numbers fail before export can turn them into null", () => {
@@ -495,7 +535,7 @@ test("non-finite numbers fail before export can turn them into null", () => {
   assert.throws(() => exportProject(project), /速度必须是有效数字/);
   project.config.bpm = 112;
   project.config.volumes.bass = NaN;
-  assert.throws(() => exportProject(project), /低音音量必须是有效数字/);
+  assert.throws(() => exportProject(project), /贝斯音量必须是有效数字/);
   project.config.volumes.bass = 0.5;
   project.config.seed = -Infinity;
   assert.throws(() => exportProject(project), /随机种子必须是有效数字/);

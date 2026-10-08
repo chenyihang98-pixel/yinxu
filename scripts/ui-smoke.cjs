@@ -85,6 +85,7 @@ async function main() {
       assert.equal(first.config.duration, 15, 'the pinned duration');
       assert.equal(first.config.loop, true);
       assert.equal(first.chat.length, 2);
+      assert.equal(await $('player-card').getAttribute('data-render-path'), 'worker', 'composed off the UI thread');
       assert.equal(await page.locator('[data-testid$="-fader"]').count(), 4);
       assert.ok((await page.locator('[data-testid="section-band"]').count()) >= 1);
       assert.ok((await $('chord-strip').locator('span').count()) >= 2);
@@ -396,6 +397,7 @@ async function main() {
       await until(app.settings, (settings) => settings.llm.preset === 'custom', 'custom endpoint saved');
       assert.equal((await app.settings()).llm.baseUrl, 'https://api.example.com/v1');
       assert.equal(await $('llm-base-url').inputValue(), 'https://api.example.com/v1', 'the form shows what was stored');
+      assert.deepEqual((await app.state()).warmUps, [], 'a hosted model is never called on save');
       // local model: no key
       await $('llm-preset').selectOption('ollama');
       assert.equal(await $('llm-key').count(), 0);
@@ -405,6 +407,10 @@ async function main() {
       await $('llm-save').click();
       await until(app.settings, (settings) => settings.llm.kind === 'ollama', 'Ollama saved');
       await until(() => $('llm-base-url').inputValue(), (value) => value === 'http://127.0.0.1:11434/v1', 'the stored address is shown');
+      // saving a local model warms it up once, in the background (the harness records and stops the request)
+      const warmUps = await until(async () => (await app.state()).warmUps, (list) => list.length >= 1, 'the warm-up of the local model');
+      assert.deepEqual(warmUps, [{ url: 'http://127.0.0.1:11434/v1/chat/completions', model: 'some-local-model', roles: ['system', 'user'] }]);
+      assert.deepEqual(await app.toasts().then((texts) => texts.filter((text) => /Ollama|大模型.*(失败|无法)/.test(text))), [], 'a warm-up that fails is silent');
       await app.closeModal();
       assert.equal(await $('composer-brain').inputValue(), 'llm');
       assert.match(await $('composer-brain').locator('option:checked').innerText(), /大模型 some-local-model/);
@@ -431,6 +437,7 @@ async function main() {
       assert.deepEqual(legacy.config.volumes, source.project.config.volumes);
       assert.match(await $('engine-badge').innerText(), /旧版引擎/);
       assert.match(await $('legacy-note').innerText(), /旧版引擎/);
+      assert.equal(await $('player-card').getAttribute('data-render-path'), 'legacy');
       assert.equal(await page.locator('[data-testid="section-band"]').count(), 0);
       const seconds = Number(await $('player-card').getAttribute('data-duration'));
       await $('play-button').click();
@@ -466,6 +473,7 @@ async function main() {
       assert.deepEqual(state.unknown, []);
       assert.deepEqual(state.loopback, []);
       assert.deepEqual(state.requests, []);
+      assert.equal(state.warmUps.length, 1, 'one warm-up, for the one local model that was saved');
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
       assert.equal(overflow, false);
     });

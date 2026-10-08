@@ -16,8 +16,14 @@
     "typecheck": "node scripts/typecheck.mjs",
     "test": "tsx --test tests/*.test.ts && node --test tests/*.test.cjs",
     "test:ui": "node scripts/ui-smoke.cjs",
+    "test:desktop": "node scripts/ui-smoke.cjs",
     "test:web": "node scripts/web-smoke.cjs",
+    "test:cloud": "node scripts/cloud-workflow.cjs",
+    "test:packaged": "node scripts/packaged-smoke.cjs",
+    "test:all": "npm run build && npm run build:web && npm test && npm run test:web && npm run desktop:smoke && npm run test:desktop && npm run test:cloud",
     "desktop:smoke": "node scripts/desktop-smoke.cjs",
+    "audit:audio": "tsx scripts/audio-audit.ts",
+    "demos": "tsx scripts/render-demos.ts",
     "dist": "npm run build && electron-builder --win --x64 --publish never"
   },
   "dependencies": {

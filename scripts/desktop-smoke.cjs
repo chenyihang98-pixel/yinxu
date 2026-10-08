@@ -146,17 +146,28 @@ async function bridgeChecks(root) {
     // Chromium network stack -> validation), against the mock local model on 127.0.0.1.
     await page.evaluate(port => window.museDesktop.saveLlmSettings({ kind: 'ollama', preset: 'ollama', apiKey: '', model: 'mock-local-model', baseUrl: `http://localhost:${port}/v1` }), mock.port);
     assert.deepEqual((await page.evaluate(() => window.museDesktop.getSettings())).llm, { configured: true, kind: 'ollama', model: 'mock-local-model', preset: 'ollama', baseUrl: `http://127.0.0.1:${mock.port}/v1` });
+    // Saving a local model warms it up in the background: one request for a single token, answer discarded.
+    for (let waited = 0; mock.requests.length < 1 && waited < 5000; waited += 50) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(mock.requests.length, 1, 'the warm-up reached the local model');
+    assert.equal(mock.requests[0].url, '/v1/chat/completions');
+    assert.equal(mock.requests[0].method, 'POST');
+    assert.equal(mock.requests[0].body.model, 'mock-local-model');
+    assert.equal(mock.requests[0].body.max_tokens, 1);
+    assert.deepEqual(mock.requests[0].body.messages.map(message => message.role), ['system', 'user']);
+    assert.equal(mock.requests[0].headers.authorization, undefined);
     const planned = await page.evaluate(input => window.museDesktop.agentPlan(input), PLAN_INPUT);
     assert.deepEqual(Object.keys(planned).sort(), ['model', 'plan']);
     assert.equal(planned.model, 'mock-local-model');
     const { unexpected: _dropped, ...expectedPlan } = MOCK_PLAN;
     assert.deepEqual(planned.plan, expectedPlan, 'only validated plan fields come back');
-    assert.equal(mock.requests.length, 1);
-    assert.equal(mock.requests[0].url, '/v1/chat/completions');
-    assert.equal(mock.requests[0].headers.authorization, undefined, 'a local model gets no Authorization header');
-    assert.equal(mock.requests[0].body.model, 'mock-local-model');
+    assert.equal(mock.requests.length, 2);
+    assert.equal(mock.requests[1].url, '/v1/chat/completions');
+    assert.equal(mock.requests[1].headers.authorization, undefined, 'a local model gets no Authorization header');
+    assert.equal(mock.requests[1].body.model, 'mock-local-model');
+    assert.equal(mock.requests[1].headers.cookie, undefined, 'the warm-up left no cookie behind');
     await page.evaluate(input => window.museDesktop.agentPlan(input), PLAN_INPUT);
-    assert.equal(mock.requests[1].headers.cookie, undefined, 'main-process requests keep no cookies');
+    assert.equal(mock.requests[2].headers.cookie, undefined, 'main-process requests keep no cookies');
+    assert.equal(mock.requests.length, 3, 'one warm-up per save, none per plan');
     assert.equal(await messageOf(page, `window.museDesktop.agentPlan({ ...${JSON.stringify(PLAN_INPUT)}, request: '' })`), '请先说说想要什么样的音乐。');
     assert.equal(await messageOf(page, `window.museDesktop.agentPlan({ ...${JSON.stringify(PLAN_INPUT)}, baseUrl: 'https://evil.test', current: null })`), '编排请求的参数无效，请重新生成一次。');
     await page.evaluate(() => window.museDesktop.cancelAgent());
@@ -166,6 +177,7 @@ async function bridgeChecks(root) {
     await page.evaluate(port => window.museDesktop.saveLlmSettings({ kind: 'ollama', preset: 'ollama', apiKey: '', model: 'mock-local-model', baseUrl: `http://127.0.0.1:${port}/v1` }), deadPort);
     assert.equal(await messageOf(page, `window.museDesktop.agentPlan(${JSON.stringify(PLAN_INPUT)})`), '无法连接本机的 Ollama。请确认 Ollama 已启动，且设置里的地址和端口正确。');
 
+    // A warm-up that cannot connect (the save above) is silent: no dialog, no rejected save, nothing in the page.
     await page.evaluate(() => window.museDesktop.deleteLlmSettings());
     await page.evaluate(() => window.museDesktop.deleteApiKey());
     const cleared = await page.evaluate(() => window.museDesktop.getSettings());

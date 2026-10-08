@@ -167,7 +167,7 @@ style("genre", "恐怖|惊悚|惊吓|鬼|鬼屋|闹鬼|灵异|丧尸|僵尸|噩�
 style("emotion", "紧张|紧迫|压迫感|倒计时|心跳|惊险|焦虑|tense|tension|suspenseful|nervous|anxious", { tension: 3, battle: 1.5 }, { v: -0.4, a: 0.7 });
 style("emotion", "刺激|thrilling|exciting|adrenaline", { battle: 1.5, tension: 1.5, dance: 1, rock: 0.8 }, { a: 0.8 });
 style("game", "解谜|益智|谜题|puzzle|脑洞|推箱子", { tension: 2.5, focus: 1.5, dreamy: 0.8, chiptune: 0.6 }, { a: -0.2 });
-style("emotion", "可爱|俏皮|萌|萌系|卡哇伊|调皮|顽皮|蹦蹦跳跳|软萌|糖果|cute|kawaii|playful|quirky|bouncy|whimsical", { cute: 4, bright: 1 }, { v: 0.9, a: 0.5, mode: "major" });
+style("emotion", "可爱|俏皮|萌|萌系|卡哇伊|调皮|小调皮|顽皮|蹦蹦跳跳|软萌|糖果|cute|kawaii|playful|quirky|bouncy|whimsical", { cute: 4, bright: 1 }, { v: 0.9, a: 0.5, mode: "major" });
 style("emotion", "搞笑|搞怪|滑稽|幽默|逗比|沙雕|funny|silly|comedy|humor|humorous|goofy", { cute: 3, bright: 1.5, chiptune: 0.8, jazz: 0.5 }, { v: 0.8, a: 0.6 });
 style("usage", "鬼畜", { cute: 2, chiptune: 1.5, dance: 1.5, bright: 1 }, { a: 0.8 });
 style("emotion", "活泼|lively", { bright: 2.2, cute: 2 }, { v: 0.8, a: 0.6, mode: "major" });
@@ -266,9 +266,9 @@ inst("唢呐|suona", "dizi", { festive: 2, guofeng: 2.5 }, { note: "暂无唢呐
 inst("方波|芯片|chip|pulse wave|square wave|8 bit音色|8bit音色", "chip", { chiptune: 2.5 });
 add("像素|像素风|8 bit|8bit|8位|红白机|chiptune|chip tune|芯片音乐", { inst: "chip" });
 
-add("萨克斯|萨克斯风|sax|saxophone", { cat: "genre", w: { jazz: 3.5 }, unsupported: "暂无萨克斯音色，保留该风格的主奏" });
-add("小号|长号|圆号|铜管|trumpet|trombone|brass|horn|horns", { cat: "genre", w: { epic: 1.6, jazz: 1.5 }, unsupported: "暂无铜管主奏音色，保留该风格的主奏" });
-add("手风琴|accordion", { cat: "genre", w: { acoustic: 1.5, festive: 0.8 }, unsupported: "暂无手风琴音色，保留该风格的主奏" });
+add("萨克斯|萨克斯风|sax|saxophone", { cat: "genre", w: { jazz: 3.5 }, unsupported: "暂无萨克斯音色，保留该风格的主奏乐器" });
+add("小号|长号|圆号|铜管|trumpet|trombone|brass|horn|horns", { cat: "genre", w: { epic: 1.6, jazz: 1.5 }, unsupported: "暂无铜管音色，保留该风格的主奏乐器" });
+add("手风琴|accordion", { cat: "genre", w: { acoustic: 1.5, festive: 0.8 }, unsupported: "暂无手风琴音色，保留该风格的主奏乐器" });
 add("人声|歌声|唱歌|演唱|歌词|哼唱|合唱|女声|男声|童声|吟唱|vocal|vocals|voice|singing|lyrics|choir|humming|chant|歌手", { unsupported: "只制作纯音乐，不包含人声和歌词" });
 add("3/4拍|3/4|6/8拍|6/8|3拍子|三拍子|三拍", { unsupported: "暂不支持三拍子，按 4/4 拍编写" });
 
@@ -377,7 +377,7 @@ add("低八度|降八度|低一个八度|octave down|lower octave|低音区", { 
 add("前奏|间奏|尾奏|结尾|副歌|高潮|主歌|开头|中段|桥段|intro|outro|chorus|verse|bridge|drop", { section: true });
 
 /* ---------- words that only stop a shorter word from matching inside them ---------- */
-add("特别|区别|别致|无限|无人|无敌|无所谓|免费|没想到|没关系|有没有|鼓励|鼓掌|一鼓作气|畅快|爽快|痛快|凉快|快活|快感|快递|快餐|快手|快门|尽快|赶快|慢慢|慢生活|傲慢|年轻|轻盈|减轻|轻奢|沉重|厚重|重要|重复|重新|尊重|庄重|隆重|稳重|重逢|注重|重点|盛大|伟大|强大|大海|大片|大家|大约|大概|最大|巨大|大学|大作|高大上|远大|小孩|小朋友|小众|小夜曲|小品|小日子|小确幸|小红书|小视频|短小|短视频|短片|长镜头|长大|成长|漂亮|响亮|高兴|高山|高级感|低谷|多彩|多么|少女|少年感|淡雅|暗恋|干杯|湿润|点击|点赞|一些人|有些|风景|风吹|风雨|微风|晚风|春风|台风|味觉|空气|空中|天空|时空|节奏感|音乐节|电子邮件|产品经理|月亮|天亮|点亮|照亮|闪亮|时长|长度|长短|长久|漫长|长夜|长安|潮汐|浪潮|热潮|a minor detail|in a minute|no problem|not sure|for a|on the|on a|up to", {});
+add("特别|区别|别致|无限|无人|无敌|无所谓|免费|没想到|没关系|有没有|鼓励|鼓掌|一鼓作气|畅快|爽快|痛快|凉快|快活|快感|快递|快餐|快手|快门|尽快|赶快|慢慢|慢生活|傲慢|年轻|轻盈|减轻|轻奢|沉重|厚重|重要|重复|重新|尊重|庄重|隆重|稳重|重逢|注重|重点|盛大|伟大|强大|大海|大片|大家|大约|大概|最大|巨大|大学|大作|高大上|远大|小孩|小朋友|小众|小夜曲|小品|小日子|小确幸|小红书|小视频|短小|短视频|短片|长镜头|长大|成长|漂亮|响亮|高兴|高山|高级感|低谷|多彩|多么|少女|少年感|淡雅|暗恋|干杯|湿润|点击|点赞|一些人|有些|风景|风吹|风雨|微风|晚风|春风|台风|味觉|空气|空中|天空|时空|节奏感|音乐节|电子邮件|产品经理|月亮|天亮|点亮|照亮|闪亮|时长|长度|长短|长久|漫长|长夜|长安|潮汐|浪潮|热潮|a minor detail|in a minute|no problem|not sure|for a|on the|on a|up to|调整|大调整|小调整|微调", {});
 
 export const STYLE_COORDS: Record<StyleId, [number, number]> = {
   bright: [0.8, 0.5],

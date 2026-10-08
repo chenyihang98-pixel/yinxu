@@ -14,21 +14,28 @@
  * in one queue. Cancelling a queued render just drops it; cancelling the
  * running one terminates the worker (a fresh one is started lazily) or stops
  * the in-thread job at its next checkpoint.
+ *
+ * The same worker also builds WAV exports (mixdownInWorker): the samples are
+ * copied out a channel at a time and mixed, clipped and encoded over there, so
+ * an export of two minutes no longer stalls the page. Without an idle worker
+ * the caller runs mixStems + encodeWav here instead; the bytes are the same.
  */
 import type { MusicConfig, RenderResult, TrackName } from "../types";
 import { TRACKS } from "../music/score";
 import { renderMusic as renderLegacy } from "./engine-v1";
+import { addScaled, finishMix } from "./mixdown";
 import { freeBuffer } from "./render";
 import type {
+  MixdownJob,
   RenderDiagnostics,
   RenderJobResult,
   RenderedAudio,
   WorkerRequest,
   WorkerResponse,
 } from "./render-types";
-import { softClipBuffer } from "./softclip";
 import { renderJob } from "./worker";
 
+export { fadeChannels } from "./mixdown";
 export { encodeWav } from "./wav";
 export { REFERENCE_VOLUMES } from "./render-types";
 export type { MasterDiagnostics, RenderDiagnostics } from "./render-types";
@@ -47,7 +54,7 @@ export interface EngineRenderResult extends RenderResult {
 
 /** The part of the Worker interface the engine uses. */
 export interface WorkerLike {
-  postMessage(message: WorkerRequest): void;
+  postMessage(message: WorkerRequest, transfer?: Transferable[]): void;
   terminate(): void;
   onmessage: ((event: { data: WorkerResponse }) => void) | null;
   onerror: ((event: unknown) => void) | null;
@@ -61,6 +68,8 @@ export interface EngineOptions {
   createWorker?: (() => WorkerLike) | null;
   /** milliseconds a new worker has to post its first message before it is given up on */
   startupTimeoutMs?: number;
+  /** milliseconds the worker has to answer an export mixdown before the export is built on the calling thread */
+  mixdownTimeoutMs?: number;
 }
 
 export interface EngineStatus {
@@ -82,6 +91,8 @@ const IN_THREAD_PACE_MS = 12;
 /** Share of the progress bar that belongs to the render job; the rest is handing the audio to the UI. */
 const JOB_SHARE = 0.97;
 const STARTUP_TIMEOUT_MS = 10_000;
+/** Two minutes of audio are mixed and encoded in well under a second. */
+const MIXDOWN_TIMEOUT_MS = 20_000;
 /** A worker that dies this many times in a row mid-render is not started again. */
 const MAX_CRASHES = 2;
 
@@ -632,30 +643,137 @@ export function mixStems(
     numberOfChannels: 2,
     sampleRate: first.sampleRate,
   });
-  let peak = 0;
-  for (let channel = 0; channel < 2; channel++) {
-    const destination = result.getChannelData(channel);
+  const channels = [result.getChannelData(0), result.getChannelData(1)];
+  for (let channel = 0; channel < 2; channel++)
     for (const track of TRACKS) {
       if (only && track !== only) continue;
       const gain = clamp01(volumes[track]);
       if (!gain) continue;
-      const source = stems[track].getChannelData(
-        Math.min(channel, stems[track].numberOfChannels - 1),
+      addScaled(
+        channels[channel],
+        stems[track].getChannelData(
+          Math.min(channel, stems[track].numberOfChannels - 1),
+        ),
+        gain,
       );
-      for (let i = 0; i < destination.length; i++)
-        destination[i] += source[i] * gain;
     }
-    if (engine === 2) softClipBuffer(destination);
-    else
-      for (let i = 0; i < destination.length; i++)
-        peak = Math.max(peak, Math.abs(destination[i]));
-  }
-  if (engine === 1 && peak > 0.96) {
-    const scale = 0.96 / peak;
-    for (let channel = 0; channel < 2; channel++) {
-      const data = result.getChannelData(channel);
-      for (let i = 0; i < data.length; i++) data[i] *= scale;
-    }
-  }
+  finishMix(channels, engine === 2 ? "softclip" : "legacy");
   return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* export mixdown in the worker                                        */
+/* ------------------------------------------------------------------ */
+
+/** What an export is made of: the stems of a local work, or one decoded file. */
+export type MixdownSource =
+  | {
+      kind: "stems";
+      stems: Record<TrackName, AudioBuffer>;
+      volumes: Record<TrackName, number>;
+      engine: 1 | 2;
+      /** a single stem at its fader level */
+      only?: TrackName | null;
+    }
+  | { kind: "buffer"; buffer: AudioBuffer };
+
+/** Copy the samples an export needs out of their AudioBuffers, one channel per turn of the event loop. */
+async function copyForMixdown(
+  from: MixdownSource,
+  fade: boolean,
+): Promise<MixdownJob> {
+  const copy = async (buffer: AudioBuffer) => {
+    const channels: Float32Array[] = [];
+    for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+      // 23 MB per channel of a two-minute piece: the AudioBuffer keeps its
+      // samples, the copy leaves with the message
+      channels.push(buffer.getChannelData(channel).slice(0, buffer.length));
+      await breathe();
+    }
+    return channels;
+  };
+  if (from.kind === "buffer")
+    return {
+      sampleRate: from.buffer.sampleRate,
+      frames: from.buffer.length,
+      sources: [{ channels: await copy(from.buffer), gain: 1 }],
+      finish: "none",
+      fade,
+    };
+  const sources: MixdownJob["sources"] = [];
+  for (const track of TRACKS) {
+    if (from.only && track !== from.only) continue;
+    const gain = clamp01(from.volumes[track]);
+    if (!gain) continue;
+    sources.push({ channels: await copy(from.stems[track]), gain });
+  }
+  return {
+    sampleRate: from.stems.melody.sampleRate,
+    frames: from.stems.melody.length,
+    sources,
+    finish: from.engine === 2 ? "softclip" : "legacy",
+    fade,
+  };
+}
+
+/** A warm worker with nothing to do. An export never waits for one to start, nor behind a render. */
+const idleSession = (): Session | null =>
+  session && session.spoke && !session.task ? session : null;
+
+/**
+ * Build the WAV file of an export in the render worker: the same result as
+ * encodeWav(mixStems(…)) — or, for a decoded file, encodeWav(buffer) — with
+ * the optional v0.2 fade in between, byte for byte.
+ *
+ * Resolves with null when the worker cannot take the job right now (there is
+ * none, it has not started, a render is running or waiting, or it failed on
+ * the way). Nothing is lost then: the caller builds the file on its own thread.
+ */
+export function mixdownInWorker(
+  from: MixdownSource,
+  fade = false,
+): Promise<ArrayBuffer | null> {
+  if (pending > 0 || !idleSession()) return Promise.resolve(null);
+  // through the render queue: a render requested meanwhile waits its turn
+  return enqueue(undefined, async () => {
+    if (!idleSession()) return null;
+    const job = await copyForMixdown(from, fade);
+    const target = idleSession();
+    if (!target) return null;
+    return new Promise<ArrayBuffer | null>((resolve) => {
+      const id = ++lastId;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (wav: ArrayBuffer | null) => {
+        if (timer !== undefined) clearTimeout(timer);
+        if (target.task?.id === id) target.task = null;
+        resolve(wav);
+      };
+      target.task = {
+        id,
+        message(message) {
+          if (message.type === "mixed") finish(message.wav);
+          else if (message.type === "error") finish(null);
+        },
+        failure() {
+          finish(null);
+        },
+      };
+      timer = setTimeout(() => {
+        // a worker that does not answer is not asked again
+        finish(null);
+        closeSession(target);
+      }, options.mixdownTimeoutMs ?? MIXDOWN_TIMEOUT_MS);
+      (timer as { unref?: () => void }).unref?.();
+      try {
+        target.worker.postMessage(
+          { type: "mixdown", id, job },
+          job.sources.flatMap((entry) =>
+            entry.channels.map((data) => data.buffer as ArrayBuffer),
+          ),
+        );
+      } catch {
+        finish(null);
+      }
+    }).catch(() => null);
+  }).catch(() => null);
 }

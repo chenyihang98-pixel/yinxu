@@ -96,15 +96,38 @@ export interface RenderJobResult {
   diagnostics: Omit<RenderDiagnostics, "path">;
 }
 
+/**
+ * One WAV export built off the UI thread (mixdown.ts): sum, finish, fade,
+ * encode. The channels are copies made for this job and travel by transfer.
+ */
+export interface MixdownJob {
+  sampleRate: number;
+  frames: number;
+  /**
+   * What to sum, in mixing order; a stem at fader 0 is simply left out. With
+   * `finish: "none"` there is exactly one source and it is encoded as it is,
+   * with its own channel count.
+   */
+  sources: { channels: Float32Array[]; gain: number }[];
+  /** "softclip": engine 2 · "legacy": the v0.2 peak scaling · "none": a decoded file */
+  finish: "softclip" | "legacy" | "none";
+  /** the v0.2 fade: up to one second in and out */
+  fade: boolean;
+}
+
 /* ---- worker protocol ---- */
 export type WorkerRequest =
   | { type: "render"; id: number; config: MusicConfig }
   /** render a few silent-to-the-user seconds so the JIT and the drum wavetables are warm */
-  | { type: "warm"; id: number };
+  | { type: "warm"; id: number }
+  /** mix and encode an export; answered with "mixed" */
+  | { type: "mixdown"; id: number; job: MixdownJob };
 export type WorkerResponse =
   /** posted once, as soon as the worker module has loaded */
   | { type: "ready" }
   | { type: "progress"; id: number; fraction: number }
   | ({ type: "done"; id: number } & RenderJobResult)
   | { type: "warmed"; id: number; ms: number }
+  /** the finished WAV file, transferred */
+  | { type: "mixed"; id: number; wav: ArrayBuffer }
   | { type: "error"; id: number; message: string };

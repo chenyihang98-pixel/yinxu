@@ -360,6 +360,7 @@ async function main() {
       await frame.waitForSelector(`[data-testid="player-card"][data-revision="${revision}"][data-audio="stems"]`, { timeout: 120000 });
       await idle();
       await frame.waitForSelector('[data-testid="save-state"][data-state="saved"]', { timeout: 15000 });
+      assert.equal(await card().getAttribute('data-render-path'), 'worker', 'composed in the render worker, not on the page');
     };
     const download = async (trigger, name) => {
       const [file] = await Promise.all([page.waitForEvent('download', { timeout: 30000 }), trigger()]);

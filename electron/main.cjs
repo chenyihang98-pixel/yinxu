@@ -57,8 +57,14 @@ function registerHandlers() {
   // Credentials are read inside the job, after the lock is taken, so cancelling during the read works.
   trustedHandler('muse:generate-music', input => music.generate(input, () => keyStore.getCredentials(input?.provider)));
   trustedHandler('muse:cancel-generation', () => music.cancel());
-  trustedHandler('muse:save-llm', settings => keyStore.saveLlmSettings(settings));
-  trustedHandler('muse:delete-llm', () => keyStore.deleteLlmSettings());
+  trustedHandler('muse:save-llm', async settings => {
+    const saved = await keyStore.saveLlmSettings(settings);
+    // A model on this computer needs a minute or more to load: start that now, in the background,
+    // rather than during the user's first message. Does nothing for hosted services; never reports.
+    void agent.warmUp(() => keyStore.getLlmSettings());
+    return saved;
+  });
+  trustedHandler('muse:delete-llm', () => { agent.stopWarmUp(); return keyStore.deleteLlmSettings(); });
   // The plan request carries no URL and no key: both come from the encrypted store.
   trustedHandler('muse:agent-plan', input => agent.plan(input, () => keyStore.getLlmSettings()));
   trustedHandler('muse:cancel-agent', () => agent.cancel());

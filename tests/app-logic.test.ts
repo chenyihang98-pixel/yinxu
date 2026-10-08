@@ -203,7 +203,7 @@ test("direct plans: 应用调整 lists the changes, 换一版旋律 only changes
   assert.equal(same.plan.unchanged, true);
   const draft = { ...draftOf(project.config), bpm: 96, instrument: "guzheng" as const };
   const { request, plan } = planFromDraft(project, draft, "tencent");
-  assert.match(request, /^应用调整：速度 112 → 96 BPM，主奏换成古筝$/);
+  assert.match(request, /^应用调整：速度 112 → 96 BPM，主奏乐器换成古筝$/);
   assert.equal(plan.unchanged, false);
   assert.equal(plan.title, project.title);
   assert.deepEqual(plan.tags, ["青春欢快", "96 BPM", "古筝"]);
@@ -468,6 +468,9 @@ test("a Latin service name is set off from the Chinese around it, a Chinese one 
   assert.equal(phaseText("cloud", { ...job, provider: "tencent" }), "腾讯云 TokenHub 正在创作，通常需要几十秒到几分钟");
   assert.equal(phaseText("cloud", { ...job, provider: "volcengine" }), "火山引擎 AI 音乐正在创作，通常需要几十秒到几分钟");
   assert.equal(phaseText("cloud", { ...job, provider: "elevenlabs" }), "ElevenLabs Music 正在创作，通常需要几十秒到几分钟");
+  // waiting for a language model says that one on this computer can take a minute or two (its limit is 240 s)
+  assert.equal(phaseText("planning", { ...job, provider: "local", brain: "llm" }), "制作人（大模型）正在理解你的想法，本机模型可能需要一两分钟");
+  assert.equal(phaseText("planning", { ...job, provider: "local" }), "制作人正在理解你的想法");
   const engines = engineOptions({ canUseCloud: true, canUseLlm: true }, {
     providers: { tencent: { configured: true, damaged: true }, volcengine: { configured: false }, aliyun: { configured: false }, elevenlabs: { configured: false } },
   });

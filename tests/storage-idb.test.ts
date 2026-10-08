@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   NEWER_VERSION_REASON,
+  NOT_A_PROJECT_REASON,
   deleteProject,
   listProjects,
   readRawRecord,
@@ -212,10 +213,12 @@ test("one corrupt and one future-style record never hide the works that are fine
   assert.deepEqual([...byId.keys()].sort(), ["cloud-without-audio", "corrupt", "future", "mismatched", "no-title"]);
   assert.equal(byId.get("future")?.reason, NEWER_VERSION_REASON);
   assert.equal(byId.get("future")?.title, "来自未来");
-  assert.match(byId.get("corrupt")?.reason ?? "", /工程文件格式不正确：空间感必须是有效数字/);
+  assert.match(byId.get("corrupt")?.reason ?? "", /工程文件格式不正确：空间混响必须是有效数字/);
   assert.equal(byId.get("corrupt")?.title, "旧版作品");
   assert.match(byId.get("mismatched")?.reason ?? "", /引擎版本不匹配/);
   assert.equal(byId.get("no-title")?.title, "未命名作品");
+  // a work with a wrong detail is told the detail; a record without a recipe is no work at all
+  assert.equal(byId.get("no-title")?.reason, NOT_A_PROJECT_REASON);
   assert.match(byId.get("cloud-without-audio")?.reason ?? "", /缺少音频/);
 
   // listing must not "repair" or drop anything a newer build may still need
@@ -264,6 +267,9 @@ test("records whose key is not a usable id can still be exported and deleted", a
   assert.notEqual(numeric.id, "12345");
   assert.ok(overlong.id.length <= 120);
   assert.equal(titled("碰巧同名").id, "damaged:1");
+  // none of the three is a work: one plain reason, no field-level complaint
+  for (const title of ["数字编号", "超长编号", "碰巧同名"])
+    assert.equal(titled(title).reason, NOT_A_PROJECT_REASON, title);
   assert.equal(titled("作品 p").id, " padded ");
   assert.match(titled("作品 p").reason, /工程编号无效/);
 

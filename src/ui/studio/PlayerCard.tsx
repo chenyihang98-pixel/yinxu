@@ -176,6 +176,7 @@ export const PlayerCard = memo(function PlayerCard(props: PlayerCardProps) {
       data-duration={audio ? audio.duration.toFixed(3) : "0"}
       data-revision={project.revision}
       data-engine={project.config.engine}
+      data-render-path={audio?.kind === "stems" ? audio.renderPath : undefined}
       data-project={project.id}
       aria-label="当前作品"
     >

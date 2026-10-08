@@ -180,7 +180,7 @@ test('timeout: stops waiting, aborts the adapter, discards a late result and nev
 test('errors: MusicError messages pass, everything else becomes a fixed message without upstream text', async () => {
   const cases = [
     [new MusicError('Claude API Key 无效或已过期，请在设置中更新。'), /^Claude API Key 无效或已过期，请在设置中更新。$/],
-    [new Error(`401 {"error":{"message":"invalid x-api-key ${SECRET}"}}`), /^大模型调用失败，请稍后重试，或先用内置规则生成。$/],
+    [new Error(`401 {"error":{"message":"invalid x-api-key ${SECRET}"}}`), /^大模型调用失败，请稍后重试，或先用离线规则生成。$/],
     [new TypeError('fetch failed: connect ECONNREFUSED 10.0.0.1:443'), /^大模型调用失败/],
     [Object.assign(new Error('boom'), { name: 'MusicError' }), /^大模型调用失败/], // only real instances count
     ['plain string', /^大模型调用失败/],
@@ -222,4 +222,209 @@ test('default adapters are the real modules and are wired by kind', async () => 
   assert.deepEqual(await second.plan(INPUT, DEEPSEEK), { plan: PLAN, model: 'deepseek-chat' });
   assert.equal(requests[0].url, 'https://api.deepseek.com/chat/completions');
   assert.equal(requests[0].headers.Authorization, `Bearer ${DEEPSEEK.apiKey}`);
+});
+
+/* ---------- time limits by kind, and the warm-up of a local model ---------- */
+
+const { HOSTED_TIMEOUT_MS, LOCAL_TIMEOUT_MS } = require('../electron/agent-service.cjs');
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('time limit: 90 s for hosted services, 240 s for a model on this computer, and the message says which', async t => {
+  assert.equal(HOSTED_TIMEOUT_MS, 90_000);
+  assert.equal(LOCAL_TIMEOUT_MS, 240_000);
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const outcome = promise => { const state = { done: false, error: null }; promise.then(() => { state.done = true; }, error => { state.done = true; state.error = error; }); return state; };
+
+  for (const settings of [CLAUDE, DEEPSEEK]) {
+    const { calls, adapters } = fakeAdapters(hang);
+    const service = createAgentService({ adapters });
+    const result = outcome(service.plan(INPUT, settings));
+    await tick();
+    t.mock.timers.tick(89_999);
+    await tick();
+    assert.equal(result.done, false, `${settings.kind}: still waiting just before 90 s`);
+    t.mock.timers.tick(1);
+    await tick();
+    assert.equal(result.done, true, `${settings.kind}: stopped at 90 s`);
+    assert.ok(result.error instanceof MusicError);
+    assert.equal(result.error.message, '大模型超过 90 秒没有回应，已停止等待。可以稍后重试，或先用离线规则生成。');
+    assert.equal(calls[0].signal.aborted, true);
+    assert.equal(service.busy, false);
+  }
+
+  const { calls, adapters } = fakeAdapters(hang);
+  const local = createAgentService({ adapters });
+  // settings read through a getter, as the app does: the longer limit applies once the kind is known
+  const result = outcome(local.plan(INPUT, async () => OLLAMA));
+  await tick();
+  t.mock.timers.tick(90_000);
+  await tick();
+  assert.equal(result.done, false, 'a cold local model is still given time after 90 s');
+  assert.equal(calls[0].signal.aborted, false);
+  t.mock.timers.tick(149_999);
+  await tick();
+  assert.equal(result.done, false, 'still waiting just before 240 s');
+  t.mock.timers.tick(1);
+  await tick();
+  assert.equal(result.done, true, 'stopped at 240 s');
+  assert.ok(result.error instanceof MusicError);
+  assert.match(result.error.message, /^本机模型超过 240 秒没有回应，已停止等待。/);
+  assert.equal(calls[0].signal.aborted, true);
+  assert.equal(local.busy, false);
+});
+
+test('time limit: both limits can be set, and the local one counts from the start of the request', async () => {
+  const { adapters } = fakeAdapters(hang);
+  const service = createAgentService({ adapters, timeoutMs: 20, localTimeoutMs: 160 });
+  let started = Date.now();
+  await assert.rejects(service.plan(INPUT, CLAUDE), error => error.message.startsWith('大模型超过'));
+  assert.ok(Date.now() - started < 140, 'hosted limit');
+  started = Date.now();
+  await assert.rejects(service.plan(INPUT, OLLAMA), error => error.message.startsWith('本机模型超过'));
+  const waited = Date.now() - started;
+  assert.ok(waited >= 140 && waited < 1500, `local limit, waited ${waited} ms`);
+});
+
+/** Adapters whose openai side also records warm-ups. */
+function warmAdapters(behaviour = async () => {}) {
+  const fake = fakeAdapters();
+  const warmUps = [];
+  fake.adapters.openai.warmUp = async args => { warmUps.push(args); return behaviour(args); };
+  return { ...fake, warmUps };
+}
+
+test('warm-up: only for a model on this computer, with the stored settings and the service fetch', async () => {
+  const fetchImpl = async () => { throw new Error('not used'); };
+  for (const settings of [CLAUDE, DEEPSEEK]) {
+    const { warmUps, calls, adapters } = warmAdapters();
+    const service = createAgentService({ adapters, fetchImpl });
+    assert.equal(await service.warmUp(settings), undefined);
+    assert.equal(await service.warmUp(async () => settings), undefined);
+    assert.equal(warmUps.length, 0, `${settings.kind}: a hosted service is never warmed up (it would be billed)`);
+    assert.equal(calls.length, 0);
+    assert.equal(service.warming, false);
+  }
+  const { warmUps, calls, adapters } = warmAdapters();
+  const service = createAgentService({ adapters, fetchImpl });
+  await service.warmUp(async () => ({ ...OLLAMA, extra: 'dropped' }));
+  assert.equal(warmUps.length, 1);
+  assert.deepEqual(warmUps[0].settings, { kind: 'ollama', preset: 'ollama', apiKey: '', model: OLLAMA.model, baseUrl: 'http://127.0.0.1:11434/v1' });
+  assert.equal(warmUps[0].fetchImpl, fetchImpl);
+  assert.ok(warmUps[0].signal instanceof AbortSignal);
+  assert.equal(warmUps[0].signal.aborted, false);
+  assert.equal(calls.length, 0, 'a warm-up is not a plan');
+  assert.equal(service.warming, false);
+  assert.equal(service.busy, false);
+});
+
+test('warm-up: never rejects and never reports, whatever goes wrong', async () => {
+  const failures = [
+    [OLLAMA, async () => { throw new MusicError('无法连接本机的 Ollama。'); }],
+    [OLLAMA, async () => { throw new TypeError(`fetch failed ${SECRET}`); }],
+    [OLLAMA, () => { throw new Error('sync'); }],
+    [async () => { throw new MusicError('还没有配置大模型。'); }, async () => {}],
+    [async () => { throw new Error('EPERM'); }, async () => {}],
+    [null, async () => {}],
+    [{ ...OLLAMA, baseUrl: 'http://192.168.1.2:11434/v1' }, async () => {}],
+    [{ ...OLLAMA, model: '' }, async () => {}],
+  ];
+  for (const [settings, behaviour] of failures) {
+    const { adapters } = warmAdapters(behaviour);
+    const service = createAgentService({ adapters });
+    assert.equal(await service.warmUp(settings), undefined);
+    assert.equal(service.warming, false);
+    // and the service is as usable as before
+    assert.deepEqual(await service.plan(INPUT, CLAUDE), { plan: PLAN, model: 'answering-model' });
+  }
+  // adapters without a warm-up (test doubles) are fine too
+  const bare = createAgentService({ adapters: fakeAdapters().adapters });
+  assert.equal(await bare.warmUp(OLLAMA), undefined);
+});
+
+test('warm-up: does not block; cancel (quit), a newer warm-up and stopWarmUp all abort it', async () => {
+  const { warmUps, adapters } = warmAdapters(hang);
+  const service = createAgentService({ adapters });
+  const first = service.warmUp(OLLAMA);
+  await tick();
+  assert.equal(service.warming, true);
+  assert.equal(service.busy, false, 'the plan lock is not taken');
+  service.cancel();
+  assert.equal(warmUps[0].signal.aborted, true, 'cancel() is what the app calls on quit');
+  await first;
+  assert.equal(service.warming, false);
+
+  const second = service.warmUp(OLLAMA);
+  await tick();
+  const third = service.warmUp({ ...OLLAMA, model: 'another-model' });
+  await tick();
+  assert.equal(warmUps[1].signal.aborted, true, 'saving again replaces the warm-up in flight');
+  assert.equal(warmUps[2].signal.aborted, false);
+  assert.equal(warmUps[2].settings.model, 'another-model');
+  assert.equal(service.warming, true);
+  service.stopWarmUp();
+  assert.equal(warmUps[2].signal.aborted, true);
+  await Promise.all([second, third]);
+  assert.equal(service.warming, false);
+
+  // saving a hosted service after a local one also ends the local warm-up
+  const fourth = service.warmUp(OLLAMA);
+  await tick();
+  await service.warmUp(CLAUDE);
+  assert.equal(warmUps[3].signal.aborted, true);
+  await fourth;
+});
+
+test('warm-up: gives way to a real request, and is not started while one is running', async () => {
+  const { warmUps, calls, adapters } = warmAdapters(hang);
+  const service = createAgentService({ adapters });
+  const warming = service.warmUp(OLLAMA);
+  await tick();
+  assert.equal(warmUps[0].signal.aborted, false);
+  assert.deepEqual(await service.plan(INPUT, OLLAMA), { plan: PLAN, model: 'answering-model' });
+  assert.equal(warmUps[0].signal.aborted, true, 'the user is waiting for the plan, not for the warm-up');
+  await warming;
+  assert.equal(calls.length, 1);
+
+  let release;
+  const busy = warmAdapters();
+  busy.adapters.openai.plan = () => new Promise(resolve => { release = resolve; });
+  const second = createAgentService({ adapters: busy.adapters });
+  const pending = second.plan(INPUT, OLLAMA);
+  await tick();
+  await second.warmUp(OLLAMA);
+  assert.equal(busy.warmUps.length, 0, 'the running request loads the model anyway');
+  release({ plan: PLAN, model: 'm' });
+  await pending;
+});
+
+test('warm-up: has its own time limit', async () => {
+  const { warmUps, adapters } = warmAdapters(hang);
+  const service = createAgentService({ adapters, warmUpTimeoutMs: 20 });
+  const started = Date.now();
+  await service.warmUp(OLLAMA);
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(warmUps[0].signal.aborted, true);
+  assert.equal(service.warming, false);
+});
+
+test('warm-up through the real adapter: one tiny request to this computer, answer discarded', async () => {
+  const requests = [];
+  let cancelled = false;
+  const fetchImpl = async (url, init) => {
+    requests.push({ url: String(url), method: init.method, redirect: init.redirect, headers: { ...init.headers }, body: JSON.parse(init.body) });
+    return new Response(new ReadableStream({ pull(controller) { controller.enqueue(new TextEncoder().encode('{"choices":[]}')); }, cancel() { cancelled = true; } }));
+  };
+  const service = createAgentService({ fetchImpl });
+  await service.warmUp(OLLAMA);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'http://127.0.0.1:11434/v1/chat/completions');
+  assert.equal(requests[0].method, 'POST');
+  assert.equal(requests[0].redirect, 'error');
+  assert.equal(requests[0].headers.Authorization, undefined);
+  assert.equal(requests[0].body.max_tokens, 1);
+  assert.equal(requests[0].body.model, OLLAMA.model);
+  assert.equal(cancelled, true, 'the answer is not read');
+  await service.warmUp(CLAUDE);
+  await service.warmUp(DEEPSEEK);
+  assert.equal(requests.length, 1, 'no request for hosted services');
 });

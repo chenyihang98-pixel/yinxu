@@ -1,10 +1,14 @@
 'use strict';
 
-// Shared by scripts/ui-smoke.cjs and scripts/cloud-workflow.cjs: launches the
-// app from source in Electron (through Playwright) with a throw-away profile.
+// Shared by scripts/ui-smoke.cjs, scripts/cloud-workflow.cjs and
+// scripts/packaged-smoke.cjs: launches the app in Electron (through Playwright)
+// with a throw-away profile — from source, from a packaged "Muse BGM.exe", or
+// from the portable self-extractor.
 //
-// A small module is preloaded into the MAIN process (`electron -r <file> .`)
-// before the app's own main file. It
+// A small module is loaded into the MAIN process: preloaded before the app's
+// own main file when running from source (`electron -r <file> .`), installed
+// through the inspector right after launch for a packaged build (which takes
+// no -r). It
 //   - replaces the native save dialog and shell.openExternal with recorders,
 //     so nothing ever opens on the tester's desktop;
 //   - cancels and records every http(s)/ws request Chromium itself would make;
@@ -12,9 +16,13 @@
 //     services and the language models (the app is started with
 //     MUSE_NETWORK=node, so every main-process request goes through it).
 // Nothing in here ever reaches a real service; `state.unknown` and
-// `state.denied` must be empty at the end of a run.
-const { _electron: electron } = require('playwright');
+// `state.denied` must be empty at the end of a run. The one request the app
+// makes on its own — the warm-up of a local model when its settings are saved
+// — is recorded in `state.warmUps` and stopped here unless allowLoopback is set.
+const { _electron: electron, chromium } = require('playwright');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -52,7 +60,7 @@ const { app, session, dialog, shell } = require('electron');
 const root = ${JSON.stringify(ROOT)};
 const fixture = name => fs.readFileSync(path.join(root, 'tests', 'fixtures', name));
 const state = globalThis.__museTest = {
-  requests: [], unknown: [], denied: [], loopback: [], dialogs: [], opened: [],
+  requests: [], unknown: [], denied: [], loopback: [], warmUps: [], dialogs: [], opened: [],
   savePath: null,
   tencent: { fail: 0, hang: false, delay: 150, garbage: false },
   volc: { polls: 0, pollsNeeded: 2 },
@@ -66,6 +74,9 @@ dialog.showSaveDialog = async (_window, options) => {
 };
 shell.openExternal = async url => { state.opened.push(String(url)); };
 const realFetch = globalThis.fetch;
+/** The app's warm-up of a local model: one token from /chat/completions on this computer. */
+const isWarmUp = (url, method, body) => method === 'POST' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && url.pathname.endsWith('/chat/completions') && Boolean(body) && body.max_tokens === 1;
+const noteWarmUp = (url, body) => state.warmUps.push({ url: url.href, model: body.model, roles: Array.isArray(body.messages) ? body.messages.map(message => message.role) : [] });
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 /** Resolves after ms (never, for Infinity); rejects as soon as the request is aborted. */
 const abortable = (signal, ms) => new Promise((resolve, reject) => {
@@ -90,6 +101,10 @@ const mockFetch = async (rawUrl, options = {}) => {
   const headers = Object.fromEntries(new Headers(options.headers).entries());
   let body = null;
   if (typeof options.body === 'string') { try { body = JSON.parse(options.body); } catch { body = options.body; } }
+  if (!${JSON.stringify(Boolean(allowLoopback))} && isWarmUp(url, options.method, body)) {
+    noteWarmUp(url, body);
+    return json({ model: body.model, choices: [{ index: 0, finish_reason: 'length', message: { role: 'assistant', content: '' } }] });
+  }
   if (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]') {
     state.loopback.push(url.href);
     if (${JSON.stringify(Boolean(allowLoopback))}) return realFetch(rawUrl, options);
@@ -136,6 +151,10 @@ app.whenReady().then(() => {
     let host = '';
     try { host = new URL(details.url).hostname; } catch { /* recorded as denied below */ }
     if (${JSON.stringify(Boolean(allowLoopback))} && host === '127.0.0.1') { state.loopback.push(details.url); callback({}); return; }
+    try {
+      const body = JSON.parse(Buffer.from(details.uploadData?.[0]?.bytes ?? []).toString('utf8') || 'null');
+      if (isWarmUp(new URL(details.url), details.method, body)) { noteWarmUp(new URL(details.url), body); callback({ cancel: true }); return; }
+    } catch { /* not a warm-up: denied below */ }
     state.denied.push(details.url);
     callback({ cancel: true });
   });
@@ -150,6 +169,76 @@ function removeProfile(profile, prefix) {
     fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
 }
 
+/** Runs in the main process: loads the test module with the app's own require. */
+const installHooks = (_electron, source) => {
+  // eslint-disable-next-line no-new-func
+  new Function('require', source)(process.mainModule.require.bind(process.mainModule));
+};
+
+function launchEnvironment(profile, mock) {
+  const env = { ...process.env, MUSE_PORTABLE_DATA: '1', PORTABLE_EXECUTABLE_DIR: profile };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.MUSE_DEV_URL;
+  delete env.MUSE_NETWORK;
+  if (mock) env.MUSE_NETWORK = 'node';
+  return env;
+}
+
+async function freePort() {
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+/** A minimal client for the Node inspector of a main process Playwright did not start. */
+async function inspectorClient(port) {
+  const targets = await until(
+    async () => {
+      try {
+        return await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1000) })).json();
+      } catch {
+        return null;
+      }
+    },
+    (list) => Array.isArray(list) && Boolean(list[0]?.webSocketDebuggerUrl),
+    'the main-process inspector',
+    60000,
+    200,
+  );
+  const socket = new WebSocket(targets[0].webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true });
+    socket.addEventListener('error', () => reject(new Error('could not connect to the main-process inspector')), { once: true });
+  });
+  let lastId = 0;
+  const waiting = new Map();
+  socket.addEventListener('message', (event) => {
+    const message = JSON.parse(String(event.data));
+    const entry = waiting.get(message.id);
+    if (!entry) return;
+    waiting.delete(message.id);
+    if (message.error) entry.reject(new Error(message.error.message));
+    else entry.resolve(message.result);
+  });
+  socket.addEventListener('close', () => {
+    for (const entry of waiting.values()) entry.reject(new Error('the main process is gone'));
+    waiting.clear();
+  });
+  /** (electronModule, argument) => value, like Playwright's electronApplication.evaluate. */
+  const evaluate = async (fn, argument) => {
+    const id = ++lastId;
+    const answer = new Promise((resolve, reject) => waiting.set(id, { resolve, reject }));
+    const expression = `(${fn.toString()})(process.mainModule.require('electron'), ${JSON.stringify(argument ?? null)})`;
+    socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
+    const result = await answer;
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+    return result.result.value;
+  };
+  return { evaluate, close: () => socket.close() };
+}
+
 /**
  * Start the app. Options:
  *   prefix         name prefix of the temp profile (required, e.g. "muse-ui-smoke-")
@@ -157,21 +246,79 @@ function removeProfile(profile, prefix) {
  *   mock           replace the main-process fetch by fixtures
  *   allowLoopback  let requests to 127.0.0.1 through (a real local model)
  *   args           extra Electron switches
+ *   executable     a packaged "Muse BGM.exe" to start instead of the source tree
+ *   portable       the portable self-extractor to start instead (it is copied into the
+ *                  profile first: the wrapper keeps its data next to itself)
  */
 async function launchApp(options) {
-  const { prefix, mock = false, allowLoopback = false, args = [] } = options;
+  const { prefix, mock = false, allowLoopback = false, args = [], executable = null, portable = null } = options;
   if (!prefix || !prefix.startsWith('muse-')) throw new Error('launchApp needs a profile prefix that starts with "muse-"');
-  if (!fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) throw new Error('dist/index.html is missing. Run `npm run build` first.');
+  if (!executable && !portable && !fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) throw new Error('dist/index.html is missing. Run `npm run build` first.');
   const profile = options.profile ?? fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const preload = path.join(profile, 'main-preload.cjs');
-  fs.writeFileSync(preload, mainPreloadSource({ mock, allowLoopback }));
-  const env = { ...process.env, MUSE_PORTABLE_DATA: '1', PORTABLE_EXECUTABLE_DIR: profile };
-  delete env.ELECTRON_RUN_AS_NODE;
-  delete env.MUSE_DEV_URL;
-  delete env.MUSE_NETWORK;
-  if (mock) env.MUSE_NETWORK = 'node';
-  const desktop = await electron.launch({ args: [...args, '-r', preload, ROOT], cwd: ROOT, env, timeout: 30000 });
-  const page = await desktop.firstWindow();
+  const hooks = mainPreloadSource({ mock, allowLoopback });
+  const env = launchEnvironment(profile, mock);
+  let desktop = null;
+  let page;
+  let main;
+  let quit;
+  if (portable) {
+    // The NSIS wrapper unpacks the app, sets PORTABLE_EXECUTABLE_DIR to its own
+    // folder and passes the switches on. Playwright cannot drive it (the app is
+    // a grandchild), so both debugging ports are opened by hand.
+    const wrapper = path.join(profile, path.basename(portable));
+    if (!fs.existsSync(wrapper)) fs.copyFileSync(portable, wrapper);
+    const [inspectPort, pagePort] = [await freePort(), await freePort()];
+    const child = spawn(wrapper, [...args, `--inspect=127.0.0.1:${inspectPort}`, `--remote-debugging-port=${pagePort}`, '--remote-debugging-address=127.0.0.1'], { cwd: profile, env, windowsHide: true, stdio: 'ignore' });
+    const killTree = () =>
+      new Promise((resolve) => {
+        if (child.exitCode !== null) { resolve(); return; }
+        const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        killer.once('exit', resolve);
+        killer.once('error', resolve);
+      });
+    try {
+      const inspector = await inspectorClient(inspectPort);
+      main = inspector.evaluate;
+      await main(installHooks, hooks);
+      const endpoint = await until(
+        async () => {
+          try {
+            return await (await fetch(`http://127.0.0.1:${pagePort}/json/version`, { signal: AbortSignal.timeout(1000) })).json();
+          } catch {
+            return null;
+          }
+        },
+        (value) => Boolean(value?.webSocketDebuggerUrl),
+        'the window of the portable build',
+        60000,
+        200,
+      );
+      const browser = await chromium.connectOverCDP(endpoint.webSocketDebuggerUrl);
+      page = await until(async () => browser.contexts().flatMap((context) => context.pages()).find((candidate) => candidate.url().startsWith('file:')) ?? null, Boolean, 'the page of the portable build', 30000, 200);
+      quit = async () => {
+        await Promise.race([main(({ app }) => { setTimeout(() => app.quit(), 0); }).catch(() => {}), sleep(3000)]);
+        inspector.close();
+        await Promise.race([browser.close().catch(() => {}), sleep(3000)]);
+        await until(async () => child.exitCode, (code) => code !== null, 'the portable build exits', 20000, 200).catch(killTree);
+      };
+    } catch (error) {
+      await killTree();
+      throw error;
+    }
+  } else if (executable) {
+    desktop = await electron.launch({ executablePath: executable, args: [...args], cwd: path.dirname(executable), env, timeout: 60000 });
+    main = (fn, argument) => desktop.evaluate(fn, argument);
+    await main(installHooks, hooks);
+    page = await desktop.firstWindow();
+    quit = () => desktop.close();
+  } else {
+    const preload = path.join(profile, 'main-preload.cjs');
+    fs.writeFileSync(preload, hooks);
+    desktop = await electron.launch({ args: [...args, '-r', preload, ROOT], cwd: ROOT, env, timeout: 30000 });
+    main = (fn, argument) => desktop.evaluate(fn, argument);
+    page = await desktop.firstWindow();
+    quit = () => desktop.close();
+  }
   page.setDefaultTimeout(15000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error?.message || error}`));
@@ -183,11 +330,11 @@ async function launchApp(options) {
   const app = { desktop, page, profile, prefix, errors };
   app.$ = (id) => page.locator(`[data-testid="${id}"]`);
   /** Run a function in the main process: (electronModule, argument) => value. */
-  app.main = (fn, argument) => desktop.evaluate(fn, argument);
-  app.state = () => desktop.evaluate(() => globalThis.__museTest);
+  app.main = main;
+  app.state = () => main(() => globalThis.__museTest);
   /** Deep-merge a patch into the main-process test state. */
   app.setState = (patch) =>
-    desktop.evaluate((_electron, value) => {
+    main((_electron, value) => {
       const merge = (target, source) => {
         for (const [key, item] of Object.entries(source)) {
           if (item && typeof item === 'object' && !Array.isArray(item) && target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])) merge(target[key], item);
@@ -285,7 +432,7 @@ async function launchApp(options) {
   };
   /** Quit the app. The profile is removed unless it is needed for a relaunch. */
   app.close = async ({ keepProfile = false } = {}) => {
-    await desktop.close().catch(() => {});
+    await Promise.resolve(quit()).catch(() => {});
     if (!keepProfile) removeProfile(profile, prefix);
   };
   return app;

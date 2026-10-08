@@ -328,3 +328,29 @@ test('through the agent service: cancel, timeout and late results use the servic
   const fresh = createAgentService({ fetchImpl: recorder(() => completion(JSON.stringify(PLAN))).fetchImpl, lookup: publicLookup });
   assert.deepEqual(await fresh.plan(RAW_INPUT, CLOUD), { plan: PLAN, model: 'deepseek-chat' });
 });
+
+test('warmUp: one token from the local model, with the system prompt a plan request starts with', async () => {
+  let cancelled = 0;
+  const { calls, fetchImpl } = recorder(() => new Response(new ReadableStream({ pull(controller) { controller.enqueue(new TextEncoder().encode('{}')); }, cancel() { cancelled++; } })));
+  const controller = new AbortController();
+  assert.equal(await openai.warmUp({ settings: LOCAL, signal: controller.signal, fetchImpl }), undefined);
+  assert.equal(calls.length, 1);
+  const [call] = calls;
+  assert.equal(call.url, 'http://127.0.0.1:11434/v1/chat/completions');
+  assert.equal(call.method, 'POST');
+  assert.equal(call.redirect, 'error');
+  assert.equal(call.signal, controller.signal);
+  assert.deepEqual(call.headers, { 'Content-Type': 'application/json', Accept: 'application/json' }, 'no Authorization header for a local model');
+  assert.deepEqual(call.body, { model: LOCAL.model, messages: [{ role: 'system', content: buildSystemPrompt() }, { role: 'user', content: '你好' }], max_tokens: 1 });
+  assert.equal(cancelled, 1, 'the answer is discarded unread');
+
+  // never for a hosted service, whatever its address
+  await openai.warmUp({ settings: CLOUD, fetchImpl });
+  await openai.warmUp({ settings: { ...CLOUD, baseUrl: 'http://127.0.0.1:11434/v1' }, fetchImpl });
+  assert.equal(calls.length, 1);
+  // the stored address is checked again: a local model is on this computer or nowhere
+  await assert.rejects(openai.warmUp({ settings: { ...LOCAL, baseUrl: 'http://192.168.1.20:11434/v1' }, fetchImpl }), error => error.name === 'MusicError');
+  assert.equal(calls.length, 1);
+  // failures are the caller's to swallow (the agent service does)
+  await assert.rejects(openai.warmUp({ settings: LOCAL, fetchImpl: async () => { throw new TypeError('fetch failed'); } }), /fetch failed/);
+});

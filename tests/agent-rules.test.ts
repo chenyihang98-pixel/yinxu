@@ -272,7 +272,7 @@ const MORE_CASES: [string, Expect][] = [
   ["不要太吵的电音", { style: "dance", energy: [0.3, 0.8] }],
   ["商务风格，不要太激烈，60秒", { style: "corporate", energy: [0.2, 0.55], duration: 60 }],
   ["dark cinematic tension, no drums", { style: ["tension", "cinematic"], minor: true, drums: "off" }],
-  ["明亮的小调", { minor: true }],
+  ["明亮，但是用小调", { minor: true }],
   ["欢快的摇滚", { style: "rock", minor: false }],
   ["带结尾的完整版婚礼音乐", { style: "romantic", loop: false }],
   ["空灵的女声吟唱", { style: "dreamy", says: /纯音乐/ }],
@@ -942,6 +942,68 @@ test("keys are only read when written as keys", () => {
   // every catalog key can be requested in Chinese
   for (const [name, expected] of [["降D大调", "Db major"], ["升F大调", "F# major"], ["降A大调", "Ab major"], ["降E小调", "Eb minor"], ["升G小调", "G# minor"], ["降B小调", "Bb minor"]] as const)
     assert.equal(plan(name).config.key, expected, name);
+});
+
+test("小调 / 大调 change the key only where they are an instruction (QA probe)", () => {
+  // the probe's project: the default piece, C major at 112 BPM
+  const piece = (): MusicConfig => ({ ...draft(), prompt: "夏日海边", seed: 42, duration: 30, loop: true });
+  const refine = (text: string) => plan(text, "refine", piece());
+
+  // "口哨小调" is a whistled ditty: the tempo and the lead follow the words, the key stays
+  const ditty = refine("轻快的口哨小调");
+  assert.equal(ditty.config.key, "C major");
+  assert.equal(ditty.config.bpm, 120);
+  assert.equal(ditty.config.instrument, "flute");
+  assert.deepEqual(ditty.reasoning, ["速度 112 → 120 BPM", "主奏乐器换成长笛", "口哨：用长笛音色近似"]);
+  assert.ok(!ditty.reasoning.some((line) => line.includes("调性")));
+  const fresh = plan("轻快的口哨小调");
+  assert.equal(fresh.config.mood, "bright");
+  assert.equal(fresh.config.key, "C major");
+  assert.equal(fresh.config.instrument, "flute");
+  assert.equal(fresh.title, "轻快的口哨小调");
+
+  // the probe's other two refinements are instructions
+  assert.deepEqual(refine("来点小调的感觉").reasoning, ["调性 C 大调 → C 小调"]);
+  assert.deepEqual(refine("改成小调").reasoning, ["调性 C 大调 → C 小调"]);
+  // … and its new pieces keep reading as before
+  const jiangnan = plan("一首江南小调，悠扬的笛子").config;
+  assert.deepEqual([jiangnan.mood, jiangnan.key, jiangnan.instrument], ["guofeng", "D major", "dizi"]);
+  const exact = plan("90 BPM，D 小调，一分钟，完整结尾").config;
+  assert.deepEqual([exact.bpm, exact.key, exact.duration, exact.loop], [90, "D minor", 60, false]);
+
+  // an instruction: after a verb that sets something, as a clause of its own, negated, or as the colour of the piece
+  const minor = [
+    "小调", "小调吧", "改成小调", "换成小调", "换个小调", "用小调", "转小调", "转成小调", "变成小调", "改为小调", "调成小调",
+    "调性改成小调", "调性：小调", "要小调", "慢一点，小调", "90 BPM，小调", "欢快但是小调", "来点小调的感觉", "带点小调色彩",
+    "小调的感觉", "不要大调", "in a minor key", "in minor",
+  ];
+  for (const text of minor) assert.equal(refine(text).config.key, "C minor", text);
+  const dark = (): MusicConfig => ({ ...piece(), key: "A minor" });
+  for (const text of ["大调", "改成大调", "换成大调", "用大调", "转大调", "变成大调", "悲伤但是大调", "不要小调", "来点大调的感觉", "major key"])
+    assert.equal(plan(text, "refine", dark()).config.key, "A major", text);
+
+  // a noun: a ditty, a folk tune, or part of another word. The key is not touched.
+  const ditties = [
+    "轻快的口哨小调", "一首欢快的小调", "来首小调", "来一段民间小调", "明亮的小调", "吉他小调", "山间小调", "哼一支小调",
+    "口哨小调的感觉", "用口哨小调", "做个大调整", "要大调整一下", "小调整一下", "可爱的小调皮",
+  ];
+  for (const text of ditties) {
+    const refined = refine(text);
+    // "民间小调" is a folk tune: the style may change (and bring its own major key), the mode does not
+    if (refined.config.mood === "bright") assert.equal(refined.config.key, "C major", text);
+    assert.equal(parseKey(refined.config.key).minor, false, text);
+    assert.ok(!refined.reasoning.some((line) => /→ .*小调/.test(line)), text);
+    assert.equal(parseKey(plan(text).config.key).minor, false, `new: ${text}`);
+  }
+  assert.equal(refine("来一段民间小调").config.mood, "guofeng");
+  // nothing else in these was an instruction either
+  for (const text of ["做个大调整", "小调整一下"]) assert.equal(refine(text).unchanged, true, text);
+  assert.equal(plan("可爱的小调皮").config.mood, "cute");
+  // a sad ditty is still in a minor key, because it is sad
+  assert.equal(parseKey(plan("忧伤的小调").config.key).minor, true);
+  // a key with its tonic is always a key
+  assert.equal(refine("轻快的口哨，A 小调").config.key, "A minor");
+  assert.equal(refine("口哨小调，D小调").config.key, "D minor");
 });
 
 test("all 14 instruments can be asked for, with synonyms", () => {

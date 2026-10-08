@@ -89,6 +89,38 @@ interface Word extends Token {
   used?: boolean;
 }
 
+/**
+ * "小调" is also a ditty ("口哨小调", "一首欢快的小调") and "大调" sits inside
+ * other words, so the bare word changes the key only where it can be nothing
+ * but an instruction: after a verb that sets something ("改成小调", "用大调",
+ * "转小调"), as a clause of its own ("小调", "90 BPM，小调"), negated, or
+ * describing the colour of the piece ("来点小调的感觉"). A key with its tonic
+ * ("D 小调") never gets here: the lexicon reads it as a key.
+ */
+const MODE_VERB =
+  /(?:改成|改为|改用|改到|改|换成|换为|换用|换到|换|转成|转为|转到|转|变成|变为|变|切换到|切到|切成|调成|调为|调到|设成|设为|使用|采用|用|要)(?:一?个)?\s*$/;
+const MODE_TURN = /^.*(?:但是|但|不过|而是|只是|然后|同时|并且|而且)/;
+const MODE_LEAD =
+  /^(?:整体|整首|全曲|调性|调式|曲子|音乐|key|请|麻烦|帮我|给我|我|想|是|为|[:：=\s])*$/;
+const MODE_TAIL =
+  /^(?:吧|呢|啊|呀|嘛|哦|的|了|试试|看看|就行|就好|即可|好了|可以吗|行吗|怎么样|如何|\s)*$/;
+const MODE_COLOUR = /^\s*的?\s*(?:感觉|色彩|味道|调式|音阶|氛围|感|味)/;
+const MODE_PARTIAL =
+  /(?:来点|来一点|加点|加一点|带点|带一点|有点|一点|一些|更|再|偏向|偏)\s*$/;
+/** Punctuation, or a number or key the lexicon already took out of the text. */
+const CLAUSE_BREAK = /[,.;:!?，。；：！？、\n\u0001]/;
+
+function modeInstruction(lower: string, word: Word): boolean {
+  // "minor key", "in major" have no second meaning
+  if (/[a-z]/.test(word.text) || word.neg || word.too) return true;
+  const before = lower.slice(0, word.start).split(CLAUSE_BREAK).pop() ?? "";
+  const after = lower.slice(word.end).split(CLAUSE_BREAK)[0];
+  if (MODE_VERB.test(before)) return true;
+  const alone = MODE_LEAD.test(before.replace(MODE_TURN, ""));
+  if (alone && MODE_TAIL.test(after)) return true;
+  return MODE_COLOUR.test(after) && (alone || MODE_PARTIAL.test(before));
+}
+
 const isContent = (lex: Lex) =>
   !!(
     lex.w ||
@@ -573,13 +605,14 @@ function interpret(text: string, mode: "new" | "refine"): Intent {
 
     if (lex.mode && !gated) {
       const flipped = negative || word.too || word.neg === "too";
-      if (!lex.w && !lex.dim)
-        intent.modeExplicit = !flipped
-          ? lex.mode
-          : lex.mode === "major"
-            ? "minor"
-            : "major";
-      else if (!flipped) intent.modeVotes.add(lex.mode);
+      if (!lex.w && !lex.dim) {
+        if (modeInstruction(lower, word))
+          intent.modeExplicit = !flipped
+            ? lex.mode
+            : lex.mode === "major"
+              ? "minor"
+              : "major";
+      } else if (!flipped) intent.modeVotes.add(lex.mode);
     }
 
     if (lex.dim && lex.dir && !word.used && !gated) {
@@ -871,7 +904,7 @@ function applyParameters(
     if (replacement) config.instrument = replacement;
   } else if (mode === "refine" && intent.excluded.size && !intent.leads.length)
     notes.push(
-      `当前主奏是${instrumentLabel(config.instrument)}，本来就没有用${[...intent.excluded].map(instrumentLabel).join("、")}`,
+      `当前主奏乐器是${instrumentLabel(config.instrument)}，本来就没有用${[...intent.excluded].map(instrumentLabel).join("、")}`,
     );
 
   for (const op of intent.trackOps) op(config.volumes);
@@ -1047,7 +1080,7 @@ export function planWithRules(request: AgentRequest): AgentPlan {
           hints.drums = hints.drums ?? "fourfloor";
         });
       styleNotes.push(
-        `保持「${styleLabel(current.mood)}」的底子，借用「${styleLabel(best)}」的主奏音色`,
+        `保持「${styleLabel(current.mood)}」的底子，借用「${styleLabel(best)}」的主奏乐器`,
       );
     }
   }
@@ -1066,7 +1099,7 @@ export function planWithRules(request: AgentRequest): AgentPlan {
       if (id !== config.mood && intent.lexical[id] >= 3) {
         config.instrument = lead;
         styleNotes.push(
-          `保留「${styleLabel(id)}」的色彩：主奏用${instrumentLabel(lead)}`,
+          `保留「${styleLabel(id)}」的色彩：主奏乐器用${instrumentLabel(lead)}`,
         );
         break;
       }

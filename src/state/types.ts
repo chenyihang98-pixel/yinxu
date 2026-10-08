@@ -100,6 +100,12 @@ export interface StemsAudio {
   sampleRate: number;
   /** sections, chords, instruments, notes — engine 2 only */
   arrangement?: ArrangementSummary;
+  /**
+   * Where the samples were computed, when the engine says so: its render
+   * worker, the page's own thread, or the frozen v0.2 engine. Shown as
+   * data-render-path on the player card (nothing else reads it).
+   */
+  renderPath?: "worker" | "main" | "legacy";
 }
 
 /** A cloud work: one decoded mix, no stems. */

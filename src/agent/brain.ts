@@ -574,7 +574,34 @@ export async function planWithLlm(
   );
 }
 
-/** A short Chinese explanation of why the model could not be used. */
+/** The rules brain, as the interface names it. */
+const RULES_NAME = "离线规则";
+const NOTICE_CHARS = 30;
+const UNAVAILABLE = "大模型暂时不可用";
+
+/**
+ * The main process explains a failure in two or three sentences: what
+ * happened, then what to do about it. By the time the notice is shown the
+ * request has already been carried out by the rules, so only the first clause
+ * — what happened — is kept: no advice, no bracketed asides.
+ */
+function firstClause(message: string): string {
+  const clause = line(message, 240)
+    .replace(/[（(][^（）()]*[一-鿿][^（）()]*[）)]/g, "")
+    .split(/[，。；：！？!?;]/)[0]
+    .trim();
+  if (/^已取消/.test(clause)) return "大模型编排已取消";
+  // an instruction to the user ("请填写…") or a bare "操作失败" says nothing about the model
+  if (!clause || /^(?:请|操作失败)/.test(clause) || [...clause].length > NOTICE_CHARS)
+    return UNAVAILABLE;
+  return clause;
+}
+
+/**
+ * One short line for the thread and the toast: what went wrong, in a single
+ * clause, then that the rules answered instead — for example
+ * "大模型超过 90 秒没有回应，已改用离线规则".
+ */
 function fallbackReason(error: unknown): string {
   const raw =
     error instanceof Error
@@ -586,22 +613,20 @@ function fallbackReason(error: unknown): string {
     .replace(/^Error invoking remote method '[^']*':\s*/i, "")
     .replace(/^(?:[A-Za-z]*Error:\s*)+/, "")
     .trim();
-  const detail = /[一-鿿]/.test(message)
-    ? line(message, 60).replace(/[。.!！\s]+$/, "")
+  const what = /[一-鿿]/.test(message)
+    ? firstClause(message)
     : /timeout|timed out|ETIMEDOUT|abort/i.test(message)
-      ? "请求超时"
+      ? "大模型响应超时"
       : /\b401\b|\b403\b|unauthori[sz]ed|api key|forbidden/i.test(message)
-        ? "密钥无效或没有权限"
+        ? "大模型密钥无效或没有权限"
         : /\b429\b|rate limit|quota|insufficient/i.test(message)
-          ? "请求过于频繁或额度不足"
+          ? "大模型请求过于频繁或额度不足"
           : /ENOTFOUND|ECONNREFUSED|ECONNRESET|network|fetch failed/i.test(
                 message,
               )
-            ? "网络连接失败"
-            : "";
-  return detail
-    ? `大模型不可用（${detail}），已改用内置规则`
-    : "大模型暂时不可用，已改用内置规则";
+            ? "无法连接大模型服务"
+            : UNAVAILABLE;
+  return `${what}，已改用${RULES_NAME}`;
 }
 
 /**

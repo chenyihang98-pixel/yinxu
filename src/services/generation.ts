@@ -59,6 +59,9 @@ export async function runLocal(
     !(result.duration > 0)
   )
     throw new Error("本地引擎没有生成可用的音频，请调整参数后重试。");
+  // the real engine adds diagnostics to the result; a stand-in need not
+  const path = (result as { diagnostics?: { path?: unknown } }).diagnostics
+    ?.path;
   return {
     kind: "stems",
     stems: result.stems,
@@ -68,6 +71,9 @@ export async function runLocal(
     duration: result.duration,
     sampleRate: result.sampleRate,
     ...(result.arrangement ? { arrangement: result.arrangement } : {}),
+    ...(path === "worker" || path === "main" || path === "legacy"
+      ? { renderPath: path }
+      : {}),
   };
 }
 

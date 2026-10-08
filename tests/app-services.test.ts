@@ -125,6 +125,14 @@ test("runLocal: renders through the injected engine and keeps the engine of the 
   assert.equal(old.engine, 1);
   assert.equal(old.sampleRate, 32000);
   assert.equal(old.arrangement, undefined);
+  // Where the engine says the samples were computed is kept (the player card shows it as data-render-path).
+  assert.equal(audio.renderPath, undefined, "a stand-in engine says nothing");
+  for (const path of ["worker", "main", "legacy"] as const) {
+    const told = await runLocal(DEFAULT_CONFIG, {}, { renderMusic: async (config) => ({ ...renderResult(config, 0.02), diagnostics: { path } }) });
+    assert.equal(told.renderPath, path);
+  }
+  const odd = await runLocal(DEFAULT_CONFIG, {}, { renderMusic: async (config) => ({ ...renderResult(config, 0.02), diagnostics: { path: "gpu" } }) });
+  assert.equal("renderPath" in odd, false);
 });
 
 test("runLocal: an aborted signal rejects with AbortError and reports no more progress", async () => {

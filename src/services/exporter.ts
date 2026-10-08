@@ -5,7 +5,8 @@
  * player happens to be doing (solo, listening volume, audition loop) is not
  * an input here at all.
  */
-import { encodeWav, mixStems } from "../audio/engine";
+import { encodeWav, fadeChannels, mixStems } from "../audio/engine";
+import type { MixdownSource } from "../audio/engine";
 import { TRACKS } from "../music/score";
 import { saveFile } from "../platform";
 import type { FileFormat } from "../platform";
@@ -38,6 +39,16 @@ export interface ExportDeps {
    * thread. Optional — without it the export runs in one go.
    */
   breathe?: () => Promise<void>;
+  /**
+   * The finished WAV (mixed, clipped, faded, encoded) built off the UI thread
+   * — the engine's mixdownInWorker. Resolves null when that is not possible
+   * right now; the file is then built here with mixStems and encodeWav, and
+   * is the same bytes. Optional.
+   */
+  mixdown?: (
+    source: MixdownSource,
+    fade?: boolean,
+  ) => Promise<ArrayBuffer | null>;
 }
 
 const defaults: ExportDeps = { mixStems, encodeWav, saveFile, exportProject };
@@ -133,17 +144,10 @@ export function exportName(project: Project, request: ExportRequest): string {
 
 /** The v0.2 fade: up to 1 s in and out, never more than a third of the audio. */
 export function applyFade(buffer: AudioBuffer): void {
-  const frames = buffer.length;
-  const ramp = Math.floor(Math.min(buffer.sampleRate, frames / 3));
-  if (ramp < 1) return;
-  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
-    const data = buffer.getChannelData(channel);
-    for (let i = 0; i < ramp; i++) {
-      const gain = i / ramp;
-      data[i] *= gain;
-      data[frames - 1 - i] *= gain;
-    }
-  }
+  const channels: Float32Array[] = [];
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++)
+    channels.push(buffer.getChannelData(channel));
+  fadeChannels(channels, buffer.length, buffer.sampleRate);
 }
 
 /**
@@ -197,12 +201,20 @@ export async function buildExport(
   request: ExportRequest,
   deps: Pick<
     ExportDeps,
-    "mixStems" | "encodeWav" | "exportProject" | "breathe"
+    "mixStems" | "encodeWav" | "exportProject" | "breathe" | "mixdown"
   > = defaults,
 ): Promise<ExportFile> {
   const name = exportName(project, request);
   const breathe = async () => {
     await deps.breathe?.();
+  };
+  /** The file from the worker, or null: then it is built on this thread. */
+  const offThread = async (source: MixdownSource, fade = false) => {
+    try {
+      return (await deps.mixdown?.(source, fade)) ?? null;
+    } catch {
+      return null;
+    }
   };
   switch (request.kind) {
     case "project": {
@@ -231,6 +243,14 @@ export async function buildExport(
         throw new Error("这首作品没有分轨，只能导出完整音频。");
       if (!TRACKS.includes(request.track)) throw new Error("没有这条音轨。");
       await breathe();
+      const made = await offThread({
+        kind: "stems",
+        stems: audio.stems,
+        volumes: project.config.volumes,
+        engine: audio.engine,
+        only: request.track,
+      });
+      if (made) return { name, data: made, format: "wav" };
       const stem = deps.mixStems(
         audio.stems,
         project.config.volumes,
@@ -243,18 +263,32 @@ export async function buildExport(
     case "mix": {
       if (!audio) throw new Error("音频还没有准备好，无法导出 WAV。");
       const choices = exportChoices(project, audio);
+      const fade = !!request.fade && choices.canFade;
       await breathe();
-      let mix =
+      let wav = await offThread(
         audio.kind === "stems"
-          ? deps.mixStems(audio.stems, project.config.volumes, audio.engine)
-          : audio.buffer;
-      if (request.fade && choices.canFade) {
-        // mixStems returns a fresh buffer; a decoded cloud mix must be copied.
-        if (audio.kind === "mix") mix = copyBuffer(mix);
-        applyFade(mix);
+          ? {
+              kind: "stems",
+              stems: audio.stems,
+              volumes: project.config.volumes,
+              engine: audio.engine,
+            }
+          : { kind: "buffer", buffer: audio.buffer },
+        fade,
+      );
+      if (!wav) {
+        let mix =
+          audio.kind === "stems"
+            ? deps.mixStems(audio.stems, project.config.volumes, audio.engine)
+            : audio.buffer;
+        if (fade) {
+          // mixStems returns a fresh buffer; a decoded cloud mix must be copied.
+          if (audio.kind === "mix") mix = copyBuffer(mix);
+          applyFade(mix);
+        }
+        await breathe();
+        wav = deps.encodeWav(mix);
       }
-      await breathe();
-      const wav = deps.encodeWav(mix);
       const repeats =
         choices.canRepeat && LOOP_REPEATS.includes(request.repeats ?? 1)
           ? (request.repeats ?? 1)
