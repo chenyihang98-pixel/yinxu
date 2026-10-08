@@ -21,6 +21,10 @@ const REGISTERS = ['auto', 'low', 'mid', 'high'];
 const MOTIONS = ['auto', 'stepwise', 'leaps', 'arpeggio'];
 const TRACKS = ['melody', 'chords', 'bass', 'drums'];
 const LAYERS = ['pad', 'arp', 'counter', 'perc'];
+// A layer on the wire is a string enum (a JSON Schema enum mixing booleans and a string is not
+// accepted everywhere); validateArrangement turns it into LayerChoice = true | false | "auto".
+const LAYER_CHOICES = ['auto', 'on', 'off'];
+const PIN_MARK = '【界面选定】';
 const PROVIDER_IDS = ['local', 'tencent', 'volcengine', 'aliyun', 'elevenlabs'];
 const [BPM_MIN, BPM_MAX] = catalog.limits.bpm;
 const [DURATION_MIN, DURATION_MAX] = catalog.limits.duration;
@@ -79,11 +83,11 @@ const PLAN_SCHEMA = object({
     bass: choice(BASS_FEELS, '贝斯的走法，auto 表示交给引擎'),
     swing: number(`摇摆量，0–${SWING_MAX}；-1 表示用风格默认值`),
     layers: object({
-      pad: boolean('长音铺底'),
-      arp: boolean('琶音'),
-      counter: boolean('副旋律'),
-      perc: boolean('额外的打击乐色彩'),
-    }, '附加声部开关'),
+      pad: choice(LAYER_CHOICES, '长音铺底'),
+      arp: choice(LAYER_CHOICES, '琶音'),
+      counter: choice(LAYER_CHOICES, '副旋律'),
+      perc: choice(LAYER_CHOICES, '额外的打击乐色彩'),
+    }, '附加声部：auto 交给风格决定，on 强制加入，off 强制去掉'),
     melody: object({
       density: number('旋律疏密，0–1；-1 表示用风格默认值'),
       register: choice(REGISTERS, '旋律音区'),
@@ -123,6 +127,13 @@ function flag(value, field) {
   if (typeof value !== 'boolean') throw fail(field);
   return value;
 }
+/** "on" / "off" / "auto" from a model, true / false / "auto" from the renderer -> true | false | "auto". */
+function layerChoice(value, field) {
+  if (value === true || value === 'on') return true;
+  if (value === false || value === 'off') return false;
+  if (value === 'auto') return 'auto';
+  throw fail(field);
+}
 function record(value, field) {
   if (!isRecord(value)) throw fail(field);
   return value;
@@ -156,7 +167,7 @@ function validateArrangement(value, prefix = 'arrangement') {
     drums: oneOf(source.drums, DRUM_FEELS, `${prefix}.drums`),
     bass: oneOf(source.bass, BASS_FEELS, `${prefix}.bass`),
     swing: optionalAmount(source.swing, `${prefix}.swing`, SWING_MAX),
-    layers: Object.fromEntries(LAYERS.map(name => [name, flag(layers[name], `${prefix}.layers.${name}`)])),
+    layers: Object.fromEntries(LAYERS.map(name => [name, layerChoice(layers[name], `${prefix}.layers.${name}`)])),
     melody: {
       density: optionalAmount(melody.density, `${prefix}.melody.density`, 1),
       register: oneOf(melody.register, REGISTERS, `${prefix}.melody.register`),
@@ -168,7 +179,8 @@ function validateArrangement(value, prefix = 'arrangement') {
 /**
  * Strict: every field must be present with the right type and every enum must be
  * a catalog value. Numbers are clamped into their documented ranges, strings and
- * lists are capped, unknown fields are dropped. Returns a new RawAgentPlan.
+ * lists are capped, unknown fields are dropped. Returns a new RawAgentPlan, in
+ * which the layers a model spells "on" / "off" / "auto" are true / false / "auto".
  */
 function validatePlan(value) {
   const source = record(value, '方案');
@@ -206,7 +218,7 @@ function validatePlan(value) {
 /** What "let the engine decide" looks like when the model said nothing and there is no current arrangement. */
 const NEUTRAL_ARRANGEMENT = Object.freeze({
   progression: [], form: [], drums: 'auto', bass: 'auto', swing: -1,
-  layers: Object.freeze({ pad: true, arp: false, counter: false, perc: false }),
+  layers: Object.freeze({ pad: 'auto', arp: 'auto', counter: 'auto', perc: 'auto' }),
   melody: Object.freeze({ density: -1, register: 'auto', motion: 'auto' }),
 });
 const MUSIC_FIELDS = ['style', 'instrument', 'key', 'bpm', 'duration', 'energy', 'complexity', 'reverb', 'loop', 'newMelody', 'volumes', 'arrangement'];
@@ -215,6 +227,11 @@ const missing = value => value === undefined || value === null;
 /** Lossless repairs only: "90" -> 90, "true" -> true, " Jazz " -> "jazz" when that is a catalog value. */
 function looseNumber(value) { return typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value.trim()) : value; }
 function looseFlag(value) { return value === 'true' ? true : value === 'false' ? false : value; }
+function looseLayer(value) {
+  if (typeof value !== 'string') return value;
+  const wanted = value.trim().toLowerCase();
+  return wanted === 'true' ? true : wanted === 'false' ? false : LAYER_CHOICES.includes(wanted) ? wanted : value;
+}
 function looseChoice(value, values) {
   if (typeof value !== 'string') return value;
   const wanted = value.trim().toLowerCase();
@@ -249,7 +266,7 @@ function completePlan(value, input) {
     bass: missing(given.bass) ? base.bass : looseChoice(given.bass, BASS_FEELS),
     swing: missing(given.swing) ? base.swing : looseNumber(given.swing),
     layers: isRecord(given.layers) || missing(given.layers)
-      ? Object.fromEntries(LAYERS.map(name => [name, missing(given.layers?.[name]) ? base.layers[name] : looseFlag(given.layers[name])]))
+      ? Object.fromEntries(LAYERS.map(name => [name, missing(given.layers?.[name]) ? base.layers[name] : looseLayer(given.layers[name])]))
       : given.layers,
     melody: isRecord(given.melody) || missing(given.melody) ? {
       density: missing(given.melody?.density) ? base.melody.density : looseNumber(given.melody.density),
@@ -363,7 +380,7 @@ function buildSystemPrompt() {
     "drums": "auto",
     "bass": "auto",
     "swing": -1,
-    "layers": { "pad": true, "arp": false, "counter": false, "perc": false },
+    "layers": { "pad": "auto", "arp": "auto", "counter": "auto", "perc": "auto" },
     "melody": { "density": -1, "register": "auto", "motion": "auto" }
   },
   "title": "标题",
@@ -392,21 +409,21 @@ ${KEYS.join('、')}
 - energy：0–1。能量决定配器的疏密、音区、鼓的力度和音色的亮度，不只是音量。0.2 很安静，0.5 适中，0.8 以上很有冲击力。
 - complexity：0–1。复杂度决定和声色彩、节奏细分、装饰音和副旋律的多少。0.2 很简单，0.5 适中，0.8 很丰富。
 - reverb：0–1。空间感。0.1 很干、很近，0.3 自然，0.6 以上很空旷。
-- volumes：主旋律 melody、和弦 chords、贝斯 bass、鼓 drums 各自的音量，0–1。
+- volumes：主旋律 melody、和弦 chords、贝斯 bass、鼓 drums 各自的音量，0–1。这是用户自己的混音推子：只有用户明确提到某个声部的大小（“鼓轻一点”“贝斯重一些”“突出旋律”）时才改对应的那一项，其余原样照抄【当前设置】。
 - loop：true 表示首尾可以无缝循环，false 表示有明确的结尾。
 
 ## 编排 arrangement
 这些字段用来微调编曲。拿不准时就用“交给引擎”的取值，引擎会按风格处理好。
 - progression：和弦进行，用罗马数字，每小节一个，循环使用，最多 ${LIMITS.progressionItems} 个；[] 表示交给引擎。大写是大三和弦，小写是小三和弦，可以带 7、maj7、m7、sus4、add9、dim 等后缀，也可以写 bVII 这样的变化级数或 V7/vi 这样的副属和弦，例如 ["I","V","vi","IV"]、["ii7","V7","Imaj7","vi7"]、["i","bVI","bIII","bVII"]（小调里 VI、III、VII 与 bVI、bIII、bVII 是同一个和弦）。只有用户对和声有明确要求，或你确信某个进行明显更贴切时才填写，至少写 2 个。
-- form：段落结构，按先后顺序排列，最多 ${LIMITS.formSections} 段；[] 表示交给引擎按时长安排。每一段是 {"type": 段落类型, "bars": 小节数, "energy": 该段能量}：bars 是 1–${LIMITS.formBars} 的整数（建议 4 或 8），energy 是 0–1。段落类型：${annotate(SECTION_TYPES, SECTION_NOTES)}。每小节 4 拍，全部小节数 × 240 ÷ bpm 应当接近 duration。只有用户提出结构上的要求（比如“前面安静、后面爆发”“中间留一段空拍”）时才填写。
+- form：段落结构，按先后顺序排列，最多 ${LIMITS.formSections} 段；[] 表示交给引擎按时长安排。每一段是 {"type": 段落类型, "bars": 小节数, "energy": 该段能量}：bars 是 1–${LIMITS.formBars} 的整数（建议 4 或 8），energy 是 0–1。段落类型：${annotate(SECTION_TYPES, SECTION_NOTES)}。每小节 4 拍，所以全部小节数应当接近 duration × bpm ÷ 240（例如 60 秒、108 BPM 大约是 27 小节）；相差太多的 form 会被丢弃，改由引擎安排。只有用户提出结构上的要求（比如“前面安静、后面爆发”“中间留一段空拍”）时才填写。
 - drums：鼓的律动。${annotate(DRUM_FEELS, DRUM_NOTES)}。用户说“不要鼓”“去掉鼓”“无鼓”时，这里必须填 "none"。
 - bass：贝斯的走法。${annotate(BASS_FEELS, BASS_NOTES)}。用户说“不要贝斯”“去掉低音”时，这里必须填 "none"。
 - swing：摇摆量，0–${SWING_MAX}。0 完全平直，0.33 轻微摇摆，0.6 左右是明显的三连音摇摆；-1 表示用风格的默认值。
-- layers：四个附加声部的开关，只能填 true 或 false，没有“自动”。pad 长音铺底，arp 琶音，counter 副旋律，perc 额外的打击乐色彩。安静、简单的音乐少开，丰满、热闹的音乐多开。
+- layers：四个附加声部，每一个填 "auto"、"on" 或 "off"。pad 长音铺底，arp 琶音，counter 副旋律，perc 额外的打击乐色彩。"auto" 表示交给风格决定，是默认取值；"on" 强制加入，"off" 强制去掉。只有用户点名要或不要某个声部（比如“加点铺底”“不要琶音”），或者你确信它对这个场景很关键时，才填 "on" 或 "off"。
 - melody.density：旋律的疏密，0 很稀疏，1 很密集；-1 表示用风格的默认值。
 - melody.register：旋律的音区。low 低｜mid 中｜high 高｜auto 交给引擎。
 - melody.motion：旋律的走向。stepwise 级进，平滑如歌｜leaps 跳进，有棱角、有张力｜arpeggio 分解和弦式｜auto 交给引擎。
-去掉一个声部用上面的 "none"，不要用把音量调到 0 来代替；只是想让某个声部大声或小声一点时，才改 volumes 里对应的值。
+去掉鼓或贝斯用上面的 "none"，去掉附加声部用 "off"，不要用把音量调到 0 来代替；只是想让某个声部大声或小声一点时，才改 volumes 里对应的值。
 
 ## 怎样做决定
 1. 先从话里读出场景、情绪和用途，选一个最贴切的 style。风格决定了整体的和声语言、律动和配器。用户直接点了流派（爵士、摇滚、电音、国风、8-bit……）时，选对应的风格，其次才看情绪词。
@@ -416,11 +433,12 @@ ${KEYS.join('、')}
 5. energy、complexity、reverb：以该风格的默认值为基准，按话里的强弱词微调。“安静、克制、不抢戏”往下调，“燃、炸、高潮”往上调；“简单、干净”降低 complexity，“丰富、华丽”提高 complexity；“空灵、辽阔”提高 reverb，“干、近、贴耳”降低 reverb。
 6. loop：游戏、直播、网页、展厅、等待界面这类需要反复播放的场合填 true；视频、片头片尾、短片这类有明确结尾的场合填 false；判断不出来就沿用【当前设置】。
 7. duration：用户说了时长就换算成秒（“一分钟”是 60，“半分钟”是 30）；没说就沿用【当前设置】。
+8. 【用户的话】的最后如果有一行以“${PIN_MARK}”开头，那是用户在界面上亲手选定的参数（style、instrument、key、bpm、duration、loop 中的几项）。这些字段必须原样采用，与话里的其他说法冲突时以这一行为准；其余字段围绕它们来决定。
 
 ## 两种模式
 【模式】会告诉你这一次是哪一种。
-- new（新作品）：根据【用户的话】从头设计。时长、是否循环和各声部音量，在用户没有提到、场景也看不出来时沿用【当前设置】；其余字段都按描述重新决定。newMelody 填 true。
-- refine（修改当前作品）：以【当前设置】为起点，只改用户明确要求改的地方，其余字段原样照抄，不要顺手“优化”。相对的说法按幅度换算：“快一点”“慢一点”把 bpm 调整 8%–12%；“再安静些”“更有力”把 energy 调整 0.15 左右；“更空灵”“更干”把 reverb 调整 0.15 左右；“某个声部大声点、小声点”把对应的音量调整 0.15 左右。用户说“换个旋律”“再来一版”“重新写一个”时 newMelody 填 true，否则填 false，保留原来的旋律素材。编排字段分两种情况：如果【当前设置】里带有 arrangement，没有被要求修改的编排字段原样照抄；如果没有带，没有被要求修改的字段一律填 "auto"、[] 或 -1，表示沿用作品现有的编排，这时 layers 按风格和能量给出稳妥的取值，不要无故大改。要把之前去掉的声部加回来（比如“把鼓加回来”）时，必须填一个具体的取值（例如 "straight"），不能填 "auto"。
+- new（新作品）：根据【用户的话】从头设计。时长和是否循环，在用户没有提到、场景也看不出来时沿用【当前设置】；各声部音量照抄【当前设置】，只有用户明确提到某个声部的大小时才改；其余字段都按描述重新决定。newMelody 填 true。
+- refine（修改当前作品）：以【当前设置】为起点，只改用户明确要求改的地方，其余字段原样照抄，不要顺手“优化”。相对的说法按幅度换算：“快一点”“慢一点”把 bpm 调整 8%–12%；“再安静些”“更有力”把 energy 调整 0.15 左右；“更空灵”“更干”把 reverb 调整 0.15 左右；“某个声部大声点、小声点”把对应的音量调整 0.15 左右。用户说“换个旋律”“再来一版”“重新写一个”时 newMelody 填 true，否则填 false，保留原来的旋律素材。【当前设置】里如果带有 arrangement，它就是这首作品现在的编排：没有被要求修改的编排字段原样照抄，"auto"、[] 和 -1 也照抄；如果没有带，没有被要求修改的编排字段一律填 "auto"、[] 或 -1。要把之前去掉的声部加回来（比如“把鼓加回来”“把琶音加回来”）时，填一个具体的取值（鼓和贝斯填一种律动，例如 "straight"；layers 填 "on"）；用户说“恢复默认”“按风格来”时填 "auto"，交还给风格决定。没有被要求修改的数值不要做任何微调。
 此前的对话会一并给你，用来理解上下文：用户之前提过的要求（比如“不要鼓”）在后面的修改里继续有效，除非这一次改了口。
 
 ## 文字字段
@@ -444,6 +462,17 @@ const PROVIDER_NOTES = {
 const MODE_NOTES = { new: 'new（新作品）', refine: 'refine（修改当前作品）' };
 
 /**
+ * The current settings as the model reads them: the layers of the arrangement are
+ * shown in the spelling the model has to answer with, so copying them back is valid.
+ */
+function shownSettings(input) {
+  const arrangement = input.current.arrangement;
+  if (!arrangement) return input.current;
+  const layers = Object.fromEntries(LAYERS.map(name => [name, arrangement.layers[name] === true ? 'on' : arrangement.layers[name] === false ? 'off' : 'auto']));
+  return { ...input.current, arrangement: { ...arrangement, layers } };
+}
+
+/**
  * {system, messages} for one request. `input` must come from validatePlanInput.
  * Earlier turns become user/assistant messages; the last message is always the
  * user's and carries the mode, the engine, the current settings and the request.
@@ -463,7 +492,7 @@ function buildMessages(input) {
   push('user', [
     `【模式】${MODE_NOTES[input.mode]}`,
     `【生成方式】${PROVIDER_NOTES[input.provider]}`,
-    `【当前设置】${JSON.stringify(input.current)}`,
+    `【当前设置】${JSON.stringify(shownSettings(input))}`,
     '【用户的话】',
     '<<<',
     input.request,
@@ -473,6 +502,6 @@ function buildMessages(input) {
 }
 
 module.exports = {
-  PLAN_SCHEMA, LIMITS, ROMAN, STYLE_IDS, INSTRUMENT_IDS, KEYS, SECTION_TYPES, DRUM_FEELS, BASS_FEELS, PROVIDER_IDS,
+  PLAN_SCHEMA, LIMITS, ROMAN, STYLE_IDS, INSTRUMENT_IDS, KEYS, SECTION_TYPES, DRUM_FEELS, BASS_FEELS, PROVIDER_IDS, LAYER_CHOICES, PIN_MARK,
   validatePlan, completePlan, validatePlanInput, validateArrangement, buildSystemPrompt, buildMessages,
 };

@@ -311,6 +311,19 @@ function pluckTiltCoef(options: PluckOptions): number {
   return 1 - Math.exp((-TAU * clamp(options.bodyHz, 10, sr * 0.45)) / sr);
 }
 
+const hannKernels = new Map<number, Float64Array>();
+
+/** 1 − cos(2π·j / width) for j = 0 .. width − 1, kept per width. */
+function hannKernel(width: number): Float64Array {
+  let kernel = hannKernels.get(width);
+  if (!kernel) {
+    kernel = new Float64Array(width);
+    for (let j = 0; j < width; j++) kernel[j] = 1 - Math.cos((TAU * j) / width);
+    hannKernels.set(width, kernel);
+  }
+  return kernel;
+}
+
 /** Samples makePluck() needs for these options (size the buffer with it). */
 export function pluckLength(options: PluckOptions): number {
   const ring = Math.ceil(
@@ -354,11 +367,13 @@ export function makePluck(
   out[0] += Math.sqrt(1 - noiseShare);
   // Hann pulse of unit area (kernel[0] = 0, so the excitation starts at zero)
   const width = pluckPulseWidth(options);
-  for (let i = length - 1; i >= 0; i--) {
+  const kernel = hannKernel(width);
+  // the input ends with the burst, so the pulse has left it `width` samples later: the rest stays zero
+  const reach = Math.min(length, burst + width);
+  for (let i = reach - 1; i >= 0; i--) {
     let sum = 0;
     const taps = Math.min(width - 1, i);
-    for (let j = 1; j <= taps; j++)
-      sum += (1 - Math.cos((TAU * j) / width)) * out[i - j];
+    for (let j = 1; j <= taps; j++) sum += kernel[j] * out[i - j];
     out[i] = sum / width;
   }
   const tilt = pluckTiltCoef(options);

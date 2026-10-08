@@ -9,6 +9,7 @@
  * per tick — so envelopes move in steps and pitches jump, never glide.
  * Nothing is filtered: the output only ever takes a few discrete levels.
  */
+import { CYMBAL_SWELL_SECONDS } from "../../music/score";
 import type { DrumKind } from "../../music/score";
 import type { Hit, Kit } from "./core";
 import { byVel } from "./core";
@@ -57,8 +58,8 @@ const layer = (
   duty = 0.5,
 ): Layer => ({ src, vol, hz, duty, gain });
 
-/** Volume of the rising noise of a swell: 432 ticks = 1.8 s, steeper towards the end. */
-const SWELL_TICKS = Math.round(1.8 * RATE);
+/** Volume of the rising noise of a swell (432 ticks for 1.8 s), steeper towards the end. */
+const SWELL_TICKS = Math.round(CYMBAL_SWELL_SECONDS * RATE);
 const swellVol = Array.from(
   { length: SWELL_TICKS },
   (_, t) => 1 + Math.floor(14.999 * Math.pow(t / (SWELL_TICKS - 1), 1.7)),

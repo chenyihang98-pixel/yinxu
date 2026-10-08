@@ -85,6 +85,20 @@ export const chill: StyleDef = {
     // behind the beat: late entries, dotted pushes, air between the notes
     cells: ["__x.x...", "x..x....", "x.....x.", "__x...x.", "x.x..x..", "x...__x."],
   },
+  // every lead goes through the same dusty low-pass: bright instruments are filtered like a sample off tape
+  lead: {
+    piano: { gain: 0.76, highCut: 5000 },
+    guitar: { gain: 0.76, highCut: 4500 },
+    synth: { gain: 0.76, highCut: 3200 },
+    pluck: { highCut: 4000 },
+    bell: { gain: 0.8, highCut: 2400 },
+    musicbox: { gain: 0.72, highCut: 5000 },
+    flute: { gain: 0.72 },
+    strings: { gain: 0.84, highCut: 2200 },
+    guzheng: { gain: 0.82, highCut: 2200 },
+    dizi: { gain: 0.84, highCut: 2000 },
+    chip: { gain: 0.78, highCut: 3000 },
+  },
   comp: {
     voice: "epiano",
     from: 0,
@@ -108,7 +122,7 @@ export const chill: StyleDef = {
   counter: { voice: ["vibes", "flute"], from: 0.78, mode: "guide" },
   bass: {
     voice: "fingerBass",
-    from: 0.15,
+    from: 0.1,
     feel: { low: "root", mid: "root", high: "syncopated" },
     register: [31, 45],
     approach: 0.55,
@@ -119,7 +133,7 @@ export const chill: StyleDef = {
     from: 0.12,
     grooves: {
       low: [
-        { kick: "x.......o.x.....", rim: "....x.......x...", hatClosed: "o...o...o...o..." },
+        { kick: "x.......o.x.....", rim: "....x.......x...", hatClosed: "x...o...x...o..." },
         { kick: "X.........x.....", rim: "....x.......x...", hatClosed: "o.g.o.g.o.g.o.g." },
       ],
       mid: [
@@ -154,8 +168,8 @@ export const chill: StyleDef = {
   perc: {
     from: 0.5,
     grooves: [
-      { shaker: "..o...o...o...o." },
-      { fingerSnap: "....o.......o...", shaker: "..g...g...g...g." },
+      { shaker: "..x...x...x...x." },
+      { fingerSnap: "....x.......x...", shaker: "..o...o...o...o." },
     ],
   },
   swing: 0.42,
@@ -164,9 +178,11 @@ export const chill: StyleDef = {
   form: { loop: "AB", intro: 1, outro: 1 },
   mix: {
     lead: { reverb: 0.25, highCut: 9000, drive: 0.12, chorus: 0.15 },
-    comp: { gain: 0.6, chorus: 0.3, highCut: 6500, drive: 0.1 },
+    comp: { gain: 0.5, chorus: 0.3, highCut: 5500, drive: 0.1 },
+    pad: { gain: 0.36 },
     bass: { highCut: 2500 },
-    kit: { highCut: 9000, drive: 0.15 },
+    kit: { gain: 0.95, highCut: 9000, drive: 0.15 },
+    perc: { gain: 1.2 },
   },
   space: {
     size: 0.32,
@@ -177,5 +193,5 @@ export const chill: StyleDef = {
     delayBeats: 0.75,
     delayFeedback: 0.25,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "lofi", tilt: -0.35 },
+  master: { targetLufs: -16, ceilingDb: -1, character: "lofi", tilt: -0.25 },
 };

@@ -327,26 +327,251 @@ function looped(bars: number, style: StyleDef, fast: boolean): Block[] {
   return blocks;
 }
 
-/** Scale requested section lengths so they add up to `total` bars (each at least 1). */
-function fitBars(requested: number[], total: number): number[] {
-  const wants = requested.slice(0, Math.max(1, total));
-  const sum = wants.reduce((a, b) => a + b, 0);
-  if (sum === total) return wants;
-  const scale = total / sum;
-  const bars = wants.map((want) => Math.max(1, Math.floor(want * scale)));
-  let used = bars.reduce((a, b) => a + b, 0);
-  const order = wants
-    .map((want, index) => ({ index, part: want * scale - Math.floor(want * scale) }))
-    .sort((a, b) => b.part - a.part || a.index - b.index);
-  for (let k = 0; used < total; k++, used++) bars[order[k % order.length].index]++;
-  while (used > total) {
-    let widest = 0;
-    for (let i = 1; i < bars.length; i++) if (bars[i] > bars[widest]) widest = i;
-    if (bars[widest] <= 1) break;
-    bars[widest]--;
-    used--;
+type Hint = { type: SectionType; bars: number; energy: number };
+
+const sum = (values: readonly number[]) => values.reduce((a, b) => a + b, 0);
+const isBody = (type: SectionType) =>
+  type === "verse" || type === "chorus" || type === "bridge";
+
+/** Fewest bars a section can have and still be heard as a section of its own. */
+function shortest(item: Hint, total: number): number {
+  const floor =
+    total >= 16 ? (isBody(item.type) ? 4 : 2) : total >= 6 && isBody(item.type) ? 2 : 1;
+  return Math.min(item.bars, floor);
+}
+
+/**
+ * Hand `total` bars to the sections in proportion to `wants`, none below its
+ * `least`, counted in phrase units of 4, 2 or 1 bars; bars a unit cannot
+ * place go to the last section. Of the three results the one that stays
+ * closest to the proportions while keeping to even phrase lengths wins.
+ * Needs sum(least) <= total.
+ */
+function shareBars(wants: number[], least: number[], total: number): number[] {
+  const wanted = sum(wants);
+  let best: number[] | undefined;
+  let bestCost = Infinity;
+  for (const unit of [4, 2, 1]) {
+    const units = Math.floor(total / unit);
+    const need = least.map((bars) => Math.max(1, Math.ceil(bars / unit)));
+    if (sum(need) > units) continue;
+    const ideal = wants.map((want) => (want * total) / wanted / unit);
+    const got = ideal.map((value, index) => Math.max(need[index], Math.floor(value)));
+    let used = sum(got);
+    while (used < units) {
+      let pick = 0;
+      for (let i = 1; i < got.length; i++)
+        if (ideal[i] - got[i] > ideal[pick] - got[pick] + 1e-9) pick = i;
+      got[pick]++;
+      used++;
+    }
+    while (used > units) {
+      let pick = -1;
+      for (let i = 0; i < got.length; i++)
+        if (
+          got[i] > need[i] &&
+          (pick < 0 || got[i] - ideal[i] > got[pick] - ideal[pick] + 1e-9)
+        )
+          pick = i;
+      got[pick]--;
+      used--;
+    }
+    const bars = got.map((count) => count * unit);
+    bars[bars.length - 1] += total - units * unit;
+    let cost = 0;
+    bars.forEach((count, index) => {
+      // distance from the proportions asked for, plus a price for odd phrase lengths
+      cost += Math.abs(count - (wants[index] * total) / wanted);
+      cost += count % 4 === 0 ? 0 : count % 2 === 0 ? 1 : 2.5;
+    });
+    if (cost < bestCost - 1e-9) {
+      best = bars;
+      bestCost = cost;
+    }
   }
+  if (best) return best;
+  // unreachable while sum(least) <= total; keep the caller safe anyway
+  const bars = wants.map(() => 1);
+  bars[bars.length - 1] += Math.max(0, total - bars.length);
   return bars;
+}
+
+/** The section a form that does not fit can lose first. */
+function mostDispensable(cell: readonly Hint[]): number {
+  const lastOf = (type: SectionType) => cell.map((item) => item.type).lastIndexOf(type);
+  for (const type of ["breakdown", "bridge", "build"] as const)
+    if (lastOf(type) >= 0) return lastOf(type);
+  // a later statement of a section that has been heard already
+  for (let i = cell.length - 1; i > 0; i--)
+    if (isBody(cell[i].type) && cell.findIndex((item) => item.type === cell[i].type) < i)
+      return i;
+  for (const type of ["intro", "outro"] as const)
+    if (lastOf(type) >= 0 && cell.length > 1) return lastOf(type);
+  return cell.length - 1;
+}
+
+export interface FormFit {
+  blocks: { type: SectionType; bars: number; energy?: number }[];
+  /** what had to change, as a Chinese clause for Score.notes; undefined when the hint fitted as written */
+  note?: string;
+}
+
+/**
+ * Make a hinted form fit `total` bars of music (`shown` is what the listener
+ * counts: in a piece that ends, the last section also owns the final chord).
+ *   as long as the piece       → kept as written
+ *   too long                   → squeezed in proportion; when the sections
+ *                                would get too short to mean anything, the
+ *                                most dispensable ones are left out first
+ *   a little short (under 2×)  → stretched in proportion
+ *   far too short              → the body is repeated (in phrases of at least
+ *                                four bars) between its intro and outro; a
+ *                                body with nothing to contrast is opened out
+ *                                into the style's own form (`fallback`)
+ * Lengths stay on four- or two-bar phrases wherever the total allows.
+ */
+export function fitForm(
+  hinted: readonly Hint[],
+  total: number,
+  shown: number,
+  fallback: () => Block[],
+  fast = false,
+): FormFit {
+  const requested = sum(hinted.map((item) => item.bars));
+  const asWritten = (cell: readonly Hint[], bars: number[]): Block[] =>
+    cell.map((item, index) => ({ type: item.type, bars: bars[index], energy: item.energy }));
+  if (requested === total)
+    return {
+      blocks: asWritten(
+        hinted,
+        hinted.map((item) => item.bars),
+      ),
+    };
+  const last = hinted[hinted.length - 1];
+  // written for the whole length of a piece that ends: the final chord and
+  // its tail come out of the last section, which owns them anyway
+  if (requested > total && requested <= shown && last.bars > requested - total) {
+    const bars = hinted.map((item) => item.bars);
+    bars[bars.length - 1] -= requested - total;
+    return { blocks: asWritten(hinted, bars) };
+  }
+
+  if (requested > total) {
+    const cell = hinted.map((item) => ({ ...item }));
+    const dropped: SectionType[] = [];
+    while (cell.length > 1 && sum(cell.map((item) => shortest(item, total))) > total) {
+      const index = mostDispensable(cell);
+      dropped.push(cell[index].type);
+      cell.splice(index, 1);
+      // neighbours of the same kind become one section
+      const before = cell[index - 1];
+      const after = cell[index];
+      if (before && after && before.type === after.type) {
+        before.bars += after.bars;
+        before.energy = Math.max(before.energy, after.energy);
+        cell.splice(index, 1);
+      }
+    }
+    const least = cell.map((item) => shortest(item, total));
+    const bars = shareBars(
+      cell.map((item) => item.bars),
+      sum(least) <= total ? least : cell.map(() => 1),
+      total,
+    );
+    // kinds of section that are gone altogether are named; lost repeats are not
+    const gone = [
+      ...new Set(
+        dropped
+          .filter((type) => !cell.some((item) => item.type === type))
+          .map((type) => SECTION_LABELS[type]),
+      ),
+    ];
+    const repeats = dropped.some((type) => cell.some((item) => item.type === type));
+    const left = [...(gone.length ? [gone.join("、")] : []), ...(repeats ? ["部分反复"] : [])];
+    return {
+      blocks: asWritten(cell, bars),
+      note: `提示的曲式共 ${requested} 小节，这里只有 ${shown} 小节，已${
+        left.length ? `省去${left.join("和")}并` : ""
+      }按比例压缩`,
+    };
+  }
+
+  if (total < requested * 2) {
+    const wants = hinted.map((item) => item.bars);
+    return {
+      blocks: asWritten(hinted, shareBars(wants, wants, total)),
+      note: `提示的曲式共 ${requested} 小节，已按比例延展到 ${shown} 小节`,
+    };
+  }
+
+  // far too short: repeat the body between its intro and outro
+  let from = 0;
+  let to = hinted.length;
+  while (from < to && hinted[from].type === "intro") from++;
+  while (to > from && hinted[to - 1].type === "outro") to--;
+  if (from === to) {
+    from = 0;
+    to = hinted.length;
+  }
+  const head = hinted.slice(0, from);
+  const body = hinted.slice(from, to);
+  const tail = hinted.slice(to);
+  if (new Set(body.map((item) => item.type)).size < 2 && total >= 16) {
+    // one kind of section cannot carry a whole piece: open it out into the
+    // style's form, keeping the energy asked for each kind of section
+    const energyOf = new Map<SectionType, number>();
+    for (const item of hinted)
+      if (!energyOf.has(item.type)) energyOf.set(item.type, item.energy);
+    return {
+      blocks: fallback().map((block) => ({ ...block, energy: energyOf.get(block.type) })),
+      note: `提示的曲式只有 ${requested} 小节的${
+        SECTION_LABELS[body[0].type]
+      }，撑不满全曲，已按本风格的常规曲式展开`,
+    };
+  }
+  const edges = sum(head.map((item) => item.bars)) + sum(tail.map((item) => item.bars));
+  const bodyBars = sum(body.map((item) => item.bars));
+  const phrase = fast ? 8 : 4;
+  const smallest = Math.min(...body.map((item) => item.bars));
+  let grow = 1;
+  while (smallest * grow < phrase && edges + bodyBars * grow * 2 <= total) grow *= 2;
+  const repeatsAt = () => Math.max(1, Math.floor((total - edges) / (bodyBars * grow)));
+  let repeats = repeatsAt();
+  // more than sixteen sections is a list, not a form: longer phrases instead
+  while (repeats > 1 && head.length + tail.length + body.length * repeats > 16) {
+    grow *= 2;
+    repeats = repeatsAt();
+  }
+  const cell: Hint[] = [...head];
+  for (let pass = 0; pass < repeats; pass++)
+    for (const item of body)
+      cell.push({
+        type: item.type,
+        bars: item.bars * grow,
+        // each return of the verse and the chorus arrives a little stronger
+        energy:
+          item.type === "verse" || item.type === "chorus"
+            ? clamp(item.energy + 0.03 * Math.min(pass, 3), 0, 1)
+            : item.energy,
+      });
+  cell.push(...tail);
+  const wants = cell.map((item) => item.bars);
+  return {
+    blocks: asWritten(
+      cell,
+      shareBars(wants, sum(wants) <= total ? wants : cell.map(() => 1), total),
+    ),
+    note:
+      repeats > 1
+        ? `提示的曲式共 ${requested} 小节，已反复 ${repeats} 遍填满 ${shown} 小节`
+        : `提示的曲式共 ${requested} 小节，已按比例延展到 ${shown} 小节`,
+  };
+}
+
+export interface FormPlan {
+  sections: SectionPlan[];
+  /** set when a hinted form had to be squeezed, trimmed, stretched or repeated */
+  note?: string;
 }
 
 export function planForm(
@@ -354,23 +579,34 @@ export function planForm(
   style: StyleDef,
   timing: Timing,
 ): SectionPlan[] {
+  return planFormWithNote(config, style, timing).sections;
+}
+
+export function planFormWithNote(
+  config: MusicConfig,
+  style: StyleDef,
+  timing: Timing,
+): FormPlan {
   const playable = timing.loop ? timing.bars : timing.finalBar;
   const hinted = config.arrangement?.form;
-  let blocks: Block[];
-  if (hinted && hinted.length) {
-    const bars = fitBars(
-      hinted.map((item) => item.bars),
-      playable,
-    );
-    blocks = bars.map((count, index) => ({
-      type: hinted[index].type,
-      bars: count,
-      energy: clamp(hinted[index].energy * (0.6 + 0.8 * config.energy), 0, 1),
-    }));
-  } else
-    blocks = timing.loop
-      ? looped(playable, style, timing.bpm >= FAST_TEMPO)
+  const fast = timing.bpm >= FAST_TEMPO;
+  const styleForm = (): Block[] =>
+    timing.loop
+      ? looped(playable, style, fast)
       : throughComposed(playable, timing.barSeconds, timing.duration, style);
+  let blocks: Block[];
+  let note: string | undefined;
+  if (hinted && hinted.length) {
+    const fit = fitForm(hinted, playable, timing.bars, styleForm, fast);
+    note = fit.note;
+    blocks = fit.blocks.map((block) => ({
+      ...block,
+      energy:
+        block.energy === undefined
+          ? undefined
+          : clamp(block.energy * (0.6 + 0.8 * config.energy), 0, 1),
+    }));
+  } else blocks = styleForm();
 
   const seen = new Map<SectionType, number>();
   const sections: SectionPlan[] = [];
@@ -417,7 +653,7 @@ export function planForm(
     section.energyTo = after ? Math.max(section.energy, after.energy * 0.95) : section.energy;
     section.energy = (section.energyFrom + section.energyTo) / 2;
   }
-  return sections;
+  return { sections, note };
 }
 
 /** "前奏 2 小节 → 主歌 4 → 副歌 4 → 尾声 3" */

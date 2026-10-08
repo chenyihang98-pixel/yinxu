@@ -25,6 +25,7 @@ import type { Voice } from "../types";
 import {
   BEND_TIME,
   Biquad,
+  biquadChain,
   KarplusString,
   LEVEL_WINDOW,
   LN_60DB,
@@ -245,10 +246,7 @@ function stringBass(config: StringBassConfig): Voice {
       const excitationLength = pluckLength(pluck) + SMEAR_TAIL;
       const excitation = scratch(3, excitationLength);
       softPluck(excitation, pluck);
-      for (const allpass of rig.smear) {
-        allpass.reset();
-        allpass.process(excitation, excitationLength);
-      }
+      biquadChain(rig.smear, excitation, excitationLength);
       for (let i = 0; i < 128; i++)
         excitation[excitationLength - 1 - i] *= i / 128;
       string.excite(excitation, excitationLength);
@@ -328,10 +326,7 @@ function stringBass(config: StringBassConfig): Voice {
       if (pickupMix > 0)
         for (let i = frames - 1; i >= pickupDelay; i--)
           raw[i] -= pickupMix * raw[i - pickupDelay];
-      for (const filter of rig.tone) {
-        filter.reset();
-        filter.process(raw, frames);
-      }
+      biquadChain(rig.tone, raw, frames);
 
       // --- attack noise: a burst ringing the knock resonances ---
       const knockFrames = Math.min(frames, Math.ceil(config.knock.length * sr));

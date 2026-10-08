@@ -96,14 +96,14 @@ export const cute: StyleDef = {
     voice: ["pizzicato", "piano"],
     from: 0,
     patterns: {
-      low: [{ rows: { low: "x-......x-......", upper: "....o-......o-.." } }],
+      low: [{ rows: { low: "X-......X-......", upper: "....x-......x-.." } }],
       mid: [
         { rows: { low: "X-......x-......", upper: "....x-......x-.." } },
         { rows: { low: "X-..x-..X-..x-..", upper: "..o-..o-..o-..o-" } },
       ],
       high: [
-        { rows: { low: "X-..x-..X-..x-..", upper: "..x-..x-..x-.x-." } },
-        { rows: { all: "x-x-.x-.x-x-.x-." } },
+        { rows: { low: "X-..x-..X-..x-..", upper: "..o-..o-..o-.o-." } },
+        { rows: { all: "x-x-.o-.x-x-.o-." } },
       ],
     },
   },
@@ -134,46 +134,46 @@ export const cute: StyleDef = {
     from: 0.2,
     grooves: {
       low: [
-        { kick: "o.......o.......", woodblock: "....o.......o..." },
-        { woodblock: "o...o...o.o.o...", shaker: "..g...g...g...g." },
+        { kick: "o.......o.......", woodblock: "....x.......x..." },
+        { woodblock: "x...o...x.o.o...", shaker: "..x...x...x...x." },
       ],
       mid: [
         {
-          kick: "x.......x.......",
-          rim: "....o.......o...",
-          woodblock: "..o...o...o..oo.",
-          hatClosed: "o.o.o.o.o.o.o.o.",
+          kick: "o.......o.......",
+          rim: "....X.......X...",
+          woodblock: "..x...x...x..ox.",
+          hatClosed: "x.x.x.x.x.x.x.x.",
         },
         {
-          kick: "x.....x.x.......",
+          kick: "o.....o.o.......",
           clap: "....o.......o...",
-          hatClosed: "o.g.o.g.o.g.o.g.",
-          woodblock: "......o.......o.",
+          hatClosed: "X.o.X.o.X.o.X.o.",
+          woodblock: "......x.......x.",
         },
       ],
       high: [
         {
-          kick: "X...x...X...x...",
-          snare: "....x.......x...",
-          hatClosed: "x.o.x.o.x.o.x.o.",
-          woodblock: "..o..o....o..o..",
+          kick: "x...o...o...o...",
+          snare: "....o.......o...",
+          hatClosed: "X.x.X.x.X.x.X.x.",
+          woodblock: "..x..x....x..x..",
         },
         {
-          kick: "X..x..x.X..x....",
-          snare: "....x.......x.x.",
-          hatClosed: "x.x.x.x.x.x.x.x.",
-          tambourine: "..o...o...o...o.",
+          kick: "x..o..o.o..o....",
+          snare: "....o.......o.o.",
+          hatClosed: "X.x.X.x.X.x.X.x.",
+          tambourine: "..X...X...X...X.",
         },
       ],
     },
     fills: {
-      light: [{ woodblock: "............o.oo" }, { snare: "..............oo" }],
+      light: [{ woodblock: "............x.ox" }, { snare: "..............oo" }],
       full: [
         {
           tomHigh: "........o.o.....",
           tomMid: "............o...",
           tomLow: "..............o.",
-          woodblock: "...............o",
+          woodblock: "...............x",
         },
         { snare: "........o.o.oooo" },
       ],
@@ -183,19 +183,31 @@ export const cute: StyleDef = {
   },
   perc: {
     from: 0.62,
-    grooves: [{ shaker: "o.g.o.g.o.g.o.g." }, { tambourine: "....o.......o...", shaker: "..g...g...g...g." }],
+    grooves: [{ shaker: "X.x.X.x.X.x.X.x." }, { tambourine: "....X.......X...", shaker: "..X...X...X...X." }],
+  },
+  // a mallet stroke is nearly all peak: saturation lets it sit in the mix without the limiter pumping.
+  // The marimba is the quietest lead at a given gain, so every other one is set a little lower.
+  lead: {
+    marimba: { gain: 0.62, drive: 0.4 },
+    epiano: { gain: 0.67, drive: 0.3 },
+    vibes: { gain: 0.64, drive: 0.2 },
+    pluck: { gain: 0.53, drive: 0.35 },
+    guzheng: { gain: 0.47 },
+    dizi: { gain: 0.46 },
   },
   swing: 0,
   humanize: { timing: 6, velocity: 0.1 },
-  form: { loop: "AABA", intro: 0.8, outro: 0.8, tail: 1.8 },
+  form: { loop: "AABA", intro: 0.8, outro: 0.8, tail: 1.6 },
+  // everything here is staccato, so the tune sits 3–4 LU over the plucked strings and the kit stays
+  // feather-light (8 LU under the mix): kick soft, woodblock, rim and hats written to be heard
   mix: {
-    lead: { gain: 0.8, reverb: 0.18, delay: 0.06 },
-    comp: { gain: 0.5, pan: -0.2, reverb: 0.15 },
-    arp: { gain: 0.26, pan: 0.3, reverb: 0.25, delay: 0.1 },
-    counter: { gain: 0.36 },
+    lead: { gain: 0.53, reverb: 0.18, delay: 0.06 },
+    comp: { gain: 0.56, pan: -0.25, reverb: 0.15, drive: 0.3 },
+    arp: { gain: 0.44, pan: 0.3, reverb: 0.25, delay: 0.1 },
+    counter: { gain: 0.4 },
     bass: { gain: 0.7 },
-    kit: { gain: 0.68, reverb: 0.1 },
-    perc: { gain: 0.3 },
+    kit: { gain: 1.3, reverb: 0.1, drive: 0.12 },
+    perc: { gain: 0.8 },
   },
   space: {
     size: 0.3,
@@ -206,5 +218,6 @@ export const cute: StyleDef = {
     delayBeats: 0.5,
     delayFeedback: 0.18,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "clean", tilt: 0.15 },
+  // marimba, pizzicato and upright bass are all dark voices: tilted up so the music box can sparkle
+  master: { targetLufs: -16, ceilingDb: -1, character: "clean", tilt: 0.35 },
 };

@@ -94,13 +94,13 @@ export const romantic: StyleDef = {
     from: 0,
     patterns: {
       low: [
-        { rows: { "1": "X...............", "2": "....o.......o...", "3": "........o......." } },
+        { rows: { "1": "X...............", "2": "....x.......x...", "3": "........x......." } },
         {
           rows: {
             "1": "X...............",
-            "3": "....o...........",
-            "2": "........o.......",
-            top: "............o...",
+            "3": "....x...........",
+            "2": "........x.......",
+            top: "............x...",
           },
         },
       ],
@@ -109,15 +109,15 @@ export const romantic: StyleDef = {
           rows: {
             "1": "X...............",
             "2": "..o...o...o...o.",
-            "3": "....o.......o...",
-            "4": "........o.......",
+            "3": "....x.......x...",
+            "4": "........x.......",
           },
         },
         {
           rows: {
             "1": "X.......x.......",
             "2": "..o.......o.....",
-            "3": "....o.......o...",
+            "3": "....x.......x...",
             top: "......o.......o.",
           },
         },
@@ -127,7 +127,7 @@ export const romantic: StyleDef = {
           rows: {
             "1": "X.......x.......",
             "2": "..o...o...o...o.",
-            "3": "....o.......o...",
+            "3": "....x.......x...",
             top: "......x.......x.",
           },
         },
@@ -142,7 +142,7 @@ export const romantic: StyleDef = {
       ],
     },
   },
-  pad: { voice: ["strings", "pad"], from: 0.25, register: [52, 76], voices: 4 },
+  pad: { voice: ["strings", "pad"], from: 0.2, register: [52, 76], voices: 4 },
   counter: { voice: ["strings", "flute"], from: 0.4, mode: "guide" },
   bass: {
     voice: "fingerBass",
@@ -156,31 +156,44 @@ export const romantic: StyleDef = {
     kit: "brush",
     from: 0.5,
     grooves: {
-      low: [{ kick: "o...............", brushSnare: "....o.......o..." }],
-      mid: [{ kick: "x.........o.....", brushSnare: "....o.......o...", hatClosed: "..g...g...g...g." }],
-      high: [{ kick: "x.....o.x.......", brushSnare: "....x.......x...", ride: "o.o.o.o.o.o.o.o." }],
+      low: [{ kick: "o...............", brushSnare: "....x.......x..." }],
+      mid: [{ kick: "o.........g.....", brushSnare: "....X.......X...", hatClosed: "..x...x...x...x." }],
+      high: [{ kick: "o.....g.o.......", brushSnare: "....X.......X...", ride: "x.x.x.x.x.x.x.x." }],
     },
     fills: {
-      light: [{ brushSnare: "............g.oo" }],
-      full: [{ brushSnare: "........o.g.o.oo", tomLow: "..............o." }],
+      light: [{ brushSnare: "............o.xx" }],
+      full: [{ brushSnare: "........x.o.x.xx", tomLow: "..............o." }],
     },
     crash: null,
     swell: true,
     ghost: 0.2,
   },
-  perc: { from: 0.62, grooves: [{ shaker: "..g...g...g...g." }] },
+  perc: { from: 0.62, grooves: [{ shaker: "..x...x...x...x." }] },
+  // sustained leads do not decay the way the piano does, so they are set back; mellow keys come forward
+  lead: {
+    epiano: { gain: 1.03, drive: 0.3 },
+    marimba: { gain: 1.16, drive: 0.3 },
+    vibes: { gain: 1, drive: 0.2 },
+    synth: { gain: 0.74, highCut: 7000 },
+    strings: { gain: 0.75 },
+    guzheng: { gain: 0.73 },
+    dizi: { gain: 0.66, highCut: 7000 },
+    chip: { gain: 0.76, highCut: 5500 },
+  },
   swing: 0,
   rubato: 0.45,
   humanize: { timing: 14, velocity: 0.12 },
   form: { loop: "AB", intro: 1.2, outro: 1.3, tail: 3 },
+  // the tune 3–4 LU over left hand and strings together, the two of them about level; brushes and
+  // shaker (only when the energy is raised) are written and mixed loud enough to be heard at all
   mix: {
-    lead: { gain: 0.78, reverb: 0.42, delay: 0.06 },
+    lead: { gain: 0.8, reverb: 0.42, delay: 0.06 },
     comp: { gain: 0.5, reverb: 0.35 },
-    pad: { gain: 0.4, reverb: 0.5 },
+    pad: { gain: 0.32, reverb: 0.5 },
     counter: { gain: 0.4, pan: 0.25, reverb: 0.5 },
-    bass: { gain: 0.62 },
-    kit: { gain: 0.5, reverb: 0.3 },
-    perc: { gain: 0.25 },
+    bass: { gain: 0.66 },
+    kit: { gain: 1.5, reverb: 0.3 },
+    perc: { gain: 1.2 },
   },
   space: {
     size: 0.7,
@@ -191,5 +204,5 @@ export const romantic: StyleDef = {
     delayBeats: 1,
     delayFeedback: 0.2,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: 0.02 },
+  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: 0.25 },
 };

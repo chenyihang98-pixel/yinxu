@@ -129,7 +129,7 @@ export interface DrumEvent {
 
 /** Per-part mix settings applied by the renderer after the notes are summed. */
 export interface PartMix {
-  /** linear gain before the group bus, typically 0.2..1 */
+  /** linear gain before the group bus, typically 0.2..1.5 (at most 3) */
   gain: number;
   /** -1 (left) .. 1 (right) */
   pan: number;
@@ -145,7 +145,14 @@ export interface PartMix {
   lowCut: number;
   /** low-pass corner in Hz (0 = off) */
   highCut: number;
-  /** 0..1 soft saturation */
+  /**
+   * 0..1 saturation BEFORE the part gain: tanh((1 + 5·drive)·x), scaled so an
+   * amplitude of 0.25 passes unchanged. On the part's own bus a single note
+   * peaks at 0.3–1, a four-note stab near 2 and a drum kit near 1, far above
+   * that pivot — so on percussive parts this is a clipper more than a colour:
+   * 0.05 takes about 3 dB off a kick's peak, 0.12 about 4 dB, 0.3 about 7 dB,
+   * while quiet material is lifted slightly. Sustained parts gain harmonics.
+   */
   drive: number;
   /** 0..1 how strongly this part ducks under the kick (sidechain feel) */
   duck: number;
@@ -248,6 +255,13 @@ export interface MasterSettings {
   character: MasterCharacter;
   /** -1 (darker) .. 1 (brighter) spectral tilt */
   tilt: number;
+  /**
+   * 0..1 how firmly the drum bus is held (a peak compressor on the drums
+   * stem whose loss is made up as gain: the kit keeps its loudness and loses
+   * peak). 0 leaves the kit's dynamics alone, 1 is a dense club master.
+   * Default: by character (see CHARACTER_DENSITY in audio/master.ts).
+   */
+  density?: number;
 }
 
 export interface Score {

@@ -1,250 +1,609 @@
 'use strict';
 
-// Full renderer/preload/IPC/provider/decoder workflow with local audio fixtures.
-// Every main-process fetch is replaced before the real app is imported.
-// No provider is contacted, no real credentials are read, and no quota is used.
-const { _electron: electron } = require('playwright');
+// Cloud music services and the language-model producer, end to end through
+// the REAL app: interface → preload → IPC → main-process adapters → decoder →
+// library → playback → export. Only the network is replaced.
+//
+//   npm run build && node scripts/cloud-workflow.cjs
+//   node scripts/cloud-workflow.cjs --ollama     also talk to a local Ollama, if one is running
+//
+// The app is started with MUSE_NETWORK=node and a module preloaded into the
+// main process that replaces globalThis.fetch (see tests/helpers/
+// electron-harness.cjs): Tencent answers hex MP3, Volcengine a signed submit,
+// polls and an M4A on its CDN, Aliyun a URL to a WAV, the models a plan. The
+// three audio fixtures are 3 s long while 15 / 30 s are requested, so "the
+// real length is shown" is checked for real. Any request to an address the
+// mock does not know fails and is counted; Chromium's own network is denied
+// and counted as well. The run fails unless both counts are zero: no real
+// service is contacted, no real credential is used, nothing can be billed.
+// Writes test-results/cloud-workflow-results.json.
 const assert = require('node:assert/strict');
-const fs = require('node:fs/promises');
-const os = require('node:os');
-const path = require('node:path');
-
-const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-async function until(read, test, message, timeout = 30000) {
-  const deadline = Date.now() + timeout;
-  let result;
-  do { result = await read(); if (test(result)) return result; await sleep(100); } while (Date.now() < deadline);
-  throw new Error(`Timed out: ${message}; last value ${JSON.stringify(result)}`);
-}
-async function records(page) {
-  return page.evaluate(() => new Promise((resolve, reject) => {
-    const open = indexedDB.open('muse-bgm', 1);
-    open.onerror = () => reject(open.error);
-    open.onsuccess = () => {
-      const db = open.result;
-      const tx = db.transaction('projects', 'readonly');
-      const query = tx.objectStore('projects').getAll();
-      query.onsuccess = () => resolve(query.result.map(({ audioBlob, ...project }) => ({ ...project, mimeType: audioBlob?.type, audioBytes: audioBlob?.size })).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
-      query.onerror = () => reject(query.error);
-      tx.oncomplete = () => db.close();
-    };
-  }));
-}
-
-function bootstrapSource(root) {
-  return `'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, session } = require('electron');
-const root = ${JSON.stringify(root)};
-const fixture = name => fs.readFileSync(path.join(root, 'tests', 'fixtures', name));
-const state = globalThis.__museCloudTest = { requests: [], deniedNetwork: [], unknownRequests: [], failNextTencent: false, volcPolls: 0, dialogs: [] };
-const json = body => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
-globalThis.fetch = async (rawUrl, options = {}) => {
-  const url = new URL(String(rawUrl));
-  const headers = Object.fromEntries(new Headers(options.headers).entries());
-  const body = typeof options.body === 'string' ? JSON.parse(options.body) : null;
-  state.requests.push({ url: url.href, method: options.method || 'GET', headers, body });
-  options.signal?.throwIfAborted();
-  if (url.href === 'https://tokenhub.tencentmaas.com/v1/wand/minimax-music/generation') {
-    await new Promise(resolve => setTimeout(resolve, 250));
-    if (state.failNextTencent) { state.failNextTencent = false; return new Response(JSON.stringify({ error: 'fixture unauthorized' }), { status: 401 }); }
-    const audio = fixture('music-3s.mp3');
-    return json({ data: { audio: audio.toString('hex'), status: 2 }, base_resp: { status_code: 0, status_msg: 'success' }, extra_info: { music_duration: 3000, music_sample_rate: 32000, music_channel: 2, music_size: audio.length }, request_id: 'fixture-tencent' });
-  }
-  if (url.hostname === 'open.volcengineapi.com') {
-    const action = url.searchParams.get('Action');
-    if (action === 'GenBGMForTime' || action === 'GenBGM') { state.volcPolls = 0; return json({ Code: 0, Result: { TaskID: 'fixture-volc-task' } }); }
-    if (action === 'QuerySong') { state.volcPolls++; return state.volcPolls === 1 ? json({ Code: 0, Result: { Status: 1 } }) : json({ Code: 0, Result: { Status: 2, SongDetail: { AudioUrl: 'https://v3-default.douyinvod.com/muse-fixture.m4a', Duration: 3 } } }); }
-  }
-  if (url.href === 'https://v3-default.douyinvod.com/muse-fixture.m4a') return new Response(fixture('music-3s.m4a'), { status: 200, headers: { 'Content-Type': 'audio/mp4' } });
-  if (url.href === 'https://llm-cloud-fixture.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/music/generation') return json({ request_id: 'fixture-aliyun', output: { finish_reason: 'stop', audio: { url: 'https://muse-fixture.oss-cn-beijing.aliyuncs.com/music.wav' } } });
-  if (url.href === 'https://muse-fixture.oss-cn-beijing.aliyuncs.com/music.wav') return new Response(fixture('music-3s.wav'), { status: 200, headers: { 'Content-Type': 'audio/wav' } });
-  state.unknownRequests.push(url.href);
-  throw new Error('Unrecognized mock URL: live network prohibited');
+const { ROOT, DEFAULT_PLAN, until, launchApp, removeProfile, wavInfo, createRun, describeFailure } = require('../tests/helpers/electron-harness.cjs');
+
+const PREFIX = 'muse-cloud-workflow-';
+const WITH_OLLAMA = process.argv.includes('--ollama');
+const FAKE = {
+  tencent: 'tokenhub-fake-key-never-live-001',
+  accessKeyId: 'AKfakeonly123456789',
+  secretAccessKey: 'SKfakeonly123456789abcdef',
+  aliyun: 'sk-aliyun-fake-only-123456789',
+  anthropic: 'sk-ant-fake-only-not-a-real-key-000',
+  deepseek: 'sk-fake-deepseek-000000000',
 };
-// Defense in depth: Chromium network paths are also denied. Local file UI still loads.
-app.whenReady().then(() => session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => { state.deniedNetwork.push(details.url); callback({ cancel: true }); }));
-require(path.join(root, 'electron', 'main.cjs'));
-`;
+const PROVIDERS = [
+  { id: 'tencent', mime: 'audio/mpeg', ext: 'mp3', seconds: 15, isPost: (url) => url.includes('/minimax-music/generation') },
+  { id: 'volcengine', mime: 'audio/mp4', ext: 'm4a', seconds: 30, isPost: (url) => /Action=GenBGM/.test(url) },
+  { id: 'aliyun', mime: 'audio/wav', ext: 'wav', seconds: 15, isPost: (url) => url.includes('/music/generation') },
+];
+const fixture = (ext) => fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', `music-3s.${ext}`));
+
+async function mockedRun(run, shared) {
+  const app = await launchApp({ prefix: PREFIX, mock: true });
+  shared.app = app;
+  shared.profile = app.profile;
+  const { page, $ } = app;
+  const requests = async () => (await app.state()).requests;
+  const pressed = (id) => $(id).getAttribute('aria-pressed');
+  const describe = async (text, seconds) => {
+    await $('composer-input').fill(text);
+    await $('composer-duration').selectOption(String(seconds));
+  };
+
+  await run.step('an engine without credentials is refused before any request, with the way to fix it', async () => {
+    assert.equal(path.resolve((await app.settings()).dataPath), path.join(app.profile, 'Muse-Data'));
+    await $('composer-engine').selectOption('tencent');
+    await $('settings-modal').waitFor();
+    assert.match(await app.toast(/请先在设置中保存/), /腾讯云 TokenHub 的服务凭据/);
+    assert.equal(await $('provider-tencent-tab').getAttribute('aria-pressed'), 'true');
+    assert.equal(await $('composer-engine').inputValue(), 'local');
+    assert.deepEqual(await requests(), []);
+  });
+
+  await run.step('credentials of the three services are saved through the interface, encrypted, and never read back', async () => {
+    await $('provider-tencent-apiKey').fill(FAKE.tencent);
+    await $('provider-tencent-model').selectOption('minimax-music-v2.6');
+    await $('provider-tencent-save').click();
+    await until(app.settings, (settings) => settings.providers.tencent.configured, 'Tencent saved');
+    await $('provider-volcengine-tab').click();
+    await $('provider-volcengine-accessKeyId').fill(FAKE.accessKeyId);
+    await $('provider-volcengine-secretAccessKey').fill(FAKE.secretAccessKey);
+    await $('provider-volcengine-billingMode').selectOption('postpaid');
+    await $('provider-volcengine-save').click();
+    await until(app.settings, (settings) => settings.providers.volcengine.configured, 'Volcengine saved');
+    await $('provider-aliyun-tab').click();
+    await $('provider-aliyun-apiKey').fill(FAKE.aliyun);
+    await $('provider-aliyun-workspaceId').fill('llm-cloud-fixture');
+    await $('provider-aliyun-model').selectOption('fun-music-v1');
+    await $('provider-aliyun-save').click();
+    await until(app.settings, (settings) => settings.providers.aliyun.configured, 'Aliyun saved');
+    assert.deepEqual(await requests(), [], 'saving never calls a service');
+    await app.closeModal();
+    await app.reload();
+    const saved = (await app.settings()).providers;
+    assert.deepEqual(saved.tencent, { configured: true, model: 'minimax-music-v2.6' });
+    assert.deepEqual(saved.volcengine, { configured: true, billingMode: 'postpaid' });
+    assert.deepEqual(saved.aliyun, { configured: true, model: 'fun-music-v1', workspaceId: 'llm-cloud-fixture' });
+    const stored = fs.readFileSync(path.join(app.profile, 'Muse-Data', 'music-credentials.json'), 'utf8');
+    for (const secret of [FAKE.tencent, FAKE.accessKeyId, FAKE.secretAccessKey, FAKE.aliyun]) {
+      assert.ok(!stored.includes(secret), 'no secret in clear text on disk');
+      assert.ok(!JSON.stringify(saved).includes(secret), 'no secret in the settings answer');
+    }
+    const engines = await $('composer-engine').locator('option').allInnerTexts();
+    assert.equal(engines.filter((text) => text.includes('需先在设置中配置')).length, 1, 'only ElevenLabs is left unconfigured');
+  });
+
+  await run.step('HTTP 401: the message is Chinese and actionable, nothing is created, nothing is retried', async () => {
+    await $('composer-engine').selectOption('tencent');
+    await describe('雨夜咖啡馆的慵懒钢琴', 15);
+    await app.setState({ tencent: { fail: 401 } });
+    await $('send-button').click();
+    const text = await app.toast(/生成失败/);
+    await app.idle();
+    assert.match(text, /^生成失败：API Key 无效或已过期/);
+    assert.doesNotMatch(text, /Error invoking|remote method|Error:/);
+    assert.deepEqual(await app.records(), []);
+    assert.equal((await requests()).length, 1, 'one request, no automatic retry of a paid generation');
+    assert.equal(await $('composer-input').inputValue(), '雨夜咖啡馆的慵懒钢琴', 'the description is handed back');
+    await app.clearToasts();
+    return { text };
+  });
+
+  await run.step('cancel while the service is working: the request is aborted, the billing note is honest', async () => {
+    await app.setState({ tencent: { hang: true } });
+    const before = (await requests()).length;
+    await $('send-button').click();
+    await page.waitForSelector('[data-testid="job-status"][data-stage="cloud"]');
+    await until(requests, (list) => list.length === before + 1, 'the request reached the service');
+    await $('nav-library').click();
+    assert.equal(await $('job-status').count(), 1, 'the job can be cancelled from any page');
+    await $('job-cancel').click();
+    await app.idle(15000);
+    const text = await app.toast(/已取消等待/);
+    assert.match(text, /云端生成可能仍会计费/);
+    await app.setState({ tencent: { hang: false } });
+    assert.deepEqual((await app.toasts()).filter((item) => item.includes('生成失败')), [], 'a cancel is not reported as a failure');
+    assert.deepEqual(await app.records(), []);
+    assert.equal((await requests()).length, before + 1);
+    // the main process is free again: the next generation below must go through
+    await $('nav-studio').click();
+    await app.clearToasts();
+  });
+
+  const outputs = [];
+  for (const provider of PROVIDERS) {
+    await run.step(`${provider.id}: one paid request → stored before decoding → real length → playback → original ${provider.ext} untouched`, async () => {
+      await app.newPiece();
+      await $('composer-engine').selectOption(provider.id);
+      await describe('雨夜咖啡馆的慵懒钢琴，纯音乐', provider.seconds);
+      const countBefore = (await app.records()).length;
+      const before = (await requests()).length;
+      // The stages the job goes through, in order.
+      await page.evaluate(() => {
+        window.__stages = [];
+        window.__stageObserver = new MutationObserver(() => {
+          const stage = document.querySelector('[data-testid="job-status"]')?.getAttribute('data-stage');
+          if (stage && window.__stages.at(-1) !== stage) window.__stages.push(stage);
+        });
+        window.__stageObserver.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-stage'] });
+      });
+      // Two clicks before React can repaint: the synchronous job lock must hold.
+      await $('send-button').evaluate((button) => {
+        button.click();
+        button.click();
+      });
+      await app.loaded(1, 'mix', 60000);
+      const stages = await page.evaluate(() => {
+        window.__stageObserver.disconnect();
+        return window.__stages;
+      });
+      const all = await app.records();
+      assert.equal(all.length, countBefore + 1);
+      const work = all[0];
+      const bytes = fixture(provider.ext);
+      assert.equal(work.provider, provider.id);
+      assert.equal(work.blobType, provider.mime);
+      assert.equal(work.blobBytes, bytes.length);
+      assert.equal(work.config.duration, provider.seconds, 'the request is kept as asked');
+      assert.ok(work.audioDuration > 2.8 && work.audioDuration < 3.3, `decoded length ${work.audioDuration}`);
+      assert.ok(work.cloud.prompt.length > 10);
+      assert.ok(stages.includes('saving') && stages.indexOf('decoding') > stages.indexOf('saving'), `saved before decoding: ${stages}`);
+      assert.match(await $('time-display').innerText(), /\/ 0:03$/, 'the real 3 s are shown');
+      assert.equal(await $('mixer-note').count(), 1, 'a cloud mix has no stems');
+      assert.equal(await page.locator('[data-testid$="-fader"]').count(), 0);
+      const sent = (await requests()).slice(before);
+      assert.equal(sent.filter((request) => request.method === 'POST' && provider.isPost(request.url)).length, 1, 'a double click is one billable request');
+      await until(() => pressed('play-button'), (value) => value === 'true', 'decoded audio plays');
+      await until(() => $('waveform').getAttribute('aria-valuenow'), (value) => Number(value) >= 1, 'the playhead moves');
+      if ((await pressed('play-button')) === 'true') await $('play-button').click();
+      await $('export-button').click();
+      await $('export-modal').waitFor();
+      assert.deepEqual(
+        await page.locator('[data-testid^="export-option-"]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-testid'))),
+        ['export-option-mix', 'export-option-original'],
+      );
+      assert.match(await $('export-option-original').innerText(), new RegExp(provider.ext.toUpperCase()));
+      const original = await app.exportVia('original', path.join(app.profile, `${provider.id}-original.${provider.ext}`));
+      assert.ok(original.equals(bytes), 'the original file is byte-identical');
+      const dialog = (await app.state()).dialogs.at(-1);
+      assert.deepEqual(dialog.filters[0].extensions, [provider.ext]);
+      assert.equal(path.extname(dialog.defaultPath), `.${provider.ext}`);
+      const wav = wavInfo(await app.exportVia('mix', path.join(app.profile, `${provider.id}.wav`)));
+      assert.ok(Math.abs(wav.seconds - work.audioDuration) < 0.05, `WAV of the decoded mix: ${wav.seconds} s`);
+      await app.closeModal();
+      await app.clearToasts();
+      outputs.push({ provider: provider.id, mime: provider.mime, requested: provider.seconds, actual: work.audioDuration, bytes: work.blobBytes, stages });
+      return outputs.at(-1);
+    });
+  }
+
+  await run.step('what was sent matches the instrumental contracts; downloads carry no credentials', async () => {
+    const list = await requests();
+    const tencent = list.filter((request) => request.url.includes('tokenhub')).at(-1);
+    assert.equal(tencent.headers.authorization, `Bearer ${FAKE.tencent}`);
+    assert.equal(tencent.body.model, 'minimax-music-v2.6');
+    assert.equal(tencent.body.is_instrumental, true);
+    assert.equal(tencent.body.output_format, 'hex');
+    assert.equal(tencent.body.lyrics_optimizer, false);
+    const volc = list.find((request) => /Action=GenBGM/.test(request.url));
+    assert.match(volc.url, /Action=GenBGMForTime/);
+    assert.match(volc.headers.authorization, /^HMAC-SHA256 Credential=AKfakeonly/);
+    assert.match(volc.body.Text, /纯音乐/);
+    assert.equal(volc.body.Version, 'v5.0');
+    assert.equal(volc.body.Duration, 30);
+    assert.deepEqual(volc.body.Segments, [{ Name: 'inst', Duration: 30 }]);
+    assert.equal(list.filter((request) => request.url.includes('Action=QuerySong')).length, 2, 'two signed polls');
+    const aliyun = list.find((request) => request.url.includes('maas.aliyuncs.com'));
+    assert.equal(aliyun.headers.authorization, `Bearer ${FAKE.aliyun}`);
+    assert.equal(aliyun.body.model, 'fun-music-v1');
+    assert.equal(aliyun.body.input.is_instrumental, true);
+    const downloads = list.filter((request) => request.method === 'GET');
+    assert.equal(downloads.length, 2);
+    for (const request of downloads) {
+      assert.equal(request.headers.authorization, undefined);
+      assert.equal(request.headers['x-date'], undefined);
+    }
+  });
+
+  await run.step('a length the service does not offer is refused before anything is sent', async () => {
+    await app.newPiece();
+    await $('composer-engine').selectOption('volcengine');
+    await describe('轻快的口哨', 15);
+    const before = (await requests()).length;
+    await $('send-button').click();
+    const text = await app.toast(/30–120 秒/);
+    await app.idle();
+    assert.match(text, /火山引擎 AI 音乐支持 30–120 秒，这次的时长是 15 秒/);
+    assert.equal((await requests()).length, before);
+    await app.clearToasts();
+  });
+
+  await run.step('audio that cannot be decoded stays in the library with its original file and a clear message', async () => {
+    await $('composer-engine').selectOption('tencent');
+    await describe('一段测试用的钢琴', 15);
+    await app.setState({ tencent: { garbage: true } });
+    const countBefore = (await app.records()).length;
+    await $('send-button').click();
+    await page.waitForSelector('[data-testid="player-card"][data-audio="none"]', { timeout: 30000 });
+    await app.idle();
+    await app.setState({ tencent: { garbage: false } });
+    const all = await app.records();
+    assert.equal(all.length, countBefore + 1, 'the paid bytes were stored');
+    assert.match(await $('audio-error').innerText(), /无法解码试听.*导出.*原始音频/);
+    await $('export-button').click();
+    await $('export-modal').waitFor();
+    assert.deepEqual(
+      await page.locator('[data-testid^="export-option-"]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-testid'))),
+      ['export-option-original'],
+    );
+    const original = await app.exportVia('original', path.join(app.profile, 'undecodable.mp3'));
+    assert.equal(original.length, all[0].blobBytes);
+    await app.closeModal();
+    await app.clearToasts();
+    shared.undecodableId = all[0].id;
+  });
+
+  await run.step('a refinement of a cloud work is a new paid version on the same service, with the change in the prompt', async () => {
+    const source = (await app.records()).find((record) => record.provider === 'tencent' && record.audioDuration);
+    await $('nav-library').click();
+    await page.locator(`[data-testid="library-card"][data-project="${source.id}"] [data-testid="library-open"]`).click();
+    await page.waitForSelector(`[data-testid="player-card"][data-project="${source.id}"][data-audio="mix"]`);
+    await app.idle();
+    assert.equal(await $('composer-engine').inputValue(), 'tencent');
+    const before = (await requests()).length;
+    await $('composer-input').fill('慢一点，换成古筝');
+    await $('composer-input').press('Enter');
+    await app.loaded(2, 'mix', 60000);
+    const next = (await app.records()).find((record) => record.parentId === source.id);
+    assert.equal(next.revision, 2);
+    assert.equal(next.provider, 'tencent');
+    assert.equal(next.config.instrument, 'guzheng');
+    assert.ok(next.config.bpm < source.config.bpm);
+    const sent = (await requests()).slice(before);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].body.prompt, /古筝/);
+    assert.match(sent[0].body.prompt, /纯音乐/);
+    assert.ok(next.cloud.prompt.includes('古筝'));
+    if ((await pressed('play-button')) === 'true') await $('play-button').click();
+    await app.clearToasts();
+  });
+
+  await run.step('removing one credential leaves the others; stored cloud works reopen after a reload without any request', async () => {
+    await app.openSettings('music');
+    await $('provider-tencent-tab').click();
+    await $('provider-tencent-remove').click();
+    const after = (await until(app.settings, (settings) => !settings.providers.tencent.configured, 'Tencent removed')).providers;
+    assert.equal(after.volcengine.configured && after.aliyun.configured, true);
+    await app.closeModal();
+    assert.equal(await $('composer-engine').inputValue(), 'local', 'the selected engine falls back to local');
+    await app.reload();
+    await page.waitForSelector('[data-testid="player-card"]', { timeout: 30000 });
+    await app.idle();
+    const saved = (await app.settings()).providers;
+    assert.deepEqual([saved.tencent.configured, saved.volcengine.configured, saved.aliyun.configured], [false, true, true]);
+    await $('nav-library').click();
+    const works = await app.records();
+    assert.equal(await page.locator('[data-testid="library-card"]').count(), works.length);
+    assert.equal(works.length, 5);
+    const count = (await requests()).length;
+    const target = works.find((record) => record.provider === 'aliyun');
+    const card = page.locator(`[data-testid="library-card"][data-project="${target.id}"]`);
+    // paid audio is not deleted by one click
+    await card.locator('[data-testid="library-delete"]').click();
+    await card.locator('[data-testid="library-delete-confirm"]').waitFor();
+    assert.match(await card.locator('.work-confirm p').innerText(), /付费生成的音频/);
+    await card.getByRole('button', { name: '取消' }).click();
+    assert.equal((await app.records()).length, 5);
+    await card.locator('[data-testid="library-play"]').click();
+    await page.waitForSelector(`[data-testid="player-card"][data-project="${target.id}"][data-audio="mix"]`);
+    await app.idle();
+    await until(() => pressed('play-button'), (value) => value === 'true', 'quick play from the library');
+    await $('play-button').click();
+    assert.equal((await requests()).length, count, 'opening stored audio never calls the service');
+  });
+
+  /* ---------- the producer's language model ---------- */
+
+  const llmRequests = async () => (await requests()).filter((request) => /anthropic\.com|chat\/completions/.test(request.url));
+
+  await run.step('Claude (mocked) plans a new piece: the plan is rendered locally and the thread names the model', async () => {
+    await app.openSettings('llm');
+    await $('llm-key').fill(FAKE.anthropic);
+    await $('llm-save').click();
+    await until(app.settings, (settings) => settings.llm.configured, 'Claude saved');
+    await app.closeModal();
+    await app.newPiece();
+    assert.equal(await $('composer-engine').inputValue(), 'local');
+    assert.equal(await $('composer-brain').inputValue(), 'llm', 'saving a model makes it the producer');
+    const countBefore = (await app.records()).length;
+    await $('composer-input').fill('雨天咖啡馆里的慵懒爵士，不要鼓');
+    await $('send-button').click();
+    await page.waitForSelector('[data-testid="job-status"][data-stage="planning"]');
+    assert.match(await $('job-phase').innerText(), /大模型/);
+    await app.loaded(1, 'stems', 60000);
+    const all = await app.records();
+    assert.equal(all.length, countBefore + 1);
+    const work = all[0];
+    assert.equal(work.title, DEFAULT_PLAN.title);
+    assert.deepEqual(
+      [work.config.mood, work.config.instrument, work.config.key, work.config.bpm, work.config.arrangement.drums],
+      [DEFAULT_PLAN.style, DEFAULT_PLAN.instrument, DEFAULT_PLAN.key, DEFAULT_PLAN.bpm, 'none'],
+    );
+    assert.equal(work.chat.at(-1).brain, 'llm');
+    assert.equal(work.chat.at(-1).text, DEFAULT_PLAN.reply);
+    assert.equal(await page.locator('[data-testid="turn-brain"]').last().innerText(), 'claude-opus-5-5');
+    const call = (await llmRequests()).at(-1);
+    assert.match(call.url, /^https:\/\/api\.anthropic\.com\/v1\/messages/);
+    assert.equal(call.headers['x-api-key'], FAKE.anthropic);
+    assert.equal(call.body.model, 'claude-opus-5-5');
+    assert.match(JSON.stringify(call.body.messages), /雨天咖啡馆/);
+    if ((await pressed('play-button')) === 'true') await $('play-button').click();
+    shared.llmFirst = work;
+  });
+
+  await run.step('Claude refines: it is shown the current work; the new version keeps the seed and the title', async () => {
+    const first = shared.llmFirst;
+    await app.setState({ llm: { plans: [{ ...DEFAULT_PLAN, bpm: 72, instrument: 'piano', reverb: 0.6, newMelody: false, title: '另一个名字', reply: '放慢到 72，换成钢琴，空间更大。', reasoning: ['速度 84 → 72', '主奏换成钢琴', '混响加大'] }] } });
+    const before = (await llmRequests()).length;
+    await $('composer-input').fill('再慢一点，换成钢琴主奏，混响大一些');
+    await $('composer-input').press('Enter');
+    await app.loaded(2, 'stems', 60000);
+    const next = (await app.records()).find((record) => record.parentId === first.id);
+    assert.deepEqual([next.config.bpm, next.config.instrument, next.config.reverb], [72, 'piano', 0.6]);
+    assert.equal(next.config.seed, first.config.seed);
+    assert.equal(next.title, first.title, 'a refinement keeps the title');
+    assert.equal(next.chat.length, 4);
+    const calls = await llmRequests();
+    assert.equal(calls.length, before + 1);
+    const sent = JSON.stringify(calls.at(-1).body.messages);
+    assert.match(sent, /再慢一点/);
+    assert.match(sent, /"bpm":\s*84|84 BPM|bpm[^,]{0,12}84/, 'the current tempo is in what the model sees');
+    if ((await pressed('play-button')) === 'true') await $('play-button').click();
+  });
+
+  await run.step('the model fails (HTTP 500): the offline rules answer and the thread says so', async () => {
+    await app.clearToasts();
+    await app.setState({ llm: { failAlways: 500 } });
+    await $('composer-input').fill('更有活力一点');
+    await $('composer-input').press('Enter');
+    await app.loaded(3, 'stems', 90000);
+    await app.setState({ llm: { failAlways: 0 } });
+    const next = (await app.records()).find((record) => record.revision === 3 && record.title === shared.llmFirst.title);
+    assert.ok(next.config.energy > DEFAULT_PLAN.energy, 'the rules understood the request');
+    assert.equal(next.chat.at(-1).brain, 'rules');
+    const notice = await page.locator('[data-testid="turn-fallback"]').last().innerText();
+    assert.match(notice, /^大模型不可用（.+），已改用内置规则$/);
+    assert.doesNotMatch(notice, /Error invoking|remote method/);
+    assert.match(await app.toast(/已改用内置规则/), /大模型不可用/);
+    assert.equal(await page.locator('[data-testid="turn-brain"]').last().innerText(), '离线规则');
+    if ((await pressed('play-button')) === 'true') await $('play-button').click();
+    await app.clearToasts();
+    return { notice };
+  });
+
+  await run.step('cancel while the model is thinking: nothing is generated, nothing falls back, the main process lets go', async () => {
+    await app.setState({ llm: { hang: true } });
+    const countBefore = (await app.records()).length;
+    const calls = (await app.state()).llm.calls;
+    await $('composer-input').fill('换成长笛');
+    await $('composer-input').press('Enter');
+    await page.waitForSelector('[data-testid="job-status"][data-stage="planning"]');
+    await until(app.state, (state) => state.llm.calls === calls + 1, 'the request reached the model');
+    await $('job-cancel').click();
+    await app.idle(15000);
+    await app.toast(/已取消本次编排/);
+    await app.setState({ llm: { hang: false } });
+    assert.deepEqual((await app.toasts()).filter((text) => /已改用内置规则|生成失败/.test(text)), []);
+    assert.equal((await app.records()).length, countBefore);
+    assert.equal(await $('composer-input').inputValue(), '换成长笛');
+    assert.equal(await $('player-card').getAttribute('data-revision'), '3');
+    await $('composer-input').fill('');
+    await app.clearToasts();
+  });
+
+  await run.step('an OpenAI-compatible model (mocked DeepSeek): Bearer key, /chat/completions; HTTP 401 falls back with the reason', async () => {
+    await app.openSettings('llm');
+    await $('llm-preset').selectOption('deepseek');
+    assert.equal(await $('llm-base-url').inputValue(), 'https://api.deepseek.com');
+    await $('llm-key').fill(FAKE.deepseek);
+    await $('llm-model').fill('deepseek-chat');
+    await $('llm-save').click();
+    await until(app.settings, (settings) => settings.llm.preset === 'deepseek', 'DeepSeek saved');
+    assert.deepEqual((await app.settings()).llm, { configured: true, kind: 'openai', preset: 'deepseek', model: 'deepseek-chat', baseUrl: 'https://api.deepseek.com' });
+    await app.closeModal();
+    await app.newPiece();
+    await app.setState({ llm: { plans: [{ ...DEFAULT_PLAN, style: 'guofeng', instrument: 'guzheng', key: 'D major', bpm: 78, title: '竹影', reply: '古筝与竹笛，留白多一些。', arrangement: { ...DEFAULT_PLAN.arrangement, progression: [], drums: 'auto', bass: 'auto', swing: -1 } }] } });
+    await describe('古风庭院，古筝', 15);
+    await $('send-button').click();
+    await app.loaded(1, 'stems', 60000);
+    const work = (await app.records())[0];
+    assert.deepEqual([work.title, work.config.mood, work.config.instrument, work.config.bpm], ['竹影', 'guofeng', 'guzheng', 78]);
+    const call = (await llmRequests()).at(-1);
+    assert.equal(call.url, 'https://api.deepseek.com/chat/completions');
+    assert.equal(call.headers.authorization, `Bearer ${FAKE.deepseek}`);
+    assert.equal(call.body.model, 'deepseek-chat');
+    assert.equal(await page.locator('[data-testid="turn-brain"]').last().innerText(), 'deepseek-chat');
+    if ((await pressed('play-button')) === 'true') await $('play-button').click();
+    await app.setState({ llm: { fail: 401 } });
+    await $('composer-input').fill('慢一点');
+    await $('composer-input').press('Enter');
+    await app.loaded(2, 'stems', 60000);
+    const notice = await page.locator('[data-testid="turn-fallback"]').last().innerText();
+    assert.match(notice, /API Key 无效或已过期/);
+    if ((await pressed('play-button')) === 'true') await $('play-button').click();
+    await app.clearToasts();
+  });
+
+  await run.step('model + cloud engine: the service receives the model\'s own prompt, made instrumental', async () => {
+    await app.newPiece();
+    await $('composer-engine').selectOption('aliyun');
+    assert.equal(await $('composer-brain').inputValue(), 'llm');
+    await app.setState({ llm: { plans: [{ ...DEFAULT_PLAN, cloudPrompt: 'A lazy jazz tune for a rainy cafe, vibraphone lead, walking bass, 84 BPM' }] } });
+    await describe('雨天咖啡馆爵士', 15);
+    await $('send-button').click();
+    await app.loaded(1, 'mix', 60000);
+    const work = (await app.records())[0];
+    const sent = (await requests()).filter((request) => request.url.includes('maas.aliyuncs.com')).at(-1);
+    assert.match(sent.body.input.prompt, /rainy cafe/);
+    assert.match(work.cloud.prompt, /rainy cafe.*(纯音乐|无人声)/);
+    if ((await pressed('play-button')) === 'true') await $('play-button').click();
+  });
+
+  await run.step('zero real external requests; no renderer errors', async () => {
+    const state = await app.state();
+    assert.deepEqual(state.unknown, [], 'requests the mock did not know');
+    assert.deepEqual(state.denied, [], 'requests through Chromium');
+    assert.deepEqual(state.loopback, [], 'requests to this computer');
+    assert.deepEqual(app.errors, []);
+    const hosts = [...new Set(state.requests.map((request) => new URL(request.url).host))].sort();
+    assert.deepEqual(hosts, ['api.anthropic.com', 'api.deepseek.com', 'llm-cloud-fixture.cn-beijing.maas.aliyuncs.com', 'muse-fixture.oss-cn-beijing.aliyuncs.com', 'open.volcengineapi.com', 'tokenhub.tencentmaas.com', 'v3-default.douyinvod.com']);
+    shared.liveRequests = state.unknown.length + state.denied.length + state.loopback.length;
+    shared.requests = state.requests.map(({ url, method, headers, body }) => ({
+      url,
+      method,
+      auth: headers.authorization ? headers.authorization.split(' ')[0] : headers['x-api-key'] ? 'x-api-key' : null,
+      model: body?.model ?? body?.Version ?? null,
+    }));
+    return { mocked: state.requests.length, hosts };
+  });
+
+  await page.screenshot({ path: path.join(ROOT, 'test-results', 'cloud-workflow.png') }).catch(() => {});
+  shared.outputs = outputs;
+}
+
+/** Optional: the producer through a real model on this computer (no mocks, Chromium network stack). */
+async function ollamaRun(run, shared) {
+  let model = null;
+  try {
+    const tags = await (await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(3000) })).json();
+    model = tags?.models?.[0]?.name ?? null;
+  } catch {
+    /* not running */
+  }
+  if (!model) {
+    console.log('skip Ollama: no model is being served on http://127.0.0.1:11434');
+    shared.ollama = { skipped: true };
+    return;
+  }
+  const app = await launchApp({ prefix: PREFIX, allowLoopback: true });
+  shared.app = app;
+  shared.profile = app.profile;
+  const { page, $ } = app;
+  const facts = { model };
+  /** Send and wait. The first call may be a cold model: 90 s is the app's limit, then the rules answer. */
+  const converse = async (text, revision) => {
+    const started = Date.now();
+    await $('composer-input').fill(text);
+    await $('send-button').click();
+    await page.waitForSelector(`[data-testid="player-card"][data-revision="${revision}"][data-audio="stems"]`, { timeout: 150000 });
+    await app.idle(60000);
+    const work = (await app.records()).find((record) => record.revision === revision);
+    return { work, turn: work.chat.at(-1), seconds: +((Date.now() - started) / 1000).toFixed(1) };
+  };
+
+  await run.step(`Ollama (${model}): configured through the settings form`, async () => {
+    await app.openSettings('llm');
+    await $('llm-preset').selectOption('ollama');
+    await $('llm-model').fill(model);
+    await $('llm-save').click();
+    await until(app.settings, (settings) => settings.llm.kind === 'ollama', 'saved');
+    await app.closeModal();
+    assert.equal(await $('composer-brain').inputValue(), 'llm');
+  });
+
+  let first;
+  await run.step('Ollama: a real "new" conversation (a cold model may time out once and fall back)', async () => {
+    let result = await converse('雨天咖啡馆里的慵懒爵士，30 秒，不要鼓', 1);
+    facts.coldFallback = result.turn.brain !== 'llm';
+    if (facts.coldFallback) {
+      assert.match(await page.locator('[data-testid="turn-fallback"]').last().innerText(), /已改用内置规则/);
+      await app.newPiece();
+      await $('composer-brain').selectOption('llm');
+      result = await converse('雨天咖啡馆里的慵懒爵士，30 秒，不要鼓', 1);
+    }
+    assert.equal(result.turn.brain, 'llm', 'the model answered');
+    first = result.work;
+    assert.ok(/[一-龥]/.test(result.turn.text));
+    assert.ok(first.config.duration >= 15 && first.config.duration <= 120);
+    facts.new = { seconds: result.seconds, title: first.title, mood: first.config.mood, bpm: first.config.bpm, reply: result.turn.text };
+    return facts.new;
+  });
+
+  await run.step('Ollama: a real "refine" conversation', async () => {
+    const result = await converse('再慢一点，换成钢琴主奏', 2);
+    assert.equal(result.turn.brain, 'llm', 'the model answered');
+    assert.equal(result.work.parentId, first.id);
+    assert.ok(result.work.config.bpm <= first.config.bpm);
+    assert.equal(result.work.config.instrument, 'piano');
+    facts.refine = { seconds: result.seconds, bpm: [first.config.bpm, result.work.config.bpm], reply: result.turn.text };
+    return facts.refine;
+  });
+
+  await run.step('Ollama: only this computer was contacted', async () => {
+    const state = await app.state();
+    assert.deepEqual(state.denied, []);
+    assert.ok(state.loopback.length >= 2 && state.loopback.every((url) => url.startsWith('http://127.0.0.1:11434/')), JSON.stringify(state.loopback));
+    assert.deepEqual(app.errors, []);
+  });
+  shared.ollama = facts;
 }
 
 async function main() {
-  const root = path.resolve(__dirname, '..');
-  const artifactDir = path.join(root, 'test-results');
-  await fs.mkdir(artifactDir, { recursive: true });
-  const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'muse-cloud-workflow-'));
-  const bootstrap = path.join(profile, 'bootstrap.cjs');
-  await fs.writeFile(bootstrap, bootstrapSource(root));
-  const env = { ...process.env, MUSE_PORTABLE_DATA: '1', PORTABLE_EXECUTABLE_DIR: profile };
-  delete env.ELECTRON_RUN_AS_NODE; delete env.MUSE_DEV_URL;
-  const fake = { tencent: 'tokenhub-fake-key-never-live-001', accessKeyId: 'AK-fake-only-123456789', secretAccessKey: 'SK-fake-only-123456789', aliyun: 'sk-aliyun-fake-only-123456789' };
-  const checks = [];
-  const errors = [];
-  let desktop, page;
-  const pass = message => { checks.push(message); console.log(`PASS ${message}`); };
+  const run = createRun('Cloud workflow', 'cloud-workflow-results.json');
+  const shared = {};
+  let failure = {};
+  const profiles = [];
   try {
-    desktop = await electron.launch({ args: [bootstrap], cwd: root, env, timeout: 30000 });
-    page = await desktop.firstWindow();
-    page.setDefaultTimeout(15000);
-    page.on('pageerror', error => errors.push(error.message));
-    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-    await page.waitForFunction(() => Boolean(window.museDesktop?.saveProviderCredentials));
-    await page.getByLabel('生成引擎').waitFor();
-    await page.setViewportSize({ width: 1440, height: 1020 });
-    const getState = () => desktop.evaluate(() => globalThis.__museCloudTest);
-    const settings = () => page.evaluate(() => window.museDesktop.getSettings());
-    const closeModal = () => page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click();
-    const ready = () => until(() => page.getByRole('button', { name: '生成我的 BGM', exact: true }).isEnabled(), Boolean, 'ready to generate');
-    const cleanAlert = async () => { const close = page.getByRole('button', { name: '关闭错误提示', exact: true }); if (await close.count()) await close.click(); };
-    assert.equal(path.resolve((await settings()).dataPath), path.join(profile, 'Muse-Data'));
-
-    await page.getByLabel('生成引擎').selectOption('tencent');
-    await page.getByRole('button', { name: '生成我的 BGM', exact: true }).click();
-    await page.getByRole('dialog').waitFor();
-    assert.match(await page.getByRole('alert').textContent(), /请先保存.*腾讯云/);
-    assert.equal((await getState()).requests.length, 0);
-    await cleanAlert();
-    pass('unconfigured cloud generation is blocked before any request');
-
-    const configSelect = page.getByLabel('配置的服务商');
-    await configSelect.selectOption('tencent');
-    await page.getByRole('textbox', { name: 'API Key', exact: true }).fill(fake.tencent);
-    await page.getByLabel('音乐模型', { exact: true }).selectOption('minimax-music-v2.6');
-    await page.getByRole('button', { name: '保存此服务配置', exact: true }).click();
-    await until(settings, result => result.providers.tencent.configured, 'Tencent credentials saved');
-    await configSelect.selectOption('volcengine');
-    await page.getByLabel('Access Key ID', { exact: true }).fill(fake.accessKeyId);
-    await page.getByLabel('Secret Access Key', { exact: true }).fill(fake.secretAccessKey);
-    await page.getByLabel('火山计费方式').selectOption('postpaid');
-    await page.getByRole('button', { name: '保存此服务配置', exact: true }).click();
-    await until(settings, result => result.providers.volcengine.configured, 'Volcengine credentials saved');
-    await configSelect.selectOption('aliyun');
-    await page.getByRole('textbox', { name: 'API Key', exact: true }).fill(fake.aliyun);
-    await page.getByLabel('Workspace ID', { exact: true }).fill('llm-cloud-fixture');
-    await page.getByLabel('音乐模型', { exact: true }).selectOption('fun-music-v1');
-    await page.getByRole('button', { name: '保存此服务配置', exact: true }).click();
-    await until(settings, result => result.providers.aliyun.configured, 'Aliyun credentials saved');
-    assert.equal((await getState()).requests.length, 0, 'saving credentials must never call a provider');
-    await closeModal();
-    await page.reload();
-    await page.getByLabel('生成引擎').waitFor();
-    const saved = (await settings()).providers;
-    assert.equal(saved.tencent.model, 'minimax-music-v2.6'); assert.equal(saved.volcengine.billingMode, 'postpaid');
-    assert.equal(saved.aliyun.workspaceId, 'llm-cloud-fixture'); assert.equal(saved.aliyun.model, 'fun-music-v1');
-    for (const provider of ['tencent', 'volcengine', 'aliyun']) assert.equal(saved[provider].configured, true);
-    assert.ok(!JSON.stringify(saved).includes(fake.tencent), 'settings readback must not expose secrets');
-    pass('all three provider credentials saved through UI and preserved after reload without being exposed');
-
-    await page.getByLabel('生成引擎').selectOption('tencent');
-    await page.getByLabel('生成时长').selectOption('15');
-    await desktop.evaluate(() => { globalThis.__museCloudTest.failNextTencent = true; });
-    await page.getByRole('button', { name: '生成我的 BGM', exact: true }).click();
-    await page.getByRole('alert').waitFor();
-    assert.match(await page.getByRole('alert').textContent(), /API Key.*无效|API Key.*过期/);
-    await ready();
-    assert.equal((await records(page)).length, 0);
-    assert.equal((await getState()).requests.length, 1, '401 must not be retried automatically');
-    await cleanAlert();
-    pass('401 shows an actionable error, creates no work, and never retries automatically');
-
-    const outputs = [];
-    for (const [provider, mime, extension, target] of [['tencent', 'audio/mpeg', 'mp3', 15], ['volcengine', 'audio/mp4', 'm4a', 30], ['aliyun', 'audio/wav', 'wav', 15]]) {
-      await page.getByLabel('生成引擎').selectOption(provider);
-      await page.getByLabel('生成时长').selectOption(String(target));
-      const countBefore = (await records(page)).length;
-      const requestBefore = (await getState()).requests.length;
-      // Two immediate clicks exercise the synchronous busy lock, before React repaints.
-      await page.getByRole('button', { name: '生成我的 BGM', exact: true }).evaluate(button => { button.click(); button.click(); });
-      const all = await until(() => records(page), result => result.length === countBefore + 1, `${provider} saved output`);
-      await ready();
-      const work = all[0];
-      assert.equal(work.provider, provider); assert.equal(work.mimeType, mime); assert.equal(work.config.duration, target);
-      assert.ok(work.audioDuration > 2.8 && work.audioDuration < 3.3, `actual duration from ${provider} decode: ${work.audioDuration}`);
-      assert.notEqual(work.audioDuration, work.config.duration);
-      assert.ok(await page.getByRole('slider', { name: '旋律音量', exact: true }).isDisabled(), 'cloud audio has no separate stems');
-      assert.ok(await page.getByRole('button', { name: '旋律独奏', exact: true }).isDisabled());
-      assert.match(await page.locator('.transport-time').textContent(), /00:03/);
-      const newRequests = (await getState()).requests.slice(requestBefore);
-      const submissions = newRequests.filter(request => provider === 'volcengine' ? /Action=GenBGM/.test(request.url) : provider === 'aliyun' ? request.url.includes('/music/generation') : request.url.includes('/minimax-music/generation'));
-      assert.equal(submissions.length, 1, 'double click creates exactly one billable POST');
-
-      await page.getByRole('button', { name: '播放', exact: true }).click();
-      await page.getByRole('button', { name: '暂停', exact: true }).waitFor();
-      await until(() => page.getByRole('slider', { name: '播放进度' }).inputValue(), value => Number(value) > 0.05, 'decoded cloud audio plays');
-      await page.getByRole('button', { name: '暂停', exact: true }).click();
-      await page.getByRole('button', { name: '导出', exact: true }).click();
-      const original = page.getByRole('button', { name: /导出 AI 原始音频/ });
-      assert.equal(await original.locator('.format-icon').textContent(), extension.toUpperCase());
-      const destination = path.join(profile, `${provider}-original.${extension}`);
-      await desktop.evaluate(({ dialog }, filePath) => {
-        dialog.showSaveDialog = async (_window, options) => { globalThis.__museCloudTest.dialogs.push({ defaultPath: options.defaultPath, filters: options.filters }); return { canceled: false, filePath }; };
-      }, destination);
-      await original.click();
-      const exported = await until(async () => { try { return await fs.readFile(destination); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } }, Boolean, 'original audio exported');
-      const fixture = await fs.readFile(path.join(root, 'tests', 'fixtures', `music-3s.${extension}`));
-      assert.deepEqual(exported, fixture, 'original export preserves bytes');
-      assert.equal((await getState()).dialogs.at(-1).filters[0].extensions[0], extension);
-      await closeModal();
-      outputs.push({ provider, mime, actualDuration: work.audioDuration, requestedDuration: target, bytes: work.audioBytes, originalFormat: extension });
-      pass(`${provider}: UI → IPC → adapter → decoder → saved work → playback → ${extension.toUpperCase()} original export`);
+    await mockedRun(run, shared);
+    profiles.push(shared.profile);
+    await shared.app.close({ keepProfile: true });
+    shared.app = null;
+    if (WITH_OLLAMA) {
+      await ollamaRun(run, shared);
+      if (shared.profile && !profiles.includes(shared.profile)) profiles.push(shared.profile);
     }
-
-    const state = await getState();
-    assert.deepEqual(state.unknownRequests, []); assert.deepEqual(state.deniedNetwork, []);
-    const tencent = state.requests.find(request => request.url.includes('tokenhub'));
-    assert.equal(tencent.headers.authorization, `Bearer ${fake.tencent}`);
-    assert.equal(tencent.body.model, 'minimax-music-v2.6'); assert.equal(tencent.body.is_instrumental, true);
-    assert.equal(tencent.body.output_format, 'hex'); assert.equal(tencent.body.lyrics_optimizer, false);
-    const volc = state.requests.find(request => /Action=GenBGM/.test(request.url));
-    assert.match(volc.url, /Action=GenBGMForTime/); assert.match(volc.headers.authorization, /^HMAC-SHA256 Credential=AK-fake-only/);
-    assert.match(volc.body.Text, /纯音乐/); assert.equal(volc.body.Version, 'v5.0');
-    assert.equal(volc.body.Duration, 30); assert.deepEqual(volc.body.Segments, [{ Name: 'inst', Duration: 30 }]);
-    assert.equal(state.requests.filter(request => request.url.includes('Action=QuerySong')).length, 2);
-    const aliyun = state.requests.find(request => request.url.includes('maas.aliyuncs.com'));
-    assert.equal(aliyun.headers.authorization, `Bearer ${fake.aliyun}`); assert.equal(aliyun.body.input.is_instrumental, true);
-    assert.equal(aliyun.body.model, 'fun-music-v1');
-    const downloads = state.requests.filter(request => request.method === 'GET');
-    assert.equal(downloads.length, 2);
-    for (const request of downloads) { assert.equal(request.headers.authorization, undefined); assert.equal(request.headers['x-date'], undefined); }
-    pass('captured requests match official instrumental contracts; signed polling works; no auth on CDN downloads; zero live network');
-
-    await page.getByRole('button', { name: '设置与生成服务', exact: true }).click();
-    await page.getByLabel('配置的服务商').selectOption('tencent');
-    await page.getByRole('button', { name: '移除此服务凭据', exact: true }).click();
-    const afterDelete = await until(settings, result => !result.providers.tencent.configured, 'one credential removed');
-    assert.equal(afterDelete.providers.volcengine.configured, true); assert.equal(afterDelete.providers.aliyun.configured, true);
-    await closeModal();
-    await page.reload(); await page.getByLabel('生成引擎').waitFor();
-    const afterReload = (await settings()).providers;
-    assert.equal(afterReload.tencent.configured, false); assert.equal(afterReload.volcengine.configured, true); assert.equal(afterReload.aliyun.configured, true);
-    await page.getByRole('button', { name: /^我的作品/ }).click();
-    await until(() => page.locator('.project-card').count(), count => count === 3, 'three cloud works after reload');
-    assert.deepEqual(await page.locator('.cover-duration').allTextContents(), ['00:03', '00:03', '00:03']);
-    const networkCount = (await getState()).requests.length;
-    await page.locator('.project-cover').first().click(); await ready();
-    assert.equal((await getState()).requests.length, networkCount, 'opening stored cloud audio must not regenerate');
-    pass('deleting Tencent credentials preserves other providers; three saved cloud works survive reload and reopen offline');
-
-    assert.deepEqual(errors, [], 'no renderer errors');
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.screenshot({ path: path.join(artifactDir, 'cloud-workflow.png'), fullPage: true, animations: 'disabled', style: '.toast { visibility: hidden !important; }' });
-    const sanitizedRequests = state.requests.map(({ url, method, headers, body }) => ({ url, method, authenticated: Boolean(headers.authorization), authType: headers.authorization?.split(' ')[0] ?? null, body }));
-    const report = { mode: 'mocked-provider-responses-real-ui-ipc-decoding', liveRequests: 0, passed: checks.length, checks, outputs, requests: sanitizedRequests, rendererErrors: errors };
-    await fs.writeFile(path.join(artifactDir, 'cloud-workflow-results.json'), JSON.stringify(report, null, 2));
-    console.log(`Cloud workflow passed: ${checks.length} checks, zero live traffic.`);
   } catch (error) {
-    if (page && !page.isClosed()) {
-      await page.screenshot({ path: path.join(artifactDir, 'cloud-workflow-failure.png'), fullPage: true }).catch(() => {});
-      console.error('UI alerts:', await page.getByRole('alert').allTextContents().catch(() => []));
-    }
-    console.error('Renderer errors:', errors);
-    throw error;
+    failure = await describeFailure(shared.app, 'cloud-workflow');
+    if (!error?.reported) console.error(error);
+    failure.error = String(error?.cause?.message || error?.message || error);
   } finally {
-    if (desktop) await desktop.close();
-    const resolved = path.resolve(profile);
-    if (path.dirname(resolved) === path.resolve(os.tmpdir()) && path.basename(resolved).startsWith('muse-cloud-workflow-')) await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    if (shared.app) await shared.app.close({ keepProfile: true });
+    if (shared.profile && !profiles.includes(shared.profile)) profiles.push(shared.profile);
+    for (const profile of profiles) removeProfile(profile, PREFIX);
   }
+  process.exitCode = run.finish({
+    mode: 'mocked provider and model responses; real interface, IPC, adapters, decoding and storage',
+    // counted in the last mocked step; null when the run did not get that far
+    liveRequests: shared.liveRequests ?? null,
+    outputs: shared.outputs ?? [],
+    requests: shared.requests ?? [],
+    ...(shared.ollama ? { ollama: shared.ollama } : {}),
+    ...(failure.error ? { error: failure.error, failure } : {}),
+  });
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

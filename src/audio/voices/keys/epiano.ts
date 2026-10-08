@@ -73,7 +73,11 @@ function epianoCore(
   // octave above index 1.2 and vanishes at 1.84, so the bark stops at 1.35
   const keyScale = clamp(Math.pow(2, -octave * 0.3), 0.45, 1.25);
   const barkIndex = Math.min(1.35, (0.12 + 1.1 * vel * vel) * keyScale);
-  const restIndex = Math.min(0.8, (0.1 + 0.5 * vel) * keyScale);
+  // (a soft key stays nearly pure; from mezzo-forte up the tone keeps some edge while it rings)
+  const restIndex = Math.min(
+    0.8,
+    (0.1 + 0.5 * vel + 0.3 * Math.max(0, vel - 0.4)) * keyScale,
+  );
   const barkCoef = decayCoef(
     clamp(0.3 * Math.pow(2, -octave * 0.35), 0.1, 0.5),
     sr,
@@ -91,7 +95,8 @@ function epianoCore(
   const tineTop = (0.42 * sr) / (TINE_RATIO + 1);
   const tineFade = clamp01((tineTop - f0) / (tineTop * 0.35));
   const tineLevel =
-    0.3 *
+    // (a soft key keeps the old, gentle ting)
+    (0.3 + 0.12 * clamp01((vel - 0.4) / 0.3)) *
     (0.25 + 0.95 * vel) *
     tineFade *
     clamp(0.45 + (midi - 36) / 44, 0.45, 1);

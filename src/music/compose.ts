@@ -11,7 +11,7 @@
 import type { ArrangementHints, MusicConfig } from "../types";
 import { instrumentLabel, parseKey, styleInfo, styleLabel } from "./catalog";
 import { clampConfig } from "./defaults";
-import { describeForm, planForm, planTiming, type Timing } from "./form";
+import { describeForm, planFormWithNote, planTiming, type Timing } from "./form";
 import {
   chordSpans,
   composeComp,
@@ -60,6 +60,11 @@ import {
   type BeatNote,
 } from "./theory";
 
+/**
+ * The mixer group of each role. An arpeggio decorates the tune and normally
+ * shares its fader; in a style whose arpeggio IS the harmony (no comp and no
+ * pad, e.g. chiptune) it moves to the chords group, so that fader is not dead.
+ */
 const ROLE_TRACK: Record<PartRole, TrackName> = {
   lead: "melody",
   counter: "melody",
@@ -79,8 +84,13 @@ const ROLE_MIX: Record<PartRole, Partial<PartMix>> = {
   pad: { gain: 0.4, width: 1.3, reverb: 0.4, chorus: 0.3, lowCut: 150 },
   bass: { gain: 0.78, width: 0, reverb: 0.02 },
   kit: { gain: 0.8, reverb: 0.12 },
-  perc: { gain: 0.4, pan: 0.22, width: 1.2, reverb: 0.2 },
+  // small percussion peaks 10 dB under a kick at the same velocity (see
+  // DRUM_PEAKS): at unity it is a layer about 20 LU under the mix
+  perc: { gain: 1, pan: 0.22, width: 1.2, reverb: 0.2 },
 };
+
+/** Largest PartMix.gain a style may ask for (validate.ts allows the same). */
+export const MAX_PART_GAIN = 3;
 
 /** Used when a hint switches on a layer the style does not define itself. */
 const FALLBACK_PAD: PadDef = { voice: ["pad", "airpad"], from: 2 };
@@ -91,7 +101,7 @@ const FALLBACK_ARP: ArpDef = {
   rate: { low: 4, mid: 2, high: 2 },
 };
 const FALLBACK_COUNTER: CounterDef = { voice: ["strings", "flute"], from: 2, mode: "guide" };
-const FALLBACK_PERC: PercDef = { from: 2, grooves: [{ shaker: "o.g.o.g.o.g.o.g." }] };
+const FALLBACK_PERC: PercDef = { from: 2, grooves: [{ shaker: "x.o.X.o.x.o.X.o." }] };
 
 const KIT_LABELS: Record<DrumKitId, string> = {
   pop: "流行鼓组",
@@ -112,7 +122,7 @@ const round = (value: number, digits: number) => {
 function partMix(style: StyleDef, role: PartRole, extra?: Partial<PartMix>): PartMix {
   const mix = { ...DEFAULT_PART_MIX, ...ROLE_MIX[role], ...style.mix[role], ...extra };
   return {
-    gain: clamp(mix.gain, 0, 1.5),
+    gain: clamp(mix.gain, 0, MAX_PART_GAIN),
     pan: clamp(mix.pan, -1, 1),
     width: clamp(mix.width, 0, 1.5),
     reverb: clamp(mix.reverb, 0, 1),
@@ -296,6 +306,14 @@ function spaceFor(style: StyleDef, config: MusicConfig, timing: Timing): SpaceSe
   };
 }
 
+/** How many chords of a hinted progression clampConfig did not keep (malformed, or beyond the limit). */
+function unusedChords(raw: unknown, kept: readonly string[] | undefined): number {
+  const arrangement = (raw as { arrangement?: unknown } | null | undefined)?.arrangement;
+  const list = (arrangement as { progression?: unknown } | null | undefined)?.progression;
+  if (!Array.isArray(list)) return 0;
+  return Math.max(0, list.length - (kept?.length ?? 0));
+}
+
 export function compose(config: MusicConfig): Score {
   const cfg = clampConfig((config ?? {}) as Partial<MusicConfig>);
   const style = getStyle(cfg.mood);
@@ -311,7 +329,7 @@ export function compose(config: MusicConfig): Score {
   );
   const key = makeKey(cfg.key, mode.scale);
   const timing = planTiming(cfg, style);
-  const sections = planForm(cfg, style, timing);
+  const { sections, note: formNote } = planFormWithNote(cfg, style, timing);
   const harmony = planHarmony({ config: cfg, style, key, mode, timing, sections, rng });
 
   /* ---- which layers play where ---- */
@@ -388,6 +406,7 @@ export function compose(config: MusicConfig): Score {
     source: BeatNote[],
     extraMix?: Partial<PartMix>,
     tight = 1,
+    track: TrackName = ROLE_TRACK[role],
   ) => {
     const notes = finishNotes(
       source,
@@ -401,7 +420,7 @@ export function compose(config: MusicConfig): Score {
     parts.push({
       kind: "notes",
       id,
-      track: ROLE_TRACK[role],
+      track,
       role,
       voice,
       mix: partMix(style, role, extraMix),
@@ -448,7 +467,10 @@ export function compose(config: MusicConfig): Score {
       .map(([notes, voice]) => ({ notes, high: VOICE_RANGES[voice!][1] })),
   ]);
   if (counterVoice) addNotes("counter", "counter", counterVoice, counterNotes);
-  if (arpVoice) addNotes("arp", "arp", arpVoice, arpNotes, undefined, 0.5);
+  // nothing else on the chords fader: the arpeggio is the harmony and takes it
+  const chordal = (compVoice && compNotes.length > 0) || (padVoice && padNotes.length > 0);
+  if (arpVoice)
+    addNotes("arp", "arp", arpVoice, arpNotes, undefined, 0.5, chordal ? "melody" : "chords");
   if (compVoice) addNotes("comp", "comp", compVoice, compNotes);
   if (padVoice) addNotes("pad", "pad", padVoice, padNotes, undefined, 0);
   if (style.bass && bassNotes.length)
@@ -499,22 +521,35 @@ export function compose(config: MusicConfig): Score {
   const bpmText = String(Math.round(timing.bpm));
   const notes: string[] = [
     `${styleLabel(cfg.mood)}：${style.summary}。${key.label}（${SCALE_LABELS[key.scaleName]}），${bpmText} BPM，4/4 拍。`,
-    `${timing.loop ? "循环曲式" : "曲式"}：${describeForm(publicSections)}。`,
+    // a hinted form that had to change says so on the same line (never cut by the six-line limit)
+    `${timing.loop ? "循环曲式" : "曲式"}：${describeForm(publicSections)}。${
+      formNote ? `${formNote}。` : ""
+    }`,
     `配器：${instrumentNames(parts, cfg).join("、")}。`,
   ];
   const outline = harmony.outline;
   const body = outline.verse ?? outline.chorus ?? outline.bridge;
-  if (harmony.overridden && cfg.arrangement?.progression)
-    notes.push(`和声按指定的进行：${cfg.arrangement.progression.join(" – ")}。`);
-  else if (body) {
+  // hinted chords that did not survive validation are never dropped silently
+  const unused = unusedChords(config, cfg.arrangement?.progression);
+  const unusedNote = unused ? `提示的和声中有 ${unused} 个和弦未被采用。` : "";
+  if (harmony.overridden && cfg.arrangement?.progression) {
+    const chosen = cfg.arrangement.progression;
+    let shown = chosen.length;
+    while (shown > 4 && chosen.slice(0, shown).join(" – ").length > 120) shown--;
+    notes.push(
+      `和声按指定的进行：${chosen.slice(0, shown).join(" – ")}${
+        shown < chosen.length ? ` …（共 ${chosen.length} 个和弦）` : ""
+      }。${unusedNote}`,
+    );
+  } else if (body) {
     const first = sections.find((section) => section.type === "verse")?.label ?? "主歌";
     const second = sections.find((section) => section.type === "chorus")?.label ?? "副歌";
     notes.push(
       `和声：${first} ${body.join(" – ")}${
         outline.chorus && outline.verse ? `；${second} ${outline.chorus.join(" – ")}` : ""
-      }。`,
+      }。${unusedNote}`,
     );
-  }
+  } else if (unusedNote) notes.push(unusedNote);
   if (timing.adjusted === "tempo")
     notes.push(`为了无缝循环，速度微调为 ${bpmText} BPM（${timing.bars} 小节正好 ${cfg.duration} 秒）。`);
   else if (timing.adjusted === "duration")

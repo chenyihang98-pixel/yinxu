@@ -88,6 +88,16 @@ export const rock: StyleDef = {
     hook: 0.3,
     cells: ["x..x..x.", "x.x.x...", "x...x.x.", "__x.x.x.", "x.x.x.x.", "x.xx....", "x.....x."],
   },
+  // every lead goes through the same amp (mix.lead.drive); quiet, fast-decaying ones are turned up against the guitars
+  lead: {
+    piano: { gain: 0.7 },
+    epiano: { gain: 0.75 },
+    pluck: { gain: 0.7 },
+    marimba: { gain: 0.85 },
+    vibes: { gain: 0.72 },
+    guzheng: { gain: 0.64, highCut: 5500 },
+    dizi: { gain: 0.58, highCut: 5500 },
+  },
   comp: {
     voice: "overdrive",
     from: 0,
@@ -122,7 +132,7 @@ export const rock: StyleDef = {
     kit: "acoustic",
     from: 0.1,
     grooves: {
-      low: [{ kick: "x.......x.......", snare: "....o.......o...", hatClosed: "o...o...o...o..." }],
+      low: [{ kick: "x.......x.......", snare: "....x.......x...", hatClosed: "x...o...x...o..." }],
       mid: [
         { kick: "X.......x.x.....", snare: "....X.......X...", hatClosed: "x.x.x.x.x.x.x.x." },
         {
@@ -132,8 +142,14 @@ export const rock: StyleDef = {
           hatOpen: "..............o.",
         },
       ],
+      // verses keep the hats closed and tight; the chorus opens them up or moves to the ride
       high: [
-        { kick: "X.....x.x.x.....", snare: "....X.......X...", hatOpen: "x.x.x.x.x.x.x.x." },
+        {
+          kick: "X.....x.x.x.....",
+          snare: "....X.......X...",
+          hatClosed: "x.x.x.x.x.x.x.x.",
+          hatOpen: "..............x.",
+        },
         {
           kick: "X..x..x.X..x..x.",
           snare: "....X.......X...",
@@ -141,6 +157,7 @@ export const rock: StyleDef = {
           hatClosed: "..x...x...x...x.",
         },
         { kick: "X.x...x.X.x.....", snare: "....X.......X..x", ride: "x.x.x.x.x.x.x.x." },
+        { kick: "X.....x.x.x.....", snare: "....X.......X...", hatOpen: "x.x.x.x.x.x.x.x." },
       ],
     },
     fills: {
@@ -163,14 +180,17 @@ export const rock: StyleDef = {
   perc: { from: 0.8, grooves: [{ tambourine: "..x...x...x...x." }] },
   swing: 0,
   humanize: { timing: 8, velocity: 0.09 },
-  form: { loop: "AB", intro: 0.8, outro: 0.8, tail: 2.5 },
+  // verses pull back to palm-muted chugs and closed hats, so the chorus has somewhere to go
+  form: { loop: "AB", intro: 0.8, outro: 0.8, tail: 2.5, energy: { verse: [0.74, 0.02] } },
   mix: {
-    lead: { gain: 0.82, reverb: 0.22, delay: 0.12, drive: 0.25 },
-    comp: { gain: 0.6, pan: -0.25, width: 1.2, reverb: 0.15, lowCut: 80, drive: 0.5 },
-    pad: { gain: 0.3 },
-    bass: { gain: 0.82, drive: 0.15 },
-    kit: { gain: 0.92, reverb: 0.2 },
-    perc: { gain: 0.3 },
+    lead: { gain: 0.64, reverb: 0.22, delay: 0.12, drive: 0.25 },
+    // one guitar part: an ensemble chorus spreads it left and right the way a double-tracked take would sit
+    comp: { gain: 0.39, pan: 0, width: 1.5, reverb: 0.15, chorus: 0.5, lowCut: 80, drive: 0.5 },
+    pad: { gain: 0.2 },
+    bass: { gain: 0.8, drive: 0.2 },
+    // as loud as PartMix allows: everything else is set against the kit
+    kit: { gain: 1.5, reverb: 0.28, drive: 0.12 },
+    perc: { gain: 0.75 },
   },
   space: {
     size: 0.45,

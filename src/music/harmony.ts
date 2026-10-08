@@ -593,7 +593,7 @@ export function composeComp(ctx: Ctx, def: CompDef, voice: VoiceId): BeatNote[] 
     const floor = Math.max(range[0], bassless ? 36 : 50);
     for (let b = 0; b < section.playBars; b++) {
       const bar = section.startBar + b;
-      const level = 0.62 + 0.38 * energyAtBar(section, bar);
+      const level = (0.62 + 0.38 * energyAtBar(section, bar)) * (pattern.level ?? 1);
       for (const [row, text] of Object.entries(pattern.rows) as [CompRow, string][]) {
         const parsed = parseSteps(text);
         const offset = (b % (parsed.steps / 16)) * 16;

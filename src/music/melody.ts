@@ -686,13 +686,21 @@ export function composeLead(ctx: Ctx): BeatNote[] {
   /** where the previous phrase left the line, so a new phrase never starts a world away */
   let carry: number | undefined;
 
+  // the chorus sits higher than the verse — but only as far as the instrument
+  // has room: leads centred on C5 or lower get the whole lift, a flute about
+  // half, a dizi or a bell a third or less and a music box none, so a tune
+  // that already sings near the top is not pushed into its whistle register
+  const wantedLift = def.chorusLift ?? 3;
+  const chorusLift =
+    wantedLift > 0 ? wantedLift * clamp((81 - trait.centre) / 9, 0, 1) : wantedLift;
+
   const composeSection = (section: SectionPlan): Draft[] => {
     const motif = motifFor(section.type);
     const family = MOTIF_FAMILY[section.type];
     const dice = rng.fork(`lead:${section.type}`);
     const lift =
       section.type === "chorus" || section.type === "build"
-        ? (def.chorusLift ?? 3)
+        ? chorusLift
         : section.type === "bridge"
           ? -2
           : section.type === "breakdown"
@@ -1053,7 +1061,10 @@ export function composeLead(ctx: Ctx): BeatNote[] {
     if (!note.phraseStart) return;
     const section = sections[note.section];
     const dice = rng.fork(`pickup:${section.type}:${note.phrase}`);
-    if (!dice.chance(def.pickup * (0.6 + 0.6 * complexity))) return;
+    // the last bar of a loop leads back into bar 1: wherever the tune leaves
+    // room for it there, the pickup into the first phrase is all but certain
+    const wanted = def.pickup * (0.6 + 0.6 * complexity);
+    if (!dice.chance(i === 0 && timing.loop ? Math.max(wanted, 0.85) : wanted)) return;
     const count = density > 0.55 && dice.chance(0.5) ? 2 : 1;
     const previous = i > 0 ? drafts[i - 1] : timing.loop ? drafts[drafts.length - 1] : undefined;
     const previousEnd = previous

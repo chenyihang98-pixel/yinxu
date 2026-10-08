@@ -99,30 +99,46 @@ export const guofeng: StyleDef = {
     // a long note, then a quick turn of two or three: the gait of a plucked zither
     cells: ["x.....xx", "x...x.xx", "x..xx...", "x.xxx...", "x.x.x...", "x.......", "xx..x..."],
   },
+  // another lead is accompanied by the zither itself, which is brighter than the guitar under a zither lead
+  lead: {
+    piano: { gain: 0.76 },
+    epiano: { gain: 0.85 },
+    guitar: { gain: 0.7 },
+    synth: { gain: 0.72 },
+    pluck: { gain: 0.78 },
+    bell: { gain: 0.72 },
+    musicbox: { gain: 0.76 },
+    marimba: { gain: 0.9 },
+    vibes: { gain: 0.84 },
+    flute: { gain: 0.78 },
+    strings: { gain: 0.74 },
+    dizi: { gain: 0.66 },
+    chip: { gain: 0.74 },
+  },
   comp: {
     voice: ["guzheng", "nylon"],
     from: 0,
     patterns: {
       low: [
         { rows: { all: "X..............." }, strum: 0.05 },
-        { rows: { "1": "X...............", "3": "....o...........", top: "........o......." } },
+        { rows: { "1": "X...............", "3": "....x...........", top: "........x......." } },
       ],
       mid: [
         {
           rows: {
             "1": "X.......x.......",
-            "2": "..o.......o.....",
-            "3": "....o.......o...",
-            top: "......o.......o.",
+            "2": "..x.......o.....",
+            "3": "....o.......x...",
+            top: "......x.......o.",
           },
         },
-        { rows: { low: "X...............", upper: "........o......." }, strum: 0.04 },
+        { rows: { low: "X...............", upper: "........x......." }, strum: 0.04 },
         {
           rows: {
             "1": "X...............",
             "2": "..o...o...o...o.",
-            "3": "....o.......o...",
-            top: "........o.......",
+            "3": "....x.......x...",
+            top: "........x.......",
           },
         },
       ],
@@ -148,13 +164,14 @@ export const guofeng: StyleDef = {
   },
   pad: { voice: ["strings", "pad"], from: 0.48, register: [52, 74] },
   // the flute floats above the zither rather than underneath it
-  counter: { voice: ["dizi", "strings"], from: 0.3, mode: "guide", placement: "above" },
+  counter: { voice: ["dizi", "strings"], from: 0.22, mode: "guide", placement: "above" },
   bass: {
     voice: "fingerBass",
-    from: 0.45,
+    from: 0.25,
     feel: { low: "root", mid: "root", high: "root" },
     register: [33, 45],
-    approach: 0.1,
+    // no approach tones: a chromatic neighbour has no place under a five-note scale
+    approach: 0,
     gate: 0.95,
     calm: true,
   },
@@ -163,16 +180,16 @@ export const guofeng: StyleDef = {
     from: 0.3,
     grooves: {
       low: [
-        { woodblock: "....o.......o..." },
-        { woodblock: "o.......o...o...|o.......o......." },
+        { woodblock: "....x.......x..." },
+        { woodblock: "x.......o...x...|x.......o......." },
       ],
       mid: [
-        { tomLow: "x.........o.....", woodblock: "....o.......o.o." },
-        { tomLow: "x.......o.......", woodblock: "..o...o...o...o." },
+        { tomLow: "x.........o.....", woodblock: "....x.......x.o." },
+        { tomLow: "x.......o.......", woodblock: "..x...o...x...o." },
       ],
       high: [
         { tomLow: "X.....x.x.......", woodblock: "..x...x...x.x.x." },
-        { taiko: "X.......x.....x.", tomLow: "....x.......x...", woodblock: "..o...o...o...o." },
+        { taiko: "X.......x.....x.", tomLow: "....x.......x...", woodblock: "..x...o...x...o." },
       ],
     },
     fills: {
@@ -190,12 +207,12 @@ export const guofeng: StyleDef = {
   humanize: { timing: 14, velocity: 0.12 },
   form: { loop: "AB", intro: 1.2, outro: 1.3, tail: 3 },
   mix: {
-    lead: { reverb: 0.4, delay: 0.12 },
-    comp: { gain: 0.48, pan: -0.2, reverb: 0.35 },
-    counter: { gain: 0.42, pan: 0.3, reverb: 0.5 },
-    pad: { gain: 0.3, reverb: 0.5 },
-    bass: { gain: 0.6 },
-    kit: { gain: 0.6, reverb: 0.4 },
+    lead: { gain: 0.6, reverb: 0.4, delay: 0.12 },
+    comp: { gain: 0.68, pan: -0.2, reverb: 0.35 },
+    counter: { gain: 0.5, pan: 0.3, reverb: 0.5 },
+    pad: { gain: 0.4, reverb: 0.5 },
+    bass: { gain: 0.92 },
+    kit: { gain: 1.1, reverb: 0.4 },
   },
   space: {
     size: 0.7,

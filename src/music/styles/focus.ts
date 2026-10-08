@@ -78,17 +78,18 @@ export const focus: StyleDef = {
     from: 0,
     patterns: {
       low: [
-        { rows: { low: "X...............", upper: "........o......." } },
-        { rows: { all: "X..............." }, strum: 0.02 },
+        { rows: { low: "X...............", upper: "........x......." } },
+        { rows: { all: "X.......x......." }, strum: 0.02 },
       ],
       mid: [
-        { rows: { low: "X.......o.......", upper: "....o.......o..." } },
-        { rows: { "1": "X.......o.......", "2": "....o.......o...", top: "..o...o...o...o." } },
+        { rows: { low: "X.......x.......", upper: "....o.......o..." } },
+        { rows: { "1": "X.......x.......", "2": "....o.......o...", top: "..o...o...o...o." } },
       ],
-      high: [{ rows: { low: "X...o...o...o...", upper: "..o...o...o...o." } }],
+      high: [{ rows: { low: "X...o...x...o...", upper: "..o...o...o...o." } }],
     },
   },
-  pad: { voice: ["pad", "airpad"], from: 0.2, register: [50, 74] },
+  // the pulse (sub bass and shaker) is there from the verse on; the pad is what the B section adds
+  pad: { voice: ["pad", "airpad"], from: 0.3, register: [50, 74] },
   arp: {
     voice: ["marimba", "pluck"],
     from: 0.55,
@@ -99,7 +100,7 @@ export const focus: StyleDef = {
   },
   bass: {
     voice: "subBass",
-    from: 0.3,
+    from: 0.2,
     feel: { low: "root", mid: "root", high: "root" },
     register: [31, 45],
     approach: 0.2,
@@ -108,26 +109,41 @@ export const focus: StyleDef = {
     kit: "soft",
     from: 0.42,
     grooves: {
-      low: [{ kick: "x.......o.......", rim: "....o.......o..." }],
-      mid: [{ kick: "x.......o.o.....", rim: "....o.......o...", hatClosed: "o.g.o.g.o.g.o.g." }],
-      high: [{ kick: "x.....o.x.......", snare: "....o.......o...", hatClosed: "o.g.o.g.o.g.o.g." }],
+      low: [{ kick: "o.......g.......", rim: "....X.......X..." }],
+      mid: [{ kick: "o.......g.o.....", rim: "....X.......X...", hatClosed: "x.o.x.o.x.o.x.o." }],
+      high: [{ kick: "x.....o.o.......", snare: "....o.......o...", hatClosed: "X.x.X.x.X.x.X.x." }],
     },
     crash: null,
     ghost: 0.1,
   },
   perc: {
-    from: 0.28,
-    grooves: [{ shaker: "o.g.o.g.o.g.o.g." }, { shaker: "..o...o...o...o." }],
+    from: 0.2,
+    grooves: [{ shaker: "..x...x...x...x." }, { shaker: "x.o.x.o.x.o.x.o." }],
+  },
+  // sustained leads do not decay the way the piano does, so they are set back; mellow keys come forward
+  lead: {
+    epiano: { gain: 0.86, drive: 0.3 },
+    marimba: { gain: 0.89, drive: 0.3 },
+    vibes: { gain: 0.83, drive: 0.2 },
+    synth: { gain: 0.61, highCut: 6000 },
+    flute: { gain: 0.61 },
+    strings: { gain: 0.61 },
+    guzheng: { gain: 0.65 },
+    dizi: { gain: 0.56, highCut: 6000 },
+    chip: { gain: 0.6, highCut: 5000 },
   },
   swing: 0,
   humanize: { timing: 8, velocity: 0.08 },
-  form: { loop: "AB", intro: 1, outro: 1 },
+  form: { loop: "AB", intro: 1, outro: 1, tail: 1.8 },
+  // the sub sits 8–9 LU under the mix (it used to be as loud as the tune) with a little saturation so
+  // small speakers get its harmonics; the shaker is a texture 20 LU down, but no longer inaudible
   mix: {
-    lead: { gain: 0.72, reverb: 0.3 },
-    comp: { gain: 0.5 },
+    lead: { gain: 0.76, reverb: 0.3 },
+    comp: { gain: 0.5, width: 0.85 },
     pad: { gain: 0.34 },
-    perc: { gain: 0.28 },
-    kit: { gain: 0.6 },
+    bass: { gain: 0.38, drive: 0.2 },
+    perc: { gain: 1.4 },
+    kit: { gain: 1.3 },
   },
   space: {
     size: 0.42,
@@ -138,5 +154,5 @@ export const focus: StyleDef = {
     delayBeats: 0.75,
     delayFeedback: 0.2,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: -0.1 },
+  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: 0.05 },
 };

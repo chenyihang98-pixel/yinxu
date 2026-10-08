@@ -88,6 +88,17 @@ export const epic: StyleDef = {
     cells: ["x.....x.", "x...x.x.", "x..x..x.", "x.......", "x.x.x...", "x..xx..."],
     gate: 0.97,
   },
+  // struck leads need more level to ride over brass and drums; the dizi cuts through by itself
+  lead: {
+    piano: { gain: 1.09 },
+    epiano: { gain: 1.16 },
+    guitar: { gain: 1.05 },
+    pluck: { gain: 1.08 },
+    musicbox: { gain: 1.08 },
+    marimba: { gain: 1.35 },
+    vibes: { gain: 1.16 },
+    dizi: { gain: 0.82 },
+  },
   comp: {
     voice: "brass",
     from: 0.5,
@@ -98,7 +109,8 @@ export const epic: StyleDef = {
       high: [{ rows: { all: "X.....x-X.x-x-.." } }, { rows: { all: "X-.x-.x-X-.x-.x-" } }],
     },
   },
-  pad: { voice: ["strings", "choir"], from: 0.2, register: [48, 74], voices: 4 },
+  // the bed plays at any energy, so no section is ever empty when the piece is turned right down
+  pad: { voice: ["strings", "choir"], from: 0, register: [48, 74], voices: 4 },
   arp: {
     voice: ["pizzicato", "marimba"],
     from: 0.45,
@@ -110,11 +122,13 @@ export const epic: StyleDef = {
   counter: { voice: ["brass", "choir"], from: 0.82, mode: "double" },
   bass: {
     voice: "synthBass",
-    from: 0.25,
+    from: 0.12,
     feel: { low: "pedal", mid: "root", high: "root" },
-    register: [29, 43],
+    register: [31, 45],
     approach: 0.15,
-    gate: 0.9,
+    gate: 1,
+    // the held drone of the quiet sections carries far more than the pulsed line at the same gain
+    level: { low: 0.8 },
   },
   drums: {
     kit: "cinematic",
@@ -151,13 +165,13 @@ export const epic: StyleDef = {
   humanize: { timing: 5, velocity: 0.07 },
   form: { loop: "AB", intro: 1, outro: 1.2, tail: 2.8 },
   mix: {
-    lead: { gain: 0.82, reverb: 0.4 },
-    comp: { gain: 0.55, pan: 0.15, reverb: 0.4 },
-    pad: { gain: 0.45, reverb: 0.5 },
-    arp: { gain: 0.42, pan: -0.2, reverb: 0.3, delay: 0 },
+    lead: { gain: 0.95, reverb: 0.4 },
+    comp: { gain: 0.62, pan: 0.15, reverb: 0.4 },
+    pad: { gain: 0.5, reverb: 0.5 },
+    arp: { gain: 0.55, pan: -0.2, reverb: 0.3, delay: 0 },
     counter: { gain: 0.48, pan: 0.2, reverb: 0.4 },
-    bass: { drive: 0.2 },
-    kit: { gain: 0.9, reverb: 0.35 },
+    bass: { gain: 1.15, drive: 0.45 },
+    kit: { gain: 0.82, reverb: 0.35 },
   },
   space: {
     size: 0.9,

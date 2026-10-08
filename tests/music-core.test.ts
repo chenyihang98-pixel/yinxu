@@ -8,7 +8,7 @@ import {
   type InstrumentId,
   type StyleId,
 } from "../src/music/catalog";
-import { compose, summarize } from "../src/music/compose";
+import { MAX_PART_GAIN, compose, summarize } from "../src/music/compose";
 import { DEFAULT_CONFIG, ROMAN, stylePreset } from "../src/music/defaults";
 import { hashSeed, seededRandom } from "../src/music/random";
 import {
@@ -732,6 +732,239 @@ test("random arrangement hints never break a Score", () => {
   }
 });
 
+test("hostile hints: every roman form the grammar allows is a real chord and survives into the Score", () => {
+  const numerals = ["VII", "VI", "IV", "V", "III", "II", "I", "vii", "vi", "iv", "v", "iii", "ii", "i"];
+  const suffixes = ["", "maj7", "maj9", "m7b5", "dim7", "dim", "aug", "sus2", "sus4", "add9", "m9", "m7", "m6", "7", "9", "6", "°", "ø"];
+  const accidentals = ["", "b", "#"];
+  const all: string[] = [];
+  for (const accidental of accidentals)
+    for (const numeral of numerals)
+      for (const suffix of suffixes) {
+        all.push(`${accidental}${numeral}${suffix}`);
+        for (const slashAccidental of accidentals)
+          for (const slash of numerals) all.push(`${accidental}${numeral}${suffix}/${slashAccidental}${slash}`);
+      }
+  assert.equal(all.length, 3 * 14 * 18 * 43);
+  for (const [keyName, scale] of [["C major", "major"], ["F# minor", "naturalMinor"]] as const) {
+    const key = makeKey(keyName, scale);
+    for (const roman of all) {
+      assert.ok(ROMAN.test(roman), `${roman} is outside the hint grammar`);
+      const chord = parseRoman(roman, key);
+      assert.ok(chord, `${roman} in ${keyName} does not parse (compose would play the tonic instead)`);
+      assert.ok(chord.pitchClasses.length >= 2 && chord.pitchClasses.length <= 7 && chord.symbol.length > 0, roman);
+      assert.ok(chord.pitchClasses.every((value) => Number.isInteger(value) && value >= 0 && value <= 11), roman);
+    }
+  }
+  // sampled through the composer: every bar plays the chord that was asked for
+  const rng = seededRandom(20261009);
+  for (let i = 0; i < 120; i++) {
+    const style = rng.pick(STYLE_IDS);
+    const progression = Array.from({ length: rng.int(2, 16) }, () => rng.pick(all));
+    const cfg = config(style, {
+      loop: true,
+      duration: rng.int(15, 120),
+      key: rng.pick(KEYS),
+      instrument: rng.pick(INSTRUMENT_IDS),
+      seed: i,
+      arrangement: { progression },
+    });
+    const score = compose(cfg);
+    const label = `roman fuzz #${i} ${progression.join(" ")}`;
+    assertValid(score, cfg, label);
+    // clampConfig keeps entries of at most 12 characters; the 13-character forms (#viimaj7/#VII) are reported, not swallowed
+    const kept = progression.filter((roman) => roman.length <= 12);
+    const line = score.notes.find((item) => item.startsWith("和声")) ?? "";
+    if (kept.length >= 2) {
+      const bars = new Map(score.chords.map((chord) => [chord.bar, chord.roman]));
+      for (let bar = 0; bar < Math.min(score.bars, 16); bar++)
+        assert.equal(bars.get(bar), kept[bar % kept.length], `${label}: bar ${bar}`);
+      assert.ok(line.startsWith("和声按指定的进行"), `${label}: no note about the progression`);
+    }
+    assert.equal(line.includes(`有 ${progression.length - (kept.length >= 2 ? kept.length : 0)} 个和弦未被采用`), kept.length < progression.length || kept.length < 2, `${label}: ${line}`);
+  }
+  // sixteen of the longest chord names still fit a line of the notes
+  const longest = Array.from({ length: 16 }, () => "#viimaj7/bVI");
+  const wordy = compose(config("bright", { arrangement: { progression: longest } }));
+  assertValid(wordy, config("bright", { arrangement: { progression: longest } }), "sixteen long chord names");
+  assert.ok(wordy.notes.some((line) => line.includes("（共 16 个和弦）")));
+});
+
+test("hostile hints: a form far too long or too short is fitted musically and says so in the notes", () => {
+  const types = (score: Score) => score.sections.map((section) => section.type);
+  const formLine = (score: Score) => score.notes.find((line) => line.includes("曲式：")) ?? "";
+  const isSubsequence = (short: string[], long: string[]) => {
+    let at = 0;
+    for (const item of long) if (item === short[at]) at++;
+    return at === short.length;
+  };
+  const pop = [
+    { type: "intro" as const, bars: 4, energy: 0.3 },
+    { type: "verse" as const, bars: 8, energy: 0.5 },
+    { type: "chorus" as const, bars: 8, energy: 0.9 },
+    { type: "verse" as const, bars: 8, energy: 0.55 },
+    { type: "chorus" as const, bars: 8, energy: 1 },
+    { type: "bridge" as const, bars: 4, energy: 0.5 },
+    { type: "chorus" as const, bars: 4, energy: 1 },
+    { type: "outro" as const, bars: 4, energy: 0.3 },
+  ];
+
+  // 48 bars written for 60 seconds that hold 28: squeezed, in order, on even phrases
+  for (const loop of [true, false]) {
+    const cfg = config("bright", { loop, duration: 60, arrangement: { form: pop } });
+    const score = compose(cfg);
+    assertValid(score, cfg, `48 bars for 60 s (loop ${loop})`);
+    assert.equal(score.duration, 60);
+    assert.equal(score.bars, 28);
+    assert.ok(isSubsequence(types(score), pop.map((item) => item.type)), `sections out of order: ${types(score)}`);
+    assert.ok(types(score).includes("verse") && types(score).includes("chorus"));
+    assert.ok(score.sections.every((section) => section.bars >= 2 && section.bars % 2 === 0), `odd sections: ${score.sections.map((s) => s.bars)}`);
+    assert.match(formLine(score), /提示的曲式共 48 小节，这里只有 28 小节，已.*按比例压缩/);
+    // the chorus is still the loudest part of the plan
+    const energyOf = (type: string) => Math.max(...score.sections.filter((section) => section.type === type).map((section) => section.energy));
+    assert.ok(energyOf("chorus") > energyOf("verse") && energyOf("verse") > energyOf("intro"));
+  }
+
+  // far too many sections for the room: the dispensable ones go first and the note names them
+  const crowded = Array.from({ length: 12 }, (_, i) => ({ type: (["verse", "chorus", "bridge"] as const)[i % 3], bars: 32, energy: 0.6 }));
+  const tight = config("jazz", { loop: false, duration: 30, arrangement: { form: crowded } });
+  const trimmed = compose(tight);
+  assertValid(trimmed, tight, "384 bars for 30 s");
+  assert.equal(trimmed.duration, 30);
+  assert.ok(trimmed.sections.length < 12 && trimmed.sections.every((section) => section.bars >= 2));
+  assert.ok(!types(trimmed).includes("bridge"));
+  assert.match(formLine(trimmed), /提示的曲式共 384 小节.*已省去桥段和部分反复并按比例压缩/);
+  // fifteen seconds at a slow tempo: three bars of music still get a verse and a chorus
+  const tinyRoom = config("sad", { loop: false, duration: 15, bpm: 60, arrangement: { form: pop } });
+  const tinyPiece = compose(tinyRoom);
+  assertValid(tinyPiece, tinyRoom, "48 bars for 15 s");
+  assert.equal(tinyPiece.duration, 15);
+  assert.deepEqual(types(tinyPiece), ["verse", "chorus"]);
+  assert.match(formLine(tinyPiece), /已省去.*并按比例压缩/);
+
+  // two bars of verse for two minutes: one kind of section cannot carry a piece
+  for (const loop of [true, false]) {
+    const cfg = config("bright", { loop, duration: 120, arrangement: { form: [{ type: "verse", bars: 2, energy: 0.5 }] } });
+    const score = compose(cfg);
+    assertValid(score, cfg, `2 bars for 120 s (loop ${loop})`);
+    assert.equal(score.duration, 120);
+    assert.ok(new Set(types(score)).size >= 3, `no contrast: ${types(score)}`);
+    assert.ok(score.sections.every((section) => section.bars >= 2 && section.bars <= 24));
+    assert.match(formLine(score), /提示的曲式只有 2 小节的主歌，撑不满全曲，已按本风格的常规曲式展开/);
+    // the energy asked for the verse is kept for every verse
+    const plain = compose({ ...cfg, arrangement: undefined });
+    const verses = score.sections.filter((section) => section.type === "verse");
+    assert.ok(verses.length >= 1 && verses.every((section) => Math.abs(section.energy - 0.5 * (0.6 + 0.8 * cfg.energy)) < 1e-3));
+    assert.equal(score.bars, plain.bars);
+  }
+  // verse + chorus of two bars each: repeated in phrases, not stretched into two endless sections
+  const pair = [{ type: "verse" as const, bars: 2, energy: 0.4 }, { type: "chorus" as const, bars: 2, energy: 0.9 }];
+  for (const [style, bpm] of [["battle", 200], ["chill", 80]] as const) {
+    const cfg = config(style, { loop: false, duration: 120, bpm, arrangement: { form: pair } });
+    const score = compose(cfg);
+    assertValid(score, cfg, `${style}: 4 bars for 120 s`);
+    assert.equal(score.duration, 120);
+    assert.ok(score.sections.length >= 4 && score.sections.length <= 16, `${score.sections.length} sections`);
+    assert.ok(types(score).every((type, index) => type === (index % 2 ? "chorus" : "verse")), `${types(score)}`);
+    assert.ok(score.sections.every((section) => section.bars >= 4 && section.bars <= 24), `${score.sections.map((s) => s.bars)}`);
+    assert.match(formLine(score), /提示的曲式共 4 小节，已反复 \d+ 遍填满 \d+ 小节/);
+    // later verses arrive a little stronger, never weaker
+    const verses = score.sections.filter((section) => section.type === "verse").map((section) => section.energy);
+    assert.ok(verses.every((value, index) => index === 0 || value >= verses[index - 1] - 1e-9) && verses[verses.length - 1] > verses[0]);
+  }
+  // a little short: stretched in proportion
+  const short = config("bright", { loop: true, duration: 60, arrangement: { form: [{ type: "verse", bars: 8, energy: 0.5 }, { type: "bridge", bars: 4, energy: 0.5 }, { type: "chorus", bars: 4, energy: 0.9 }] } });
+  const stretched = compose(short);
+  assertValid(stretched, short, "16 bars for 28");
+  assert.deepEqual(types(stretched), ["verse", "bridge", "chorus"]);
+  assert.ok(stretched.sections[0].bars > stretched.sections[1].bars && stretched.sections.every((section) => section.bars >= 4));
+  assert.match(formLine(stretched), /提示的曲式共 16 小节，已按比例延展到 28 小节/);
+
+  // a form that fits is kept as written and nothing is said about it
+  const exact = [{ type: "verse" as const, bars: 12, energy: 0.5 }, { type: "chorus" as const, bars: 16, energy: 0.9 }];
+  const fitsLoop = compose(config("bright", { loop: true, duration: 60, arrangement: { form: exact } }));
+  assert.deepEqual(fitsLoop.sections.map((section) => section.bars), [12, 16]);
+  assert.ok(!formLine(fitsLoop).includes("提示"));
+  // written for the whole length of a piece that ends: the last section holds the final chord
+  const fitsSong = compose(config("bright", { loop: false, duration: 60, arrangement: { form: exact } }));
+  assert.deepEqual(fitsSong.sections.map((section) => section.bars), [12, 16]);
+  assert.ok(!formLine(fitsSong).includes("提示"));
+
+  // random forms: always valid, always the asked length, and a changed form is always announced
+  const rng = seededRandom(987123);
+  const sectionTypes = ["intro", "verse", "chorus", "bridge", "breakdown", "build", "outro"] as const;
+  let noted = 0;
+  for (let i = 0; i < 500; i++) {
+    const form = Array.from({ length: rng.int(1, 12) }, () => ({ type: rng.pick(sectionTypes), bars: rng.int(1, 32), energy: rng.next() }));
+    const cfg = config(rng.pick(STYLE_IDS), { loop: rng.chance(0.5), duration: rng.int(15, 120), bpm: rng.int(50, 200), seed: i, arrangement: { form } });
+    const score = compose(cfg);
+    const label = `form fuzz #${i} ${JSON.stringify(cfg.arrangement)} ${cfg.mood} ${cfg.bpm} bpm ${cfg.duration} s loop ${cfg.loop}`;
+    assertValid(score, cfg, label);
+    if (!cfg.loop) assert.equal(score.duration, cfg.duration, label);
+    else assert.ok(score.duration <= cfg.duration + 240 / score.bpm + 1e-6 && score.duration <= 125, `${label}: ${score.duration} s`);
+    assert.equal(score.sections.reduce((total, section) => total + section.bars, 0), score.bars, label);
+    // "as written": in a piece that ends, the last section also shows the bars of the final chord and its tail
+    const asked = form.reduce((total, item) => total + item.bars, 0);
+    const same =
+      score.sections.length === form.length &&
+      score.sections.every(
+        (section, index) =>
+          section.type === form[index].type &&
+          (section.bars === form[index].bars || (!cfg.loop && index === form.length - 1 && asked <= score.bars && asked >= score.bars - 6)),
+      );
+    const line = formLine(score);
+    if (!same) {
+      assert.ok(line.includes("提示的曲式"), `${label}: the form changed without a note — ${line}`);
+      noted++;
+    }
+    assert.ok(line.length <= 200, `${label}: ${line.length} characters`);
+  }
+  assert.ok(noted > 300);
+});
+
+test("hostile hints: drums off with percussion on, swing at both limits, tempo and length at their limits", () => {
+  for (const style of STYLE_IDS) {
+    // "no drums" plus an explicit percussion layer: no kit, but the shaker (or the style's own percussion) plays
+    const quiet = config(style, { loop: true, duration: 30, arrangement: { drums: "none", layers: { perc: true } } });
+    const score = compose(quiet);
+    assertValid(score, quiet, `${style}: drums none + perc`);
+    assert.ok(!score.parts.some((part) => part.role === "kit"), `${style}: a kit plays although drums are "none"`);
+    const perc = drumParts(score).find((part) => part.role === "perc");
+    assert.ok(perc && perc.hits.length >= 4, `${style}: the forced percussion layer is missing`);
+    assert.ok(!perc.hits.some((hit) => hit.kind === "kick" || hit.kind === "snare"), `${style}: percussion plays kit drums`);
+    assert.ok(noteParts(score).length >= 2);
+
+    for (const swing of [0, 0.66])
+      for (const loop of [true, false]) {
+        const cfg = config(style, { loop, duration: 24, arrangement: { swing } });
+        const swung = compose(cfg);
+        assertValid(swung, cfg, `${style}: swing ${swing}`);
+        assert.equal(swung.swing, swing);
+      }
+
+    for (const bpm of [50, 200])
+      for (const duration of [15, 120])
+        for (const loop of [true, false]) {
+          const cfg = config(style, { bpm, duration, loop });
+          const piece = compose(cfg);
+          const label = `${style} ${bpm} BPM ${duration} s loop ${loop}`;
+          assertValid(piece, cfg, label);
+          if (loop) {
+            // a loop may move to the nearest whole bars, never further, and says so
+            assert.ok(Math.abs(piece.duration - duration) <= 240 / piece.bpm + 1e-6, `${label}: ${piece.duration} s`);
+            assert.ok(piece.duration <= 125, `${label}: ${piece.duration} s is too long`);
+            if (Math.abs(piece.duration - duration) > 0.01)
+              assert.ok(piece.notes.some((line) => line.includes("时长取整")), `${label}: silent length change`);
+            if (Math.abs(piece.bpm - bpm) > 0.01)
+              assert.ok(piece.notes.some((line) => line.includes("速度微调")), `${label}: silent tempo change`);
+          } else {
+            assert.equal(piece.duration, duration, label);
+            assert.equal(piece.bpm, bpm, label);
+          }
+          assert.ok(eventCount(piece) >= (duration === 15 ? 4 : 40), `${label}: only ${eventCount(piece)} events`);
+        }
+  }
+});
+
 test("one swing ratio moves every part's off-beats by the same amount", () => {
   const cfg = config("jazz", { loop: true, duration: 30, energy: 0.6, arrangement: { swing: 0.66 } });
   const score = compose(cfg);
@@ -885,4 +1118,159 @@ test("parts use unique ids and the four mixer groups", () => {
   const tracks = new Set(score.parts.map((part) => part.track));
   assert.deepEqual([...tracks].sort(), ["bass", "chords", "drums", "melody"], describeParts(score.parts));
   assert.equal(new Set(score.parts.map((part) => part.id)).size, score.parts.length);
+});
+
+/* ---------- engine finalisation: routing, drones, approach tones, chorus lift, hinted percussion ---------- */
+
+test("an arpeggio that is the only harmony takes the chords fader; next to chords it stays with the tune", () => {
+  for (const loop of [true, false]) {
+    const cfg = config("chiptune", { loop, duration: 30 });
+    const score = compose(cfg);
+    const arp = noteParts(score).find((part) => part.role === "arp");
+    assert.ok(arp, "chiptune has its arpeggio");
+    assert.equal(arp.track, "chords");
+    assert.ok(!score.parts.some((part) => part.role === "comp" || part.role === "pad"));
+    assertValid(score, cfg, `chiptune loop ${loop}`);
+    // the four faders all do something
+    assert.deepEqual([...new Set(score.parts.map((part) => part.track))].sort(), ["bass", "chords", "drums", "melody"]);
+  }
+  // a hinted pad takes the chords fader and the arpeggio goes back to the tune
+  const padded = config("chiptune", { arrangement: { layers: { pad: true } } });
+  const withPad = compose(padded);
+  assert.equal(noteParts(withPad).find((part) => part.role === "pad")?.track, "chords");
+  assert.equal(noteParts(withPad).find((part) => part.role === "arp")?.track, "melody");
+  assertValid(withPad, padded, "chiptune with a pad");
+  // styles with a comp or a pad never move it
+  for (const style of ["dreamy", "retro", "epic", "dance", "festive"] as StyleId[]) {
+    const score = compose(config(style, { energy: 0.9 }));
+    for (const part of noteParts(score)) if (part.role === "arp") assert.equal(part.track, "melody", style);
+  }
+  // an arpeggio on the chords fader NEXT TO a comp is a broken Score
+  const broken = compose(config("retro", { energy: 0.9 }));
+  const arp = noteParts(broken).find((part) => part.role === "arp");
+  assert.ok(arp);
+  arp.track = "chords";
+  assert.ok(scoreProblems(broken).some((problem) => problem.includes("arp")));
+});
+
+test("a held bass note is tied over, never struck again at the moment it ends", () => {
+  let drones = 0;
+  for (const [style, overrides] of [
+    ["ambient", {}],
+    ["ambient", { duration: 120 }],
+    ["ambient", { loop: false, duration: 60 }],
+    ["epic", { energy: 0.1 }],
+    ["tension", { energy: 0.05, loop: false }],
+    ["dreamy", {}],
+    ["cinematic", { loop: false }],
+  ] as [StyleId, Partial<MusicConfig>][])
+    for (const seed of [1, 7, 4242, 20261]) {
+      const cfg = config(style, { ...overrides, seed });
+      const score = compose(cfg);
+      assertValid(score, cfg, `${style} ${seed}`);
+      const bass = noteParts(score).find((part) => part.role === "bass");
+      if (!bass) continue;
+      for (let i = 1; i < bass.notes.length; i++) {
+        const previous = bass.notes[i - 1];
+        const note = bass.notes[i];
+        const gap = note.t - (previous.t + previous.d);
+        // a long note followed at once by the same pitch would cancel against its own release
+        if (previous.d >= 2 * (60 / score.bpm) && previous.midi === note.midi)
+          assert.ok(gap > 0.03, `${style} seed ${seed}: bass ${note.midi} re-struck ${gap.toFixed(3)} s after a held note at ${note.t}`);
+      }
+      if (bass.notes.some((note) => note.d > 8 * (60 / score.bpm))) drones++;
+    }
+  assert.ok(drones >= 8, `only ${drones} pieces had a drone to check`);
+});
+
+test("under a five-note tune the bass approaches by the notes of the scale, never by a semitone from outside", () => {
+  const style = getStyle("guofeng");
+  assert.ok(style.bass, "guofeng has a bass");
+  const saved = style.bass.approach;
+  // the style itself keeps approach tones off; switch them on to test the rule
+  style.bass.approach = 1;
+  try {
+    let approached = 0;
+    for (let seed = 1; seed <= 24; seed++) {
+      const cfg = config("guofeng", { seed, complexity: 1, energy: 0.8, duration: 60 });
+      const score = compose(cfg);
+      assert.equal(score.key.scale.length, 5, "guofeng composes in a pentatonic scale");
+      const bass = noteParts(score).find((part) => part.role === "bass");
+      assert.ok(bass);
+      for (const note of bass.notes) {
+        const index = score.chords.findIndex((chord) => note.t >= chord.start - 0.08 && note.t < chord.end - 0.08);
+        const here = score.chords[Math.max(0, index)];
+        const next = score.chords[Math.min(score.chords.length - 1, Math.max(0, index) + 1)];
+        const allowed = new Set([...score.key.scale, ...here.pitchClasses, ...next.pitchClasses]);
+        assert.ok(allowed.has(pc(note.midi)), `seed ${seed}: bass plays ${note.midi} at ${note.t} over ${here.symbol} → ${next.symbol}`);
+        if (!here.pitchClasses.includes(pc(note.midi))) approached++;
+      }
+    }
+    assert.ok(approached > 10, `only ${approached} approach tones were written`);
+  } finally {
+    style.bass.approach = saved;
+  }
+});
+
+test("the chorus lift fades for leads that already sing high", () => {
+  // mean pitch of the tune in the chorus minus the verse, over a few seeds
+  const lift = (instrument: MusicConfig["instrument"]) => {
+    let sum = 0;
+    let count = 0;
+    for (let seed = 1; seed <= 10; seed++) {
+      const score = compose(config("rock", { instrument, seed, loop: false, duration: 60 }));
+      const lead = leadOf(score);
+      assert.ok(lead);
+      const mean = (type: string) => {
+        const notes = lead.notes.filter((note) => score.sections.some((section) => section.type === type && note.t >= section.start && note.t < section.end));
+        return notes.length ? notes.reduce((total, note) => total + note.midi, 0) / notes.length : NaN;
+      };
+      const difference = mean("chorus") - mean("verse");
+      if (Number.isFinite(difference)) {
+        sum += difference;
+        count++;
+      }
+    }
+    assert.ok(count >= 6, `${instrument}: ${count} pieces with a verse and a chorus`);
+    return sum / count;
+  };
+  const piano = lift("piano");
+  const flute = lift("flute");
+  const musicbox = lift("musicbox");
+  assert.ok(piano > 2, `piano chorus sits ${piano.toFixed(1)} semitones above the verse`);
+  assert.ok(flute < piano - 0.8, `flute ${flute.toFixed(1)} against piano ${piano.toFixed(1)}`);
+  assert.ok(musicbox < flute + 0.3 && musicbox < piano - 1.5, `music box ${musicbox.toFixed(1)} against flute ${flute.toFixed(1)} and piano ${piano.toFixed(1)}`);
+  // and nobody is pushed out of the comfortable range
+  for (const instrument of ["flute", "dizi", "bell", "musicbox"] as const) {
+    const lead = leadOf(compose(config("rock", { instrument, loop: false, duration: 60, energy: 1 })));
+    assert.ok(lead);
+    const top = Math.max(...lead.notes.map((note) => note.midi));
+    assert.ok(top <= LEAD_TRAITS[instrument].high, `${instrument} reaches ${top}`);
+  }
+});
+
+test("a percussion layer switched on by a hint can be heard: unity gain and accented strokes", () => {
+  for (const style of ["jazz", "cinematic", "sad", "ambient"] as StyleId[]) {
+    assert.equal(getStyle(style).perc, undefined, `${style} defines no percussion of its own`);
+    const cfg = config(style, { arrangement: { layers: { perc: true } } });
+    const score = compose(cfg);
+    assertValid(score, cfg, style);
+    const perc = drumParts(score).find((part) => part.role === "perc");
+    assert.ok(perc, `${style}: the hinted layer plays`);
+    assert.ok(perc.mix.gain >= 0.9, `${style}: percussion gain ${perc.mix.gain}`);
+    assert.ok(perc.hits.some((hit) => hit.vel >= 0.6), `${style}: loudest stroke ${Math.max(...perc.hits.map((hit) => hit.vel))}`);
+  }
+});
+
+test("part gains: a style may ask for up to MAX_PART_GAIN and no more", () => {
+  for (const id of IMPLEMENTED) {
+    const style = getStyle(id);
+    for (const [role, mix] of Object.entries(style.mix))
+      if (mix?.gain !== undefined) assert.ok(mix.gain > 0 && mix.gain <= MAX_PART_GAIN, `${id}.${role} gain ${mix.gain}`);
+    for (const [instrument, mix] of Object.entries(style.lead ?? {}))
+      if (mix?.gain !== undefined) assert.ok(mix.gain > 0 && mix.gain <= MAX_PART_GAIN, `${id} lead ${instrument} gain ${mix.gain}`);
+  }
+  const score = compose(config("bright"));
+  score.parts[0].mix.gain = MAX_PART_GAIN + 0.5;
+  assert.ok(scoreProblems(score).some((problem) => problem.includes("mix out of range")));
 });

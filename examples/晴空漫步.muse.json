@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 2,
+  "id": "6f1d2c3a-7b4e-4c8d-9a10-2026100900e2",
+  "title": "晴空漫步",
+  "createdAt": "2026-10-09T00:00:00.000Z",
+  "updatedAt": "2026-10-09T00:00:00.000Z",
+  "config": {
+    "prompt": "晴朗的周末早晨出门散步，轻快、明亮，钢琴主旋律，适合日常 Vlog 的片头。",
+    "mood": "bright",
+    "bpm": 112,
+    "duration": 30,
+    "key": "C major",
+    "instrument": "piano",
+    "energy": 0.62,
+    "complexity": 0.5,
+    "reverb": 0.25,
+    "seed": 20261009,
+    "loop": false,
+    "volumes": {
+      "melody": 0.8,
+      "chords": 0.64,
+      "bass": 0.68,
+      "drums": 0.56
+    },
+    "engine": 2
+  },
+  "provider": "local",
+  "favorite": false,
+  "revision": 1,
+  "tags": [
+    "青春欢快",
+    "112 BPM",
+    "柔和钢琴"
+  ]
+}

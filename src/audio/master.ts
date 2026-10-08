@@ -2,8 +2,15 @@
  * Master bus. The chain is applied to the four stems in such a way that their
  * sum at REFERENCE_VOLUMES is the mastered mix:
  *
+ *   drums stem only      bus "glue": a look-ahead peak compressor that holds
+ *                        the strokes of the kit down by a few dB and gives the
+ *                        level back as gain (same energy, lower peaks), so the
+ *                        kit can sit at its place in the mix without its
+ *                        transients deciding how loud everything else may be
  *   per stem, linear     lows below ~120 Hz folded to mono (zero-phase side
- *                        high-pass) → 30 Hz high-pass → tilt EQ → character EQ
+ *                        high-pass), then the stereo guard: a stem whose
+ *                        channels have (almost) nothing in common is narrowed
+ *                        until they do → 30 Hz high-pass → tilt EQ → character EQ
  *   per stem, character  warm: low shelf up, soft roll-off of the top
  *                        lofi: 80 Hz – 9 kHz band, wow, soft saturation and
  *                              a very quiet hiss bed
@@ -15,7 +22,11 @@
  *                        the static loudness gain. ONE gain curve is computed
  *                        from the reference mix and multiplied into every
  *                        stem, so the stems still sum to the mastered mix and
- *                        the faders stay linear.
+ *                        the faders stay linear. The limiter's ceiling comes
+ *                        down with the density of the master (up to 5 dB), as
+ *                        far as the limiter stays unobtrusive: the moments
+ *                        where everything strikes together are held down
+ *                        instead of standing 15 dB over the body of the music.
  *
  * The static gain is solved so that softClip(reference mix) measures
  * MasterSettings.targetLufs (BS.1770 integrated). The limiter keeps the
@@ -104,6 +115,19 @@ export interface MasterReport extends MixMeasurement {
     /** fraction of the piece with more than 0.5 dB of limiting */
     activeRatio: number;
   };
+  /** the drum-bus glue (absent: no drums, or density 0) */
+  glue?: GlueReport;
+  /** stems the stereo guard narrowed: the factor their side signal was multiplied by */
+  narrowed?: Partial<Record<TrackName, number>>;
+}
+
+export interface GlueReport {
+  /** threshold in dB under the kit's typical stroke peak */
+  depthDb: number;
+  /** most the strokes were held down, dB */
+  maxReductionDb: number;
+  /** gain that gives the stem its energy back, dB */
+  makeupDb: number;
 }
 
 /** Frames per work block. */
@@ -112,8 +136,18 @@ const BLOCK = 4096;
 const CONTROL = 16;
 /** Peak level the limiter holds the reference mix to (the knee is 0.7, the clipper tops out at 0.881). */
 export const LIMITER_CEILING = 0.8;
-/** Most the master may fall short of the target when the limiter would otherwise overwork. */
-export const MAX_SHORTFALL_LU = 1.5;
+/**
+ * Most the master may fall short of the target when the limiter would
+ * otherwise overwork. Half an LU keeps every piece inside the ±0.7 LU the
+ * loudness contract allows.
+ */
+export const MAX_SHORTFALL_LU = 0.5;
+/**
+ * Share of the piece the limiter may spend more than 0.5 dB down before level
+ * is given up instead. Staccato mallets and plucked strings sit at 10–20 %
+ * with only 2–4 dB of reduction, which is still transparent.
+ */
+const LIMITER_BUSY_RATIO = 0.25;
 
 const HIGH_PASS_HZ = 30;
 /** The side signal is 3 dB down here and falls at 24 dB per octave below. */
@@ -126,7 +160,56 @@ const DETECTOR_SECONDS = 0.01;
 const LIMITER_LOOKAHEAD = 0.005;
 const LIMITER_RELEASE = 0.15;
 const FADE_IN_SECONDS = 0.005;
-const FADE_OUT_SECONDS = 0.03;
+/**
+ * A piece that ends is faded to digital silence over its last moments (at
+ * most a quarter of it). The composer leaves at least 1.5 s after the last
+ * note-off, so this only shapes release and reverb tails: a tail that has
+ * died by itself does not change, and a long hall (ambient, a reverb turned
+ * all the way up) glides out instead of being cut off 40 dB down.
+ */
+const FADE_OUT_SECONDS = 1.2;
+/**
+ * How hard each character holds the drum bus, 0..1 (MasterSettings.density
+ * overrides it). Dense, loud genres live from a kit whose strokes are level
+ * with its body; an acoustic or cinematic kit keeps most of its dynamics.
+ */
+export const CHARACTER_DENSITY: Record<MasterCharacter, number> = {
+  clean: 0.5,
+  warm: 0.35,
+  lofi: 0.55,
+  wide: 0.4,
+  punchy: 0.8,
+  bitcrush: 0.45,
+};
+/**
+ * Threshold of the glue under the typical stroke peak at density 1, dB. With
+ * the ratio below, the strokes of a "punchy" kit are held 5 dB down and those
+ * of a "warm" one 2 dB: the range of ordinary drum-bus compression.
+ */
+const GLUE_DEPTH_DB = 10;
+const GLUE_RATIO = 3;
+/**
+ * How far the limiter's ceiling comes down at density 1, dB. Where everything
+ * strikes together (the downbeat) the stems add up to far more than any one
+ * of them peaks at; a dense master holds those moments down instead of
+ * leaving 15 dB between them and the body of the music. The ceiling is only
+ * lowered as far as the limiter stays unobtrusive (see DENSE_BUSY_RATIO).
+ */
+const DENSE_CEILING_DB = 5;
+/** A lowered ceiling may keep the limiter this busy and this deep; else it is raised again. */
+const DENSE_BUSY_RATIO = 0.2;
+const DENSE_MAX_REDUCTION_DB = 5;
+const GLUE_KNEE_DB = 4;
+const GLUE_LOOKAHEAD = 0.003;
+/** Fast enough to let the body of a kick back up within its first cycles. */
+const GLUE_RELEASE = 0.045;
+/**
+ * L/R correlation every stem is given at least. Below it the two channels
+ * are close to unrelated: the stem hollows out on headphones and cancels on a
+ * mono speaker. Wide pads under a long reverb get there when the ambience is
+ * turned all the way up.
+ */
+export const MIN_STEM_CORRELATION = 0.12;
 const BITCRUSH_HZ = 22050;
 const BITCRUSH_STEP = 1 / 1024; // 11 bits across ±1
 const HISS_RMS = 0.0007; // -63 dBFS in the reference mix
@@ -231,13 +314,17 @@ function shapeSide(
   loop: boolean,
   side: Float32Array,
 ): void {
-  let stereo = false;
-  for (let i = 0; i < frames; i++)
-    if (left[i] !== right[i]) {
-      stereo = true;
-      break;
-    }
-  if (!stereo) return;
+  if (sideForward(left, right, frames, sampleRate, wide, loop, side))
+    sideBackward(left, right, frames, sampleRate, wide, loop, side);
+}
+
+/** The two filters of one pass of shapeSide, and the loop warm-up length. */
+function sideFilters(
+  frames: number,
+  sampleRate: number,
+  wide: boolean,
+  loop: boolean,
+) {
   // two passes of a Butterworth high-pass make a 4th-order magnitude; this
   // corner puts their combined -3 dB point on MONO_BELOW_HZ
   const cut = new Biquad().setHighpass(
@@ -249,11 +336,35 @@ function shapeSide(
   const lift = wide
     ? new Biquad().setHighShelf(300, 1.25, sampleRate, 0.7)
     : new Biquad();
-  const { b0, b1, b2, a1, a2 } = cut;
-  const { b0: c0, b1: c1, b2: c2, a1: d1, a2: d2 } = lift;
   // in a loop each pass first hears what precedes its first sample: the end
   // of the stem when running forwards, the beginning when running backwards
   const warm = loop ? Math.min(frames, Math.round(sampleRate * 0.25)) : 0;
+  return { cut, lift, warm };
+}
+
+/**
+ * First half of shapeSide: the filtered side signal, forwards, into `side`.
+ * Returns false (and does nothing) for a stem that is mono.
+ */
+function sideForward(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+  sampleRate: number,
+  wide: boolean,
+  loop: boolean,
+  side: Float32Array,
+): boolean {
+  let stereo = false;
+  for (let i = 0; i < frames; i++)
+    if (left[i] !== right[i]) {
+      stereo = true;
+      break;
+    }
+  if (!stereo) return false;
+  const { cut, lift, warm } = sideFilters(frames, sampleRate, wide, loop);
+  const { b0, b1, b2, a1, a2 } = cut;
+  const { b0: c0, b1: c1, b2: c2, a1: d1, a2: d2 } = lift;
 
   let z1 = 0;
   let z2 = 0;
@@ -278,8 +389,26 @@ function shapeSide(
     w2 = c2 * y - d2 * v;
     side[i] = v;
   }
+  return true;
+}
 
-  z1 = z2 = w1 = w2 = 0;
+/** Second half of shapeSide: `side` filtered backwards and put back under the mid signal. */
+function sideBackward(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+  sampleRate: number,
+  wide: boolean,
+  loop: boolean,
+  side: Float32Array,
+): void {
+  const { cut, lift, warm } = sideFilters(frames, sampleRate, wide, loop);
+  const { b0, b1, b2, a1, a2 } = cut;
+  const { b0: c0, b1: c1, b2: c2, a1: d1, a2: d2 } = lift;
+  let z1 = 0;
+  let z2 = 0;
+  let w1 = 0;
+  let w2 = 0;
   for (let i = warm - 1; i >= 0; i--) {
     const x = side[i] + ANTI_DENORMAL;
     const y = b0 * x + z1;
@@ -301,6 +430,202 @@ function shapeSide(
     left[i] = mid + v;
     right[i] = mid - v;
   }
+}
+
+/* ---- drum-bus glue ---- */
+
+/**
+ * Peak compression of the drums stem, in place. The threshold sits
+ * `density` × GLUE_DEPTH_DB under the level the kit's strokes typically reach,
+ * so quiet strokes pass untouched and the loud ones are held down by up to
+ * three quarters of that; the gain recovers within a few hundredths of a
+ * second, which shortens the stroke's tip and leaves its body alone. The
+ * energy the stem lost is given back as plain gain: the same loudness with
+ * lower peaks. Continuous across the seam of a loop.
+ */
+function glueDrums(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+  sampleRate: number,
+  density: number,
+  loop: boolean,
+): GlueReport | undefined {
+  const depthDb = GLUE_DEPTH_DB * clamp(density, 0, 1);
+  if (!(depthDb > 0.25) || frames < CONTROL * 4) return undefined;
+  const count = Math.ceil(frames / CONTROL);
+  const peaks = new Float32Array(count);
+  const energy = new Float64Array(count);
+  let top = 0;
+  for (let k = 0; k < count; k++) {
+    const end = Math.min(frames, (k + 1) * CONTROL);
+    let peak = 0;
+    let sum = 0;
+    for (let i = k * CONTROL; i < end; i++) {
+      const l = left[i] < 0 ? -left[i] : left[i];
+      const r = right[i] < 0 ? -right[i] : right[i];
+      if (l > peak) peak = l;
+      if (r > peak) peak = r;
+      sum += l * l + r * r;
+    }
+    peaks[k] = peak;
+    energy[k] = sum;
+    if (peak > top) top = peak;
+  }
+  if (!(top > 1e-5)) return undefined;
+
+  // The typical stroke: the level 0.5 % of the sounding blocks exceed (the
+  // tip of a kick lasts a few blocks, a bar has a few kicks). One freak
+  // coincidence of three drums does not move it.
+  const bins = new Uint32Array(501);
+  let sounding = 0;
+  for (let k = 0; k < count; k++) {
+    const level = gainToDb(peaks[k] / top);
+    if (level > -50) {
+      bins[Math.min(500, Math.floor((level + 50) * 10))]++;
+      sounding++;
+    }
+  }
+  let above = 0;
+  let bin = 500;
+  while (bin > 0 && above + bins[bin] < sounding * 0.005) above += bins[bin--];
+  const typical = top * dbToGain(bin / 10 - 50);
+  const threshold = typical * dbToGain(-depthDb);
+
+  // static curve → gain needed per block
+  const need = new Float32Array(count);
+  const slope = 1 - 1 / GLUE_RATIO;
+  const half = GLUE_KNEE_DB / 2;
+  for (let k = 0; k < count; k++) {
+    const over = peaks[k] > 0 ? gainToDb(peaks[k] / threshold) : -100;
+    const reduction =
+      over <= -half
+        ? 0
+        : over < half
+          ? ((over + half) * (over + half) * slope) / (2 * GLUE_KNEE_DB)
+          : over * slope;
+    need[k] = reduction > 0 ? dbToGain(-reduction) : 1;
+  }
+  // look ahead (the gain is down before the stroke arrives), instant attack,
+  // exponential release, then the steps smoothed into ramps
+  const look = Math.max(1, Math.ceil((GLUE_LOOKAHEAD * sampleRate) / CONTROL));
+  const held = new Float32Array(need);
+  for (let k = 0; k < count; k++) {
+    const wanted = need[k];
+    if (wanted >= 1) continue;
+    for (let j = 1; j <= look; j++) {
+      let index = k - j;
+      if (index < 0) {
+        if (!loop) break;
+        index = ((index % count) + count) % count;
+      }
+      if (wanted < held[index]) held[index] = wanted;
+    }
+  }
+  const release = 1 - Math.exp(-CONTROL / (GLUE_RELEASE * sampleRate));
+  let value = 1;
+  let lowest = 1;
+  for (let pass = loop ? 0 : 1; pass < 2; pass++)
+    for (let k = 0; k < count; k++) {
+      value += (1 - value) * release;
+      if (held[k] < value) value = held[k];
+      if (pass === 1) {
+        need[k] = value;
+        if (value < lowest) lowest = value;
+      }
+    }
+  if (lowest > 0.985) return undefined;
+  const curve = new Float32Array(count);
+  const window = look + 1;
+  const before = (index: number) =>
+    index >= 0 ? need[index] : loop ? need[((index % count) + count) % count] : 1;
+  let sum = 0;
+  for (let j = 0; j < window; j++) sum += before(-j);
+  for (let k = 0; k < count; k++) {
+    if (k > 0) sum += need[k] - before(k - window);
+    curve[k] = sum / window;
+  }
+
+  // The energy lost comes back as gain. It is worked out from the control
+  // blocks (their energy × the gain across them), so the stem is written once.
+  let energyBefore = 0;
+  let energyAfter = 0;
+  for (let k = 0; k < count; k++) {
+    const start = k > 0 ? curve[k - 1] : loop ? curve[count - 1] : curve[0];
+    const g = 0.5 * (curve[k] + start);
+    energyBefore += energy[k];
+    energyAfter += energy[k] * g * g;
+  }
+  const makeup =
+    energyAfter > 0
+      ? clamp(Math.sqrt(energyBefore / energyAfter), 1, dbToGain(depthDb * slope))
+      : 1;
+  const gains = new Float32Array(BLOCK);
+  for (let from = 0; from < frames; from += BLOCK) {
+    const n = Math.min(BLOCK, frames - from);
+    fillGains(gains, curve, from, n, loop);
+    for (let i = 0; i < n; i++) {
+      const g = gains[i] * makeup;
+      left[from + i] *= g;
+      right[from + i] *= g;
+    }
+  }
+  return {
+    depthDb,
+    maxReductionDb: -gainToDb(lowest),
+    makeupDb: gainToDb(makeup),
+  };
+}
+
+/* ---- stereo guard ---- */
+
+/**
+ * Narrow a stem whose L/R correlation is under MIN_STEM_CORRELATION, in
+ * place, by scaling its side signal just far enough to reach that floor.
+ * Returns the factor used (1: nothing was done).
+ */
+function guardStereo(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+): number {
+  let mm = 0;
+  let ss = 0;
+  let ms = 0;
+  // every third frame is plenty to tell how related two channels are
+  for (let i = 0; i < frames; i += 3) {
+    const m = 0.5 * (left[i] + right[i]);
+    const d = 0.5 * (left[i] - right[i]);
+    mm += m * m;
+    ss += d * d;
+    ms += m * d;
+  }
+  if (!(ss > 0) || !(mm > 0)) return 1;
+  // L = M + k·S, R = M − k·S
+  const correlationAt = (k: number) => {
+    const a = mm + k * k * ss;
+    const b = 2 * k * ms;
+    const denominator = Math.sqrt(Math.max(1e-30, (a + b) * (a - b)));
+    return (mm - k * k * ss) / denominator;
+  };
+  if (correlationAt(1) >= MIN_STEM_CORRELATION) return 1;
+  let low = 0;
+  let high = 1;
+  for (let i = 0; i < 24; i++) {
+    const middle = 0.5 * (low + high);
+    if (correlationAt(middle) >= MIN_STEM_CORRELATION) low = middle;
+    else high = middle;
+  }
+  const k = low;
+  const same = 0.5 * (1 + k);
+  const cross = 0.5 * (1 - k);
+  for (let i = 0; i < frames; i++) {
+    const l = left[i];
+    const r = right[i];
+    left[i] = same * l + cross * r;
+    right[i] = cross * l + same * r;
+  }
+  return k;
 }
 
 /* ---- character colour (per stem, stateless) ---- */
@@ -833,11 +1158,27 @@ class GainSolver {
    * at: the caller measures the real result and feeds the estimate's error
    * back through it.
    */
-  solve(targetLufs: number, ceiling: number, biasLu = 0): GainPlan {
+  solve(
+    targetLufs: number,
+    ceiling: number,
+    biasLu = 0,
+    denseCeiling = ceiling,
+  ): GainPlan {
     let shortfall = 0;
-    let limit = ceiling;
+    // a dense master asks for a lower ceiling; it gets as much of it as the
+    // limiter can deliver without working all the time
+    let limit = Math.min(ceiling, denseCeiling);
     let g = this.solveFor(targetLufs + biasLu, limit);
     let stats = this.stats(g);
+    while (
+      limit < ceiling &&
+      (stats.activeRatio > DENSE_BUSY_RATIO ||
+        stats.maxReductionDb > DENSE_MAX_REDUCTION_DB)
+    ) {
+      limit = Math.min(ceiling, limit * dbToGain(1));
+      g = this.solveFor(targetLufs + biasLu, limit);
+      stats = this.stats(g);
+    }
     // the reference mix should stay under the knee for all but ~1 % of the time
     if (stats.kneeRatio > 0.01 && limit > KNEE) {
       limit = Math.min(limit, KNEE);
@@ -846,7 +1187,7 @@ class GainSolver {
     }
     // a limiter that is busy most of the time is no longer transparent: give up some level
     while (
-      (stats.activeRatio > 0.1 || stats.maxReductionDb > 9) &&
+      (stats.activeRatio > LIMITER_BUSY_RATIO || stats.maxReductionDb > 9) &&
       shortfall < MAX_SHORTFALL_LU - 1e-9
     ) {
       shortfall += 0.25;
@@ -1162,6 +1503,16 @@ export async function masterStems(
 
   const character = settings.character;
   const shaper = shaperFor(character);
+  const density = clamp(
+    settings.density ?? CHARACTER_DENSITY[character] ?? 0.4,
+    0,
+    1,
+  );
+  const drums = active.find((stem) => stem.track === "drums");
+  const glue = drums
+    ? glueDrums(drums.left, drums.right, frames, sampleRate, density, loop)
+    : undefined;
+  const narrowed: Partial<Record<TrackName, number>> = {};
   // progress: stem preparation, the analysis sweep, the final pass
   const steps = 3;
   let step = 0;
@@ -1179,17 +1530,23 @@ export async function masterStems(
       : new Float32Array(frames);
   for (let index = 0; index < active.length; index++) {
     const stem = active[index];
-    if (character === "lofi")
+    // each of these is one pass over the whole stem (tens of milliseconds for
+    // two minutes): the host gets a turn between them
+    const wide = character === "wide";
+    if (character === "lofi") {
       applyWow(stem.left, stem.right, frames, sampleRate, loop, seed);
-    shapeSide(
-      stem.left,
-      stem.right,
-      frames,
-      sampleRate,
-      character === "wide",
-      loop,
-      side,
-    );
+      const waiting = tick((index + 0.4) / active.length);
+      if (waiting) await waiting;
+    }
+    if (
+      sideForward(stem.left, stem.right, frames, sampleRate, wide, loop, side)
+    ) {
+      const waiting = tick((index + 0.7) / active.length);
+      if (waiting) await waiting;
+      sideBackward(stem.left, stem.right, frames, sampleRate, wide, loop, side);
+      const kept = guardStereo(stem.left, stem.right, frames);
+      if (kept < 1) narrowed[stem.track] = kept;
+    }
     const pending = tick((index + 1) / active.length);
     if (pending) await pending;
   }
@@ -1276,6 +1633,8 @@ export async function masterStems(
     loop,
   );
   const ceiling = Math.min(LIMITER_CEILING, dbToGain(settings.ceilingDb));
+  // (an explicit ceiling lower than that simply stays)
+  const denseCeiling = LIMITER_CEILING * dbToGain(-DENSE_CEILING_DB * density);
   const solver = new GainSolver(
     analysis,
     compression.gain,
@@ -1283,7 +1642,7 @@ export async function masterStems(
     sampleRate,
     loop,
   );
-  let plan = solver.solve(settings.targetLufs, ceiling);
+  let plan = solver.solve(settings.targetLufs, ceiling, 0, denseCeiling);
   if (!(plan.estimatedLufs > -Infinity)) return silentReport(settings);
 
   const gains = new Float32Array(BLOCK);
@@ -1321,7 +1680,7 @@ export async function masterStems(
         settings.targetLufs - plan.shortfallLu - rehearse(plan.curve);
       if (Math.abs(error) < 0.05) break;
       bias += error;
-      plan = solver.solve(settings.targetLufs, ceiling, bias);
+      plan = solver.solve(settings.targetLufs, ceiling, bias, denseCeiling);
       const pending = tick(0);
       if (pending) await pending;
     }
@@ -1348,7 +1707,13 @@ export async function masterStems(
     : Math.min(frames, Math.round(FADE_IN_SECONDS * sampleRate));
   const fadeOut = loop
     ? 0
-    : Math.min(frames, Math.max(2, Math.round(FADE_OUT_SECONDS * sampleRate)));
+    : Math.max(
+        2,
+        Math.min(
+          Math.floor(frames / 4),
+          Math.round(FADE_OUT_SECONDS * sampleRate),
+        ),
+      );
   const crush = character === "bitcrush";
   const meter = new MixMeter(sampleRate);
   for (let from = 0; from < frames; from += BLOCK) {
@@ -1431,5 +1796,7 @@ export async function masterStems(
       maxReductionDb: plan.limiterMaxReductionDb,
       activeRatio: plan.limiterActiveRatio,
     },
+    ...(glue ? { glue } : {}),
+    ...(Object.keys(narrowed).length ? { narrowed } : {}),
   };
 }

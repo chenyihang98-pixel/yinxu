@@ -1,0 +1,147 @@
+/*
+ * Design tokens — the only place colours, radii, spacing and type sizes are
+ * defined. Components use these names, never raw values.
+ */
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #101113;
+  --bg-deep: #0c0d0f;
+  --panel: #191a1e;
+  --panel-raised: #1f2026;
+  --panel-hover: #25262d;
+  --field: #131417;
+  --border: #2a2b30;
+  --border-strong: #3c3d46;
+  --scrim: rgba(6, 6, 9, 0.66);
+
+  /* text — every pair below is at least 4.5:1 on --panel and --bg */
+  --text: #ececf1;
+  --text-soft: #c5c7d1;
+  --muted: #a3a5b1;
+  --disabled: #70727e;
+
+  /* accent */
+  --accent: #b8a3fa;
+  --accent-hi: #cfc0ff;
+  --accent-ink: #1a1530;
+  --accent-soft: rgba(184, 163, 250, 0.12);
+  --accent-soft-2: rgba(184, 163, 250, 0.2);
+  --accent-line: rgba(184, 163, 250, 0.5);
+
+  /* status */
+  --ok: #86d4ad;
+  --ok-soft: rgba(134, 212, 173, 0.12);
+  --warn: #e6bb72;
+  --warn-soft: rgba(230, 187, 114, 0.12);
+  --danger: #f39a9a;
+  --danger-soft: rgba(243, 154, 154, 0.12);
+  --danger-strong: #e56b6b;
+
+  /* mixer groups */
+  --track-melody: #b4a1fa;
+  --track-chords: #7bafa5;
+  --track-bass: #d3ac76;
+  --track-drums: #c18aab;
+
+  /* song sections: the accent hue at a lightness per section type */
+  --section-intro: hsl(254 30% 34%);
+  --section-verse: hsl(254 44% 47%);
+  --section-chorus: hsl(254 90% 79%);
+  --section-bridge: hsl(254 36% 40%);
+  --section-breakdown: hsl(254 24% 28%);
+  --section-build: hsl(254 64% 63%);
+  --section-outro: hsl(254 22% 31%);
+  --section-ink-light: #f3f0ff;
+  --section-ink-dark: #1a1530;
+
+  /* waveform */
+  --wave-idle: #4b4c59;
+  --wave-played: #b8a3fa;
+  --wave-head: #f4f0ff;
+
+  /* radius */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+
+  /* spacing scale */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+
+  /* type scale 12 / 13 / 14 / 16 / 20 / 28 */
+  --t-12: 12px;
+  --t-13: 13px;
+  --t-14: 14px;
+  --t-16: 16px;
+  --t-20: 20px;
+  --t-28: 28px;
+  --font: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+    "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", system-ui,
+    sans-serif;
+  --font-display: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+  --font-mono: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+
+  /* control sizes; coarse pointers get larger targets below */
+  --control: 32px;
+  --control-sm: 28px;
+  --control-lg: 40px;
+  --hit: 28px;
+  --slider-hit: 24px;
+
+  /* layout */
+  --sidebar-w: 216px;
+  --inspector-w: 320px;
+  --gutter: 32px;
+  --bar-h: 60px;
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --fast: 150ms;
+  --slow: 200ms;
+
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.02) inset;
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-hi);
+}
+
+@media (pointer: coarse) {
+  :root {
+    --control: 40px;
+    --control-sm: 40px;
+    --control-lg: 44px;
+    --hit: 40px;
+    --slider-hit: 40px;
+  }
+}
+
+@media (max-width: 1099px) {
+  :root {
+    --gutter: 24px;
+  }
+}
+
+@media (max-width: 719px) {
+  :root {
+    --gutter: 16px;
+    --bar-h: 56px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --fast: 0ms;
+    --slow: 0ms;
+  }
+}

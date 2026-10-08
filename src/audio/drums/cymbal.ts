@@ -8,6 +8,7 @@
  * SWELL_PEAK seconds and is then cut. The gong is a set of slowly beating
  * mode pairs whose upper group and metallic wash bloom after the stroke.
  */
+import { CYMBAL_SWELL_SECONDS } from "../../music/score";
 import { LN_60DB, Svf } from "../dsp";
 import type { Engine, Hit, Kit, Mode } from "./core";
 import {
@@ -28,7 +29,7 @@ import { alloy } from "./metal";
 type Triple = readonly [low: number, mid: number, high: number];
 
 /** Seconds from the start of a cymbalSwell to its loudest point, for every kit. */
-export const SWELL_PEAK = 1.8;
+export const SWELL_PEAK = CYMBAL_SWELL_SECONDS;
 
 const gain = new Float64Array(3);
 const decay = new Float64Array(3);

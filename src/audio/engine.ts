@@ -2,26 +2,88 @@
  * Engine facade — the only audio entry point the UI uses.
  *   config.engine === 1 → frozen v0.2 synthesizer (old works sound the same)
  *   config.engine === 2 → compose() a Score, then renderScore() it
+ *
+ * Engine-2 renders run in ONE warm Web Worker (worker.ts) so the UI thread
+ * stays free; where a worker cannot be had (no Worker global, a CSP or
+ * file:// refusal, a worker that dies before its first message) the same job
+ * runs on the calling thread in small slices instead, and the engine
+ * remembers that for the rest of the session.
+ *
+ * Renders never overlap: the voices keep module state and are not
+ * re-entrant, so every render — worker, in-thread or legacy — waits its turn
+ * in one queue. Cancelling a queued render just drops it; cancelling the
+ * running one terminates the worker (a fresh one is started lazily) or stops
+ * the in-thread job at its next checkpoint.
  */
 import type { MusicConfig, RenderResult, TrackName } from "../types";
 import { TRACKS } from "../music/score";
-import { compose, summarize } from "../music/compose";
-import { renderScore } from "./render";
-import type { RenderedAudio } from "./render-types";
 import { renderMusic as renderLegacy } from "./engine-v1";
+import { freeBuffer } from "./render";
+import type {
+  RenderDiagnostics,
+  RenderJobResult,
+  RenderedAudio,
+  WorkerRequest,
+  WorkerResponse,
+} from "./render-types";
 import { softClipBuffer } from "./softclip";
+import { renderJob } from "./worker";
 
 export { encodeWav } from "./wav";
 export { REFERENCE_VOLUMES } from "./render-types";
+export type { MasterDiagnostics, RenderDiagnostics } from "./render-types";
 
 export interface RenderOptions {
-  /** 0..1 */
+  /** 0..1, never backwards, at most about 20 times a second; ends with exactly 1 */
   onProgress?: (fraction: number) => void;
   /** abort to cancel; renderMusic then rejects with an AbortError */
   signal?: AbortSignal;
 }
 
+/** RenderResult plus what the engine can tell about the render. */
+export interface EngineRenderResult extends RenderResult {
+  diagnostics: RenderDiagnostics;
+}
+
+/** The part of the Worker interface the engine uses. */
+export interface WorkerLike {
+  postMessage(message: WorkerRequest): void;
+  terminate(): void;
+  onmessage: ((event: { data: WorkerResponse }) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+  onmessageerror?: ((event: unknown) => void) | null;
+}
+
+export interface EngineOptions {
+  /** false keeps every render on the calling thread */
+  worker?: boolean;
+  /** how the render worker is made (tests; the default starts worker.ts as a module worker) */
+  createWorker?: (() => WorkerLike) | null;
+  /** milliseconds a new worker has to post its first message before it is given up on */
+  startupTimeoutMs?: number;
+}
+
+export interface EngineStatus {
+  /**
+   * "idle": no worker yet (one is started on demand) · "starting": started,
+   * nothing heard yet · "ready": a warm worker is waiting · "unavailable":
+   * renders run on the calling thread
+   */
+  worker: "idle" | "starting" | "ready" | "unavailable";
+  /** renders waiting or running */
+  pending: number;
+}
+
 const PEAK_BINS = 140;
+/** Milliseconds between two onProgress calls. */
+const PROGRESS_INTERVAL_MS = 50;
+/** Milliseconds of synthesis between two yields when rendering on the calling thread. */
+const IN_THREAD_PACE_MS = 12;
+/** Share of the progress bar that belongs to the render job; the rest is handing the audio to the UI. */
+const JOB_SHARE = 0.97;
+const STARTUP_TIMEOUT_MS = 10_000;
+/** A worker that dies this many times in a row mid-render is not started again. */
+const MAX_CRASHES = 2;
 
 function abortError(): DOMException {
   return new DOMException("已取消生成", "AbortError");
@@ -29,19 +91,29 @@ function abortError(): DOMException {
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 
-function toAudioBuffer(
-  pcm: [Float32Array, Float32Array],
-  sampleRate: number,
-): AudioBuffer {
-  const buffer = new AudioBuffer({
-    length: pcm[0].length,
-    numberOfChannels: 2,
-    sampleRate,
-  });
-  buffer.getChannelData(0).set(pcm[0]);
-  buffer.getChannelData(1).set(pcm[1]);
-  return buffer;
-}
+const now = (): number =>
+  typeof performance !== "undefined" ? performance.now() : Date.now();
+
+/** Let the event loop run one turn (paint, input, timers) before going on. */
+const breathe: () => Promise<void> = (() => {
+  // a MessageChannel hop is not clamped to 4 ms the way nested timers are;
+  // outside a page (Node) a pending port would keep the process alive
+  if (typeof document !== "undefined" && typeof MessageChannel === "function") {
+    const channel = new MessageChannel();
+    const waiting: (() => void)[] = [];
+    channel.port1.onmessage = () => waiting.shift()?.();
+    return () =>
+      new Promise<void>((resolve) => {
+        waiting.push(resolve);
+        channel.port2.postMessage(0);
+      });
+  }
+  return () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+})();
+
+/* ------------------------------------------------------------------ */
+/* waveform outlines                                                   */
+/* ------------------------------------------------------------------ */
 
 /** Normalised 0..1 waveform outline of one or more stereo buffers summed with gains. */
 export function computePeaks(
@@ -108,55 +180,439 @@ function describe(
   return { peaks: normalise(mix), stemPeaks };
 }
 
-function fromRendered(
+/**
+ * Rendered PCM → AudioBuffers. An AudioBuffer cannot adopt memory, so this
+ * is the one copy the audio makes on the UI thread; it is done a channel at
+ * a time with a breath in between (two minutes are 180 MB), and each source
+ * channel is freed as soon as it has been copied.
+ */
+async function toAudioBuffers(
   audio: RenderedAudio,
+  signal: AbortSignal | undefined,
+  onChannel: (done: number, total: number) => void,
+): Promise<Record<TrackName, AudioBuffer>> {
+  const stems = {} as Record<TrackName, AudioBuffer>;
+  const total = TRACKS.length * 2;
+  let done = 0;
+  for (const track of TRACKS) {
+    const buffer = new AudioBuffer({
+      length: Math.max(1, audio.frames),
+      numberOfChannels: 2,
+      sampleRate: audio.sampleRate,
+    });
+    const pcm = audio.stems[track] as (Float32Array | null)[];
+    for (let channel = 0; channel < 2; channel++) {
+      const source = pcm[channel];
+      if (source) {
+        buffer.getChannelData(channel).set(source);
+        // 23 MB per channel of a two-minute piece: back to the system now, not at the next collection
+        freeBuffer(source);
+      }
+      pcm[channel] = null;
+      onChannel(++done, total);
+      await breathe();
+      if (signal?.aborted) throw abortError();
+    }
+    stems[track] = buffer;
+  }
+  return stems;
+}
+
+/* ------------------------------------------------------------------ */
+/* one render at a time                                                */
+/* ------------------------------------------------------------------ */
+
+let queueTail: Promise<void> = Promise.resolve();
+let pending = 0;
+
+/**
+ * Run `task` after every render queued before it. A render that is aborted
+ * while it waits is rejected at once and never runs.
+ */
+function enqueue<T>(
+  signal: AbortSignal | undefined,
+  task: () => Promise<T>,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    let state: "waiting" | "running" | "done" = "waiting";
+    pending++;
+    const settle = () => {
+      if (state === "done") return false;
+      state = "done";
+      pending--;
+      signal?.removeEventListener("abort", onAbort);
+      return true;
+    };
+    const onAbort = () => {
+      // a running task hears the signal itself and stops at its own pace
+      if (state === "waiting" && settle()) reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort);
+    const start = (): Promise<void> | void => {
+      if (state !== "waiting") return;
+      state = "running";
+      return task().then(
+        (value) => {
+          if (settle()) resolve(value);
+        },
+        (error) => {
+          if (settle()) reject(error);
+        },
+      );
+    };
+    queueTail = queueTail.then(start, start);
+  });
+}
+
+/** onProgress as the UI wants it: clamped, never backwards, not too often, exactly one final 1. */
+function progressReporter(
+  onProgress: ((fraction: number) => void) | undefined,
+): (fraction: number) => void {
+  let last = -1;
+  let lastTime = -Infinity;
+  return (fraction) => {
+    if (!onProgress) return;
+    const value = clamp01(fraction);
+    if (value <= last) return;
+    const time = now();
+    if (value < 1 && last >= 0 && time - lastTime < PROGRESS_INTERVAL_MS) return;
+    last = value;
+    lastTime = time;
+    onProgress(value);
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* the render worker                                                   */
+/* ------------------------------------------------------------------ */
+
+interface WorkerTask {
+  id: number;
+  message(message: WorkerResponse): void;
+  /** the worker is gone: it never started ("startup") or died mid-render ("crash") */
+  failure(reason: "startup" | "crash", detail: string): void;
+}
+
+interface Session {
+  worker: WorkerLike;
+  /** the worker has posted at least one message, so workers do work here */
+  spoke: boolean;
+  task: WorkerTask | null;
+  watchdog: ReturnType<typeof setTimeout> | undefined;
+}
+
+let options: EngineOptions = {};
+let session: Session | null = null;
+let unavailable = false;
+let crashes = 0;
+let lastId = 0;
+
+function defaultWorkerFactory(): (() => WorkerLike) | null {
+  if (typeof Worker !== "function") return null;
+  // this exact expression is what Vite turns into a bundled worker chunk
+  return () =>
+    new Worker(new URL("./worker.ts", import.meta.url), {
+      type: "module",
+    }) as unknown as WorkerLike;
+}
+
+function errorDetail(event: unknown): string {
+  const message = (event as { message?: unknown } | null | undefined)?.message;
+  return typeof message === "string" && message ? message : "worker error";
+}
+
+function closeSession(target: Session): void {
+  if (target.watchdog !== undefined) clearTimeout(target.watchdog);
+  target.watchdog = undefined;
+  target.worker.onmessage = null;
+  target.worker.onerror = null;
+  if ("onmessageerror" in target.worker) target.worker.onmessageerror = null;
+  try {
+    target.worker.terminate();
+  } catch {
+    // a worker that cannot be terminated is abandoned all the same
+  }
+  if (session === target) session = null;
+}
+
+function failSession(target: Session, detail: string): void {
+  if (session !== target) return;
+  const task = target.task;
+  target.task = null;
+  closeSession(target);
+  let reason: "startup" | "crash";
+  if (!target.spoke) {
+    // never a word from it: workers do not work here (CSP, file://, …)
+    unavailable = true;
+    reason = "startup";
+  } else {
+    reason = "crash";
+    if (++crashes >= MAX_CRASHES) unavailable = true;
+  }
+  task?.failure(reason, detail);
+}
+
+/** The warm worker, started on first use; null when renders must stay on this thread. */
+function openSession(): Session | null {
+  if (unavailable || options.worker === false) return null;
+  if (session) return session;
+  const create =
+    options.createWorker === undefined
+      ? defaultWorkerFactory()
+      : options.createWorker;
+  if (!create) {
+    unavailable = true;
+    return null;
+  }
+  let worker: WorkerLike;
+  try {
+    worker = create();
+  } catch {
+    unavailable = true;
+    return null;
+  }
+  const opened: Session = {
+    worker,
+    spoke: false,
+    task: null,
+    watchdog: undefined,
+  };
+  worker.onmessage = (event) => {
+    if (session !== opened) return;
+    if (!opened.spoke) {
+      opened.spoke = true;
+      if (opened.watchdog !== undefined) clearTimeout(opened.watchdog);
+      opened.watchdog = undefined;
+    }
+    const message = event.data;
+    if (!message || message.type === "ready") return;
+    if (opened.task && message.id === opened.task.id) opened.task.message(message);
+  };
+  worker.onerror = (event) => {
+    (event as { preventDefault?: () => void } | null)?.preventDefault?.();
+    failSession(opened, errorDetail(event));
+  };
+  if ("onmessageerror" in worker)
+    worker.onmessageerror = () => failSession(opened, "message could not be read");
+  opened.watchdog = setTimeout(
+    () => failSession(opened, "worker did not start"),
+    options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS,
+  );
+  // a pending watchdog must not keep a Node process alive
+  (opened.watchdog as { unref?: () => void }).unref?.();
+  session = opened;
+  return opened;
+}
+
+/**
+ * Render in the worker. Resolves with null when the job has to run on this
+ * thread after all (no worker, or it never came up).
+ */
+function renderInWorker(
   config: MusicConfig,
-): Pick<RenderResult, "stems" | "peaks" | "stemPeaks" | "duration" | "sampleRate"> {
-  const stems = Object.fromEntries(
-    TRACKS.map((track) => [
-      track,
-      toAudioBuffer(audio.stems[track], audio.sampleRate),
-    ]),
-  ) as Record<TrackName, AudioBuffer>;
-  return {
+  report: (fraction: number) => void,
+  signal: AbortSignal | undefined,
+): Promise<RenderJobResult | null> {
+  const target = openSession();
+  if (!target) return Promise.resolve(null);
+  return new Promise<RenderJobResult | null>((resolve, reject) => {
+    const id = ++lastId;
+    const release = () => {
+      if (target.task?.id === id) target.task = null;
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      release();
+      closeSession(target);
+      reject(abortError());
+    };
+    target.task = {
+      id,
+      message(message) {
+        if (message.type === "progress") {
+          try {
+            report(message.fraction);
+          } catch (error) {
+            // the caller's progress handler threw: stop the work it no longer wants
+            release();
+            closeSession(target);
+            reject(error);
+          }
+        } else if (message.type === "done") {
+          release();
+          crashes = 0;
+          resolve({
+            audio: message.audio,
+            summary: message.summary,
+            diagnostics: message.diagnostics,
+          });
+        } else if (message.type === "error") {
+          release();
+          reject(new Error(`本地引擎出错：${message.message}`));
+        }
+      },
+      failure(reason, detail) {
+        release();
+        if (reason === "startup") resolve(null);
+        else reject(new Error(`本地引擎出错：${detail}`));
+      },
+    };
+    signal?.addEventListener("abort", onAbort);
+    try {
+      target.worker.postMessage({ type: "render", id, config });
+    } catch {
+      // the config could not be cloned for the worker: this thread can still read it
+      release();
+      resolve(null);
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* public API                                                          */
+/* ------------------------------------------------------------------ */
+
+async function renderLegacyJob(
+  config: MusicConfig,
+  report: (fraction: number) => void,
+  signal: AbortSignal | undefined,
+): Promise<EngineRenderResult> {
+  const started = now();
+  const legacy = await renderLegacy(config, (fraction) => {
+    if (signal?.aborted) throw abortError();
+    // the last word belongs to the facade
+    report(Math.min(fraction, 0.999));
+  });
+  if (signal?.aborted) throw abortError();
+  const result: EngineRenderResult = {
+    stems: legacy.stems,
+    ...describe(legacy.stems, config.volumes),
+    duration: legacy.buffer.duration,
+    sampleRate: legacy.buffer.sampleRate,
+    diagnostics: {
+      path: "legacy",
+      composeMs: 0,
+      renderMs: now() - started,
+      notes: 0,
+      hits: 0,
+      bufferBytes: legacy.buffer.length * 4 * 2 * (TRACKS.length + 1),
+      seconds: { voices: 0, parts: 0, sends: 0, master: 0 },
+    },
+  };
+  report(1);
+  return result;
+}
+
+async function renderJobHere(
+  config: MusicConfig,
+  report: (fraction: number) => void,
+  signal: AbortSignal | undefined,
+): Promise<RenderJobResult> {
+  return renderJob(config, {
+    onProgress: (fraction) => report(fraction * JOB_SHARE),
+    paceMs: IN_THREAD_PACE_MS,
+    checkpoint: async () => {
+      await breathe();
+      if (signal?.aborted) throw abortError();
+    },
+  });
+}
+
+async function renderCurrentJob(
+  config: MusicConfig,
+  report: (fraction: number) => void,
+  signal: AbortSignal | undefined,
+): Promise<EngineRenderResult> {
+  let path: RenderDiagnostics["path"] = "worker";
+  let job = await renderInWorker(
+    config,
+    (fraction) => report(fraction * JOB_SHARE),
+    signal,
+  );
+  if (!job) {
+    path = "main";
+    if (signal?.aborted) throw abortError();
+    job = await renderJobHere(config, report, signal);
+  }
+  if (signal?.aborted) throw abortError();
+  const { audio, summary, diagnostics } = job;
+  const stems = await toAudioBuffers(audio, signal, (done, total) =>
+    report(JOB_SHARE + (0.999 - JOB_SHARE) * (done / total)),
+  );
+  const result: EngineRenderResult = {
     stems,
     ...describe(stems, config.volumes),
     duration: audio.frames / audio.sampleRate,
     sampleRate: audio.sampleRate,
+    arrangement: summary,
+    diagnostics: { path, ...diagnostics },
   };
+  report(1);
+  return result;
 }
 
-/** Offline, deterministic composition + synthesis. No network, no audio permission. */
-export async function renderMusic(
+/**
+ * Offline, deterministic composition + synthesis. No network, no audio
+ * permission. Calls may overlap: they are rendered one after another, in the
+ * order they were made.
+ */
+export function renderMusic(
   config: MusicConfig,
-  options: RenderOptions = {},
-): Promise<RenderResult> {
-  const { onProgress, signal } = options;
-  if (signal?.aborted) throw abortError();
-  if (config.engine === 1) {
-    const legacy = await renderLegacy(config, (fraction) => {
-      if (signal?.aborted) throw abortError();
-      onProgress?.(fraction);
-    });
-    return {
-      stems: legacy.stems,
-      ...describe(legacy.stems, config.volumes),
-      duration: legacy.buffer.duration,
-      sampleRate: legacy.buffer.sampleRate,
-    };
+  renderOptions: RenderOptions = {},
+): Promise<EngineRenderResult> {
+  const { onProgress, signal } = renderOptions;
+  const report = progressReporter(onProgress);
+  return enqueue(signal, () =>
+    config.engine === 1
+      ? renderLegacyJob(config, report, signal)
+      : renderCurrentJob(config, report, signal),
+  );
+}
+
+/**
+ * Start the render worker ahead of the first render and let it compile its
+ * hot loops on a few throw-away seconds. Optional and harmless: without a
+ * worker it does nothing, and a render requested meanwhile simply follows.
+ */
+export function prewarm(): void {
+  const target = openSession();
+  if (!target) return;
+  try {
+    target.worker.postMessage({ type: "warm", id: ++lastId });
+  } catch {
+    // warming is best effort
   }
-  const score = compose(config);
-  onProgress?.(0.02);
-  const audio = await renderScore(score, {
-    onProgress: (fraction) => onProgress?.(0.02 + fraction * 0.97),
-    checkpoint: () =>
-      new Promise<void>((resolve, reject) =>
-        setTimeout(() => (signal?.aborted ? reject(abortError()) : resolve()), 0),
-      ),
-  });
-  if (signal?.aborted) throw abortError();
-  onProgress?.(1);
-  return { ...fromRendered(audio, config), arrangement: summarize(score) };
+}
+
+/** Change how the engine runs (tests, or `worker: false` to stay on one thread). Drops the current worker. */
+export function configureEngine(next: EngineOptions = {}): void {
+  if (session) {
+    const task = session.task;
+    session.task = null;
+    closeSession(session);
+    task?.failure("crash", "engine reconfigured");
+  }
+  options = { ...next };
+  unavailable = false;
+  crashes = 0;
+}
+
+export function engineStatus(): EngineStatus {
+  return {
+    worker:
+      unavailable || options.worker === false
+        ? "unavailable"
+        : !session
+          ? "idle"
+          : session.spoke
+            ? "ready"
+            : "starting",
+    pending,
+  };
 }
 
 /**

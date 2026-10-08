@@ -82,6 +82,20 @@ export const dance: StyleDef = {
     hook: 0.7,
     cells: ["x..x..x.", "x.x..x..", "__x...x.", "x..x....", "x.x.x.x.", "x...x.x.", "x..x.x.."],
   },
+  // struck and plucked leads are saturated into the mix; soft ones are pushed up to ride over the drop
+  lead: {
+    piano: { gain: 0.8, drive: 0.2 },
+    guitar: { gain: 0.77, drive: 0.2 },
+    pluck: { gain: 0.8, drive: 0.2 },
+    bell: { gain: 0.72, drive: 0.15 },
+    musicbox: { gain: 0.75, drive: 0.15 },
+    marimba: { gain: 0.93, drive: 0.2 },
+    vibes: { gain: 0.84, drive: 0.15 },
+    flute: { gain: 0.94 },
+    strings: { gain: 0.94 },
+    guzheng: { gain: 0.69, drive: 0.2, highCut: 5500 },
+    dizi: { gain: 0.77, highCut: 5500 },
+  },
   comp: {
     voice: ["pluck", "epiano"],
     from: 0.3,
@@ -106,20 +120,20 @@ export const dance: StyleDef = {
   },
   bass: {
     voice: "synthBass",
-    from: 0.25,
+    from: 0.12,
     feel: { low: "root", mid: "octave", high: "octave" },
-    register: [29, 43],
+    register: [31, 45],
     approach: 0,
     gate: 0.9,
     riffs: {
-      low: ["1..............."],
+      low: ["..1...-...1...-."],
       mid: ["..1.-.1.-.1.-.1."],
       high: ["..1.-.1.-.1.-.1.", "..1.-.1.-.8.-.1.", "..11-.11-.11-.11"],
     },
   },
   drums: {
     kit: "electro",
-    from: 0.2,
+    from: 0.1,
     grooves: {
       low: [{ kick: "x...x...x...x...", hatClosed: "..o...o...o...o." }],
       mid: [
@@ -160,8 +174,8 @@ export const dance: StyleDef = {
   perc: {
     from: 0.6,
     grooves: [
-      { shaker: "..g.o.g...g.o.g." },
-      { tambourine: "....o.......o...", shaker: "o.g.o.g.o.g.o.g." },
+      { shaker: "..x.X.x...x.X.x." },
+      { tambourine: "....X.......X...", shaker: "X.x.X.x.X.x.X.x." },
     ],
   },
   swing: 0,
@@ -175,13 +189,15 @@ export const dance: StyleDef = {
     energy: { verse: [0.72, 0.02], breakdown: [0.4, 0.02] },
   },
   mix: {
-    lead: { gain: 0.8, reverb: 0.28, delay: 0.2, chorus: 0.2 },
-    comp: { gain: 0.46, pan: 0.15, reverb: 0.2, delay: 0.15, duck: 0.6 },
+    lead: { gain: 0.9, reverb: 0.28, delay: 0.2, chorus: 0.2 },
+    comp: { gain: 0.58, pan: 0.15, reverb: 0.2, delay: 0.15, drive: 0.25, duck: 0.6 },
     pad: { gain: 0.5, width: 1.4, reverb: 0.3, chorus: 0.6, lowCut: 180, duck: 0.85 },
-    arp: { gain: 0.3, delay: 0.25, duck: 0.4 },
-    bass: { gain: 0.85, drive: 0.2, duck: 0.55 },
-    kit: { gain: 0.92, reverb: 0.08 },
-    perc: { gain: 0.3 },
+    arp: { gain: 0.44, delay: 0.25, duck: 0.4 },
+    // short off-beat notes: as loud as the kick when they sound, so the two take turns
+    bass: { gain: 1.5, drive: 0.45, duck: 0.55 },
+    // the drive rounds the kick's peak off (a clipped kick), which leaves room for everything else
+    kit: { gain: 1.24, reverb: 0.08, drive: 0.12 },
+    perc: { gain: 1.4 },
   },
   space: {
     size: 0.5,

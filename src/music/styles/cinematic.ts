@@ -89,18 +89,34 @@ export const cinematic: StyleDef = {
     // broad: long notes leaning on a short one
     cells: ["x.....x.", "x...x...", "x.......", "x...x.x.", "x..x...."],
   },
+  // every lead sits 2–4 LU over the chords: dull struck leads up, bright bowed and blown ones down
+  lead: {
+    epiano: { gain: 0.98 },
+    guitar: { gain: 0.93 },
+    pluck: { gain: 0.93 },
+    marimba: { gain: 1.1 },
+    vibes: { gain: 0.95 },
+    bell: { gain: 0.8 },
+    musicbox: { gain: 0.82 },
+    flute: { gain: 0.76 },
+    strings: { gain: 0.68 },
+    synth: { gain: 0.72 },
+    guzheng: { gain: 0.72 },
+    dizi: { gain: 0.6 },
+    chip: { gain: 0.69 },
+  },
   comp: {
     voice: "piano",
     from: 0,
     patterns: {
       low: [
-        { rows: { low: "X...............", upper: "........o......." } },
+        { rows: { low: "X...............", upper: "........X......." } },
         {
           rows: {
             "1": "X...............",
-            "2": "....o...........",
-            "4": "........o.......",
-            "3": "............o...",
+            "2": "....X...........",
+            "4": "........X.......",
+            "3": "............x...",
           },
         },
       ],
@@ -124,8 +140,8 @@ export const cinematic: StyleDef = {
         },
       ],
       high: [
-        { rows: { low: "X...x...x...x...", upper: "..x...x...x...x." } },
-        { rows: { all: "X..x..x.X..x..x." }, gate: 0.85 },
+        { rows: { low: "X...x...x...x...", upper: "..o...o...o...o." } },
+        { rows: { low: "X.....x.x.....x.", upper: "x..o..o.o..o..o." }, gate: 0.85 },
       ],
     },
   },
@@ -143,9 +159,11 @@ export const cinematic: StyleDef = {
     voice: "subBass",
     from: 0.25,
     feel: { low: "root", mid: "root", high: "root" },
-    register: [28, 43],
+    register: [31, 45],
     approach: 0.2,
     gate: 0.96,
+    // a sub bass that pulses in eighths turns to mush: when the energy is up it still plays long notes
+    riffs: { high: ["1.......1.......", "1.....1.1.......", "1.......1.....1."] },
   },
   drums: {
     kit: "cinematic",
@@ -182,11 +200,12 @@ export const cinematic: StyleDef = {
   humanize: { timing: 10, velocity: 0.1 },
   form: { loop: "AB", intro: 1.3, outro: 1.3, tail: 2.8 },
   mix: {
-    lead: { reverb: 0.4, delay: 0.1 },
-    comp: { reverb: 0.35 },
-    pad: { gain: 0.45, reverb: 0.5 },
-    counter: { reverb: 0.45 },
-    kit: { reverb: 0.35 },
+    lead: { gain: 0.84, reverb: 0.34, delay: 0.1 },
+    comp: { gain: 0.5, reverb: 0.35 },
+    pad: { gain: 0.42, reverb: 0.5 },
+    counter: { gain: 0.46, reverb: 0.45 },
+    bass: { gain: 0.82, drive: 0.25 },
+    kit: { gain: 0.9, reverb: 0.4 },
   },
   space: {
     size: 0.78,
@@ -197,5 +216,5 @@ export const cinematic: StyleDef = {
     delayBeats: 1,
     delayFeedback: 0.25,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: 0 },
+  master: { targetLufs: -16, ceilingDb: -1, character: "clean", tilt: 0.6 },
 };

@@ -5,6 +5,7 @@ import type { Voice } from "../types";
 import {
   BEND_TIME,
   Biquad,
+  biquadChain,
   KarplusString,
   Oversampler2x,
   REFERENCE_RMS,
@@ -151,10 +152,7 @@ function overdriveCore(
     string.setDecay(0.12, 0.04, 4000);
     string.process(raw, hold, frames - hold);
   }
-  for (const filter of rig.pre) {
-    filter.reset();
-    filter.process(raw, frames);
-  }
+  biquadChain(rig.pre, raw, frames);
 
   // --- clipper at twice the sample rate ---
   const oversampler = rig.oversampler;
@@ -169,10 +167,7 @@ function overdriveCore(
   }
 
   // --- cabinet, two microphones ---
-  for (const filter of rig.post) {
-    filter.reset();
-    filter.process(raw, frames);
-  }
+  biquadChain(rig.post, raw, frames);
   rig.presenceLeft.reset();
   rig.presenceRight.reset();
   const releaseFrames = Math.max(

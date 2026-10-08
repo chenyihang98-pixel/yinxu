@@ -383,6 +383,128 @@ export class Biquad {
   }
 }
 
+/** Three sections of a chain in one pass (see biquadChain). */
+function chainOfThree(
+  filters: readonly Biquad[],
+  first: number,
+  buf: Float32Array,
+  n: number,
+): void {
+  const a = filters[first];
+  const b = filters[first + 1];
+  const c = filters[first + 2];
+  const ab0 = a.b0;
+  const ab1 = a.b1;
+  const ab2 = a.b2;
+  const aa1 = a.a1;
+  const aa2 = a.a2;
+  const bb0 = b.b0;
+  const bb1 = b.b1;
+  const bb2 = b.b2;
+  const ba1 = b.a1;
+  const ba2 = b.a2;
+  const cb0 = c.b0;
+  const cb1 = c.b1;
+  const cb2 = c.b2;
+  const ca1 = c.a1;
+  const ca2 = c.a2;
+  let a1 = 0;
+  let a2 = 0;
+  let b1 = 0;
+  let b2 = 0;
+  let c1 = 0;
+  let c2 = 0;
+  for (let i = 0; i < n; i++) {
+    let x = buf[i];
+    let y = ab0 * x + a1;
+    a1 = ab1 * x - aa1 * y + a2;
+    a2 = ab2 * x - aa2 * y;
+    // rounded exactly as a write to the Float32Array between two passes would
+    x = Math.fround(y);
+    y = bb0 * x + b1;
+    b1 = bb1 * x - ba1 * y + b2;
+    b2 = bb2 * x - ba2 * y;
+    x = Math.fround(y);
+    y = cb0 * x + c1;
+    c1 = cb1 * x - ca1 * y + c2;
+    c2 = cb2 * x - ca2 * y;
+    buf[i] = y;
+  }
+}
+
+/** Two sections of a chain in one pass (see biquadChain). */
+function chainOfTwo(
+  filters: readonly Biquad[],
+  first: number,
+  buf: Float32Array,
+  n: number,
+): void {
+  const a = filters[first];
+  const b = filters[first + 1];
+  const ab0 = a.b0;
+  const ab1 = a.b1;
+  const ab2 = a.b2;
+  const aa1 = a.a1;
+  const aa2 = a.a2;
+  const bb0 = b.b0;
+  const bb1 = b.b1;
+  const bb2 = b.b2;
+  const ba1 = b.a1;
+  const ba2 = b.a2;
+  let a1 = 0;
+  let a2 = 0;
+  let b1 = 0;
+  let b2 = 0;
+  for (let i = 0; i < n; i++) {
+    let x = buf[i];
+    let y = ab0 * x + a1;
+    a1 = ab1 * x - aa1 * y + a2;
+    a2 = ab2 * x - aa2 * y;
+    x = Math.fround(y);
+    y = bb0 * x + b1;
+    b1 = bb1 * x - ba1 * y + b2;
+    b2 = bb2 * x - ba2 * y;
+    buf[i] = y;
+  }
+}
+
+/**
+ * Run buf[0 .. n) through `filters` one after the other, every filter
+ * starting at rest: the same samples, bit for bit, as reset() + process() on
+ * each in turn, in about half the time. Three sections share a pass, so the
+ * CPU overlaps their recurrences (more per pass is slower again: the JIT
+ * runs out of registers). The filters' own states are not touched.
+ */
+export function biquadChain(
+  filters: readonly Biquad[],
+  buf: Float32Array,
+  n: number,
+): void {
+  const count = filters.length;
+  let k = 0;
+  // 4 sections go as 2 + 2, everything else as threes and one rest
+  for (; count - k >= 3 && count - k !== 4; k += 3)
+    chainOfThree(filters, k, buf, n);
+  for (; count - k >= 2; k += 2) chainOfTwo(filters, k, buf, n);
+  if (k < count) {
+    const last = filters[k];
+    const b0 = last.b0;
+    const b1 = last.b1;
+    const b2 = last.b2;
+    const a1 = last.a1;
+    const a2 = last.a2;
+    let z1 = 0;
+    let z2 = 0;
+    for (let i = 0; i < n; i++) {
+      const x = buf[i];
+      const y = b0 * x + z1;
+      z1 = b1 * x - a1 * y + z2;
+      z2 = b2 * x - a2 * y;
+      buf[i] = y;
+    }
+  }
+}
+
 /**
  * Zero-delay-feedback (TPT) state-variable filter, 12 dB/octave. Stable under
  * audio-rate cutoff modulation: call set() as often as every sample.

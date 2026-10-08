@@ -27,6 +27,7 @@ import type { Voice, VoiceNote } from "../types";
 import {
   BEND_TIME,
   Biquad,
+  biquadChain,
   KarplusString,
   LEVEL_WINDOW,
   LN_60DB,
@@ -193,10 +194,7 @@ function stringVoice(model: StringModel): Voice {
       const excitationLength = pluckLength(pluck) + SMEAR_TAIL;
       const excitation = scratch(3, excitationLength);
       makePluck(excitation, pluck, random);
-      for (const allpass of rig.smear) {
-        allpass.reset();
-        allpass.process(excitation, excitationLength);
-      }
+      biquadChain(rig.smear, excitation, excitationLength);
       for (let i = 0; i < 128; i++)
         excitation[excitationLength - 1 - i] *= i / 128;
       string.excite(excitation, excitationLength);
@@ -262,10 +260,7 @@ function stringVoice(model: StringModel): Voice {
       }
 
       // --- body, two microphones ---
-      for (const filter of rig.shared) {
-        filter.reset();
-        filter.process(raw, frames);
-      }
+      biquadChain(rig.shared, raw, frames);
       const l = scratch(1, frames);
       const r = scratch(2, frames);
       for (let i = 0; i < frames; i++) {
@@ -273,14 +268,8 @@ function stringVoice(model: StringModel): Voice {
         l[i] = s + (i >= tapLeft ? micMix * raw[i - tapLeft] : 0);
         r[i] = s + (i >= tapRight ? micMix * raw[i - tapRight] : 0);
       }
-      for (const filter of rig.left) {
-        filter.reset();
-        filter.process(l, frames);
-      }
-      for (const filter of rig.right) {
-        filter.reset();
-        filter.process(r, frames);
-      }
+      biquadChain(rig.left, l, frames);
+      biquadChain(rig.right, r, frames);
 
       // --- the body's own knock, rung by the pluck ---
       if (model.knock) {
@@ -453,7 +442,9 @@ export const guzheng: Voice = stringVoice({
       new Biquad().setHighpass(60, 0.75, sr),
       resonance(150, 2.5, 3, sr),
       resonance(285, 3, 3, sr),
-      new Biquad().setHighShelf(4500, 2, sr),
+      // bright, but the pluck's upper harmonics stay under the body of the
+      // note (3–5 dB of shelf: at the level of its mids it cut like a harpsichord)
+      new Biquad().setHighShelf(3600, -2.5, sr),
       // silk-wound steel is bright, not glassy: little above 9 kHz
       new Biquad().setLowpass(9000, 0.7, sr),
     ],

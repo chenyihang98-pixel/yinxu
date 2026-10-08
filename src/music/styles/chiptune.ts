@@ -85,6 +85,19 @@ export const chiptune: StyleDef = {
     cells: ["x.x.x.x.", "x.xxx.x.", "xxx.x...", "x.x.xx..", "x..x..x.", "x...x.x."],
     gate: 0.85,
   },
+  // other leads keep their own voice but are levelled against the square wave it replaces
+  lead: {
+    piano: { drive: 0.15 },
+    guitar: { drive: 0.15 },
+    pluck: { drive: 0.15 },
+    bell: { gain: 0.55, drive: 0.12 },
+    musicbox: { gain: 0.57, drive: 0.1 },
+    marimba: { drive: 0.15 },
+    vibes: { drive: 0.12 },
+    strings: { highCut: 8000 },
+    guzheng: { gain: 0.56, drive: 0.15, highCut: 6000 },
+    dizi: { gain: 0.57, highCut: 5000 },
+  },
   // forced on by a hint only: the pulse channel is normally busy with the arpeggio
   pad: { voice: "chipPulse", from: 2, register: [52, 76] },
   counter: { voice: "chipPulse", from: 2, mode: "guide" },
@@ -108,7 +121,10 @@ export const chiptune: StyleDef = {
     kit: "chip",
     from: 0.15,
     grooves: {
-      low: [{ noiseTick: "x...o...x...o..." }, { noiseTick: "x.o.x.o.x.o.x.o." }],
+      low: [
+        { noiseTick: "x...x...x...x...", noiseHit: "....x.......x..." },
+        { noiseTick: "x.o.x.o.x.o.x.o.", noiseHit: "....x.......x..." },
+      ],
       mid: [
         { noiseTick: "x.o.x.o.x.o.x.o.", noiseHit: "....X.......X..." },
         { noiseTick: "x.oxx.o.x.oxx.o.", noiseHit: "....X.......X..." },
@@ -155,12 +171,13 @@ export const chiptune: StyleDef = {
   humanize: { timing: 0, velocity: 0.02 },
   form: { loop: "AB", intro: 0.6, outro: 0.8, tail: 1.6 },
   mix: {
-    lead: { gain: 0.7, width: 0.5, reverb: 0.04, delay: 0.14 },
-    arp: { gain: 0.34, pan: 0.2, width: 0.6, reverb: 0.03, delay: 0.05 },
+    lead: { gain: 0.62, width: 0.5, reverb: 0.04, delay: 0.3, highCut: 11000 },
+    // the arpeggio is the harmony: it is the only part on the chords fader
+    arp: { gain: 0.9, pan: 0.35, width: 0.6, reverb: 0.03, delay: 0.05 },
     counter: { gain: 0.34, pan: -0.2, width: 0.6, reverb: 0.03 },
     pad: { gain: 0.3, width: 0.6, reverb: 0.03, chorus: 0, lowCut: 0 },
     bass: { gain: 0.75, reverb: 0 },
-    kit: { gain: 0.6, width: 0.4, reverb: 0.02 },
+    kit: { gain: 0.9, width: 0.4, reverb: 0.02, highCut: 9000 },
     perc: { gain: 0.4, width: 0.4, reverb: 0.02 },
   },
   space: {

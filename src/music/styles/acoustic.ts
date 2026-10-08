@@ -89,21 +89,22 @@ export const acoustic: StyleDef = {
     voice: ["guitar", "nylon"],
     from: 0,
     patterns: {
+      // alone in an intro the picking is played out (mf), not whispered under a tune that is not there yet
       low: [
         {
           rows: {
             "1": "X...............",
-            "2": "....o...........",
-            "3": "........o.......",
-            top: "............o...",
+            "2": "....X...........",
+            "3": "........X.......",
+            top: "............X...",
           },
         },
         {
           rows: {
-            "1": "X.......x.......",
-            "3": "..o.......o.....",
-            "2": "....o.......o...",
-            top: "......o.......o.",
+            "1": "X.......X.......",
+            "3": "..x.......x.....",
+            "2": "....X.......X...",
+            top: "......x.......x.",
           },
         },
       ],
@@ -112,15 +113,15 @@ export const acoustic: StyleDef = {
           rows: {
             "1": "X.......x.......",
             "2": "..o...o...o...o.",
-            "3": "....o.......o...",
-            top: "......o.......o.",
+            "3": "....x.......x...",
+            top: "......x.......o.",
           },
         },
         { rows: { all: "X...x.o...o.x.o." }, strum: 0.016, strumAlternate: true },
       ],
       high: [
-        { rows: { all: "X...x.x.o.x.x.x." }, strum: 0.014, strumAlternate: true },
-        { rows: { all: "X..x..x.X..x..x." }, strum: 0.012 },
+        { rows: { all: "x...x.o.g.o.x.o." }, strum: 0.014, strumAlternate: true },
+        { rows: { all: "X..o..x.x..o..x." }, strum: 0.012 },
       ],
     },
   },
@@ -137,17 +138,17 @@ export const acoustic: StyleDef = {
     kit: "acoustic",
     from: 0.4,
     grooves: {
-      low: [{ kick: "x.........o.....", rim: "....o.......o..." }],
+      low: [{ kick: "x.........o.....", rim: "....x.......x..." }],
       mid: [
-        { kick: "X.....o.x.......", snare: "....x.......x...", hatClosed: "o.o.o.o.o.o.o.o." },
-        { kick: "X.......x.x.....", rim: "....x.......x...", hatClosed: "o.g.o.g.o.g.o.g." },
+        { kick: "x.....o.x.......", snare: "....x.......x...", hatClosed: "x.o.x.o.x.o.x.o." },
+        { kick: "x.......x.o.....", rim: "....X.......X...", hatClosed: "x.o.x.o.x.o.x.o." },
       ],
       high: [
         {
           kick: "X.....x.x.x.....",
           snare: "....X.......X...",
-          hatClosed: "x.o.x.o.x.o.x.o.",
-          hatOpen: "..............o.",
+          hatClosed: "X.x.X.x.X.x.X.x.",
+          hatOpen: "..............x.",
         },
       ],
     },
@@ -157,27 +158,40 @@ export const acoustic: StyleDef = {
   perc: {
     from: 0.28,
     grooves: [
-      { shaker: "o.g.o.g.o.g.o.g." },
-      { shaker: "o.g.o.g.o.g.o.g.", tambourine: "....o.......o..." },
+      { shaker: "x.o.x.o.x.o.x.o." },
+      { shaker: "x.o.x.o.x.o.x.o.", tambourine: "....x.......x..." },
     ],
+  },
+  // other leads are set where the guitar sits: mellow keys and mallets up, the piercing dizi and guzheng down
+  lead: {
+    piano: { gain: 0.87 },
+    epiano: { gain: 1, drive: 0.3 },
+    pluck: { gain: 0.88, drive: 0.2 },
+    marimba: { gain: 1.1, drive: 0.3 },
+    vibes: { gain: 1, drive: 0.2 },
+    guzheng: { gain: 0.73 },
+    dizi: { gain: 0.72 },
   },
   swing: 0,
   humanize: { timing: 11, velocity: 0.11 },
-  form: { loop: "AB", intro: 1, outro: 1 },
+  form: { loop: "AB", intro: 1, outro: 1, tail: 1.7 },
+  // two guitars a little apart in a small room; the kit (chorus only) stays some 10 LU under the mix
   mix: {
-    lead: { reverb: 0.25 },
-    comp: { gain: 0.6, pan: -0.18, width: 1.1 },
-    perc: { gain: 0.35 },
-    kit: { gain: 0.7 },
+    lead: { pan: 0.1, reverb: 0.32 },
+    comp: { gain: 0.62, pan: -0.3, width: 1.1, reverb: 0.3 },
+    bass: { gain: 0.72 },
+    perc: { gain: 1.2, pan: 0.3 },
+    kit: { gain: 1.34, drive: 0.12, reverb: 0.2 },
   },
   space: {
-    size: 0.4,
-    decay: 1.3,
-    damping: 0.55,
+    size: 0.45,
+    decay: 1.5,
+    damping: 0.5,
     preDelay: 0.012,
-    level: 0.45,
+    level: 0.5,
     delayBeats: 0.75,
     delayFeedback: 0.18,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: 0.02 },
+  // the string voices carry little above 6 kHz and "warm" shelves that down again: tilted back up
+  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: 0.3 },
 };

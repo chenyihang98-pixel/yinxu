@@ -23,6 +23,7 @@
 import { TRACKS } from "../music/score";
 import type {
   DrumEvent,
+  DrumKind,
   DrumKitId,
   NoteEvent,
   Part,
@@ -61,7 +62,7 @@ import {
   stereoMatrix,
 } from "./fx";
 import type { BiquadCascade, DuckHit, SendFx } from "./fx";
-import { masterStems } from "./master";
+import { masterStems, measureMix } from "./master";
 import type { MasterReport } from "./master";
 
 export interface RenderBanks {
@@ -69,7 +70,7 @@ export interface RenderBanks {
   drums: DrumVoice;
 }
 
-/** What a render did and what it cost; delivered through RenderWithOptions.onReport. */
+/** What a render did and what it cost; delivered through RenderScoreOptions.onReport. */
 export interface RenderReport {
   sampleRate: number;
   frames: number;
@@ -91,22 +92,70 @@ export interface RenderReport {
   /** bytes of those buffers */
   bufferBytes: number;
   master: MasterReport;
+  /** only with RenderWithOptions.measureAmbience */
+  ambience?: Record<TrackName, AmbienceEnergy>;
+}
+
+/**
+ * Energy (sum of squares over both channels, before the master) that reached
+ * a track's stem directly from its parts and through its reverb and delay
+ * returns: 10·log10(reverb / dry) is how wet the track is, in dB.
+ */
+export interface AmbienceEnergy {
+  dry: number;
+  reverb: number;
+  delay: number;
 }
 
 export interface RenderWithOptions extends RenderScoreOptions {
-  onReport?: (report: RenderReport) => void;
   /**
    * Milliseconds of work between two onProgress / checkpoint calls
    * (default 30). 0 calls them at every opportunity, which tests use to make
    * pacing independent of the machine's speed.
    */
   paceMs?: number;
+  /** Measurement tools: also report the dry and wet energy of every track (RenderReport.ambience). */
+  measureAmbience?: boolean;
+  /**
+   * Measurement tools: false returns the stems as they leave the mixer, before
+   * the master bus (no bus EQ, compression, limiter or loudness gain), so the
+   * raw level of a part or a track can be compared with the raw mix.
+   */
+  master?: boolean;
 }
 
 /** Reverb return gain at SpaceSettings.level = 1 for a decay of 2 s (+4 dB over the dry part at a full send). */
 export const REVERB_RETURN = 1.6;
 /** High-pass in front of every reverb, Hz: keeps kick and bass out of the tail. */
 export const REVERB_LOW_CUT = 150;
+/**
+ * The same for the drums group, Hz. Toms, taiko and impacts have their body
+ * at 60–120 Hz; with the general corner a big hall returns almost nothing of
+ * them and cinematic drums stay dry. The kick still loses its fundamental.
+ */
+export const REVERB_LOW_CUT_DRUMS = 100;
+/**
+ * Drums that are one instrument: a new stroke takes over from the ring of the
+ * one before (a drum machine voice, a hand on the head), and a closing hi-hat
+ * silences an open one. [kinds that choke it, fade in seconds].
+ */
+const CHOKES: Partial<Record<DrumKind, readonly [readonly DrumKind[], number]>> =
+  {
+    hatOpen: [["hatClosed", "hatOpen"], 0.02],
+    kick: [["kick"], 0.02],
+    tomLow: [["tomLow"], 0.04],
+    tomMid: [["tomMid"], 0.04],
+    tomHigh: [["tomHigh"], 0.04],
+    taiko: [["taiko"], 0.07],
+    subBoom: [["subBoom"], 0.1],
+  };
+/**
+ * Seconds over which the last bass note of a piece that ends is let ring
+ * (-60 dB at the end of it) instead of being released with the chord: bass
+ * voices stop within a tenth of a second and have no reverb to carry them,
+ * which would leave a hole under the tails of everything else.
+ */
+const BASS_RING_SECONDS = 1.4;
 /**
  * A send whose wet signal would sit more than 34 dB under its dry part is
  * treated as off: it cannot be heard, and a track without audible sends does
@@ -115,7 +164,8 @@ export const REVERB_LOW_CUT = 150;
 export const SEND_FLOOR = 0.02;
 /** Default milliseconds of work between two onProgress / checkpoint calls. */
 const PACE_MS = 30;
-const MAX_NOTE_SECONDS = 120;
+/** Longest note rendered (the longest loop is 124.8 s, and a drone may span all of it). */
+const MAX_NOTE_SECONDS = 130;
 const MAX_TAIL_SECONDS = 30;
 /** Seconds of the loop end a part chain hears before frame 0 (filters and chorus settle within this). */
 const PART_WARM_SECONDS = 0.3;
@@ -285,6 +335,8 @@ class Mixer {
   duck: Float32Array | null = null;
   /** full-length Float32Arrays allocated so far */
   allocated = 0;
+  /** when set, mixBlock adds the energy it puts into the stem and sendBlock returns its own */
+  energy: AmbienceEnergy | null = null;
   private noteLeft: Float32Array;
   private noteRight: Float32Array;
   private readonly workLeft = new Float32Array(FX_BLOCK);
@@ -319,6 +371,24 @@ class Mixer {
   clearBus(): void {
     this.busLeft.fill(0);
     this.busRight.fill(0);
+  }
+
+  /**
+   * Give the memory of the work buffers (everything but the stems) back at
+   * once. They are garbage when a render ends, but a collector only frees
+   * them when it next runs — and an idle worker never does: a hundred
+   * megabytes per two-minute render would linger.
+   */
+  release(): void {
+    for (const buffer of [
+      this.busLeft,
+      this.busRight,
+      this.reverbLeft,
+      this.reverbRight,
+      this.delaySend,
+    ])
+      if (buffer) freeBuffer(buffer);
+    this.reverbLeft = this.reverbRight = this.delaySend = null;
   }
 
   /** Zeroed scratch pair of at least `count` frames. */
@@ -367,8 +437,17 @@ class Mixer {
     return cut;
   }
 
-  /** -1 = skipped, 0 = placed, 1 = placed but cut off by the end of the piece. */
-  note(voice: Voice, event: NoteEvent, context: VoiceContext): number {
+  /**
+   * -1 = skipped, 0 = placed, 1 = placed but cut off by the end of the piece.
+   * `ring` seconds: the note is held that much longer while it dies away
+   * (-60 dB at the end of the ring), instead of being released at its end.
+   */
+  note(
+    voice: Voice,
+    event: NoteEvent,
+    context: VoiceContext,
+    ring = 0,
+  ): number {
     if (
       !(event.d > 0) ||
       !(event.vel > 0) ||
@@ -376,10 +455,11 @@ class Mixer {
       !Number.isFinite(event.midi)
     )
       return -1;
+    const held = Math.min(event.d, MAX_NOTE_SECONDS);
     const note: VoiceNote = {
       midi: event.midi,
       vel: clamp01(event.vel),
-      duration: Math.min(event.d, MAX_NOTE_SECONDS),
+      duration: held + (ring > 0 ? ring : 0),
     };
     if (event.bend) note.bend = event.bend;
     const tail = clamp(voice.tail(note) || 0, 0, MAX_TAIL_SECONDS);
@@ -391,15 +471,32 @@ class Mixer {
     if (!this.loop && (start >= this.frames || start + count <= 0)) return -1;
     this.scratch(count);
     voice.render(this.noteLeft, this.noteRight, count, note, context);
+    if (ring > 0) {
+      const from = Math.min(count, Math.round(held * this.sampleRate));
+      // ln(1000) per ring: 60 dB down where the voice's own release begins
+      const rate = Math.exp(-6.9078 / Math.max(1, ring * this.sampleRate));
+      let gain = 1;
+      for (let i = from; i < count; i++) {
+        gain *= rate;
+        this.noteLeft[i] *= gain;
+        this.noteRight[i] *= gain;
+      }
+    }
     return this.place(count, start) ? 1 : 0;
   }
 
-  /** -1 = skipped, 0 = placed, 1 = placed but cut off by the end of the piece. */
+  /**
+   * -1 = skipped, 0 = placed, 1 = placed but cut off by the end of the piece.
+   * `choke` seconds after its start the hit is faded out over `fade` seconds
+   * (Infinity: it rings out).
+   */
   hit(
     drums: DrumVoice,
     event: DrumEvent,
     kit: DrumKitId,
     context: VoiceContext,
+    choke = Infinity,
+    fade = 0,
   ): number {
     if (!(event.vel > 0) || !Number.isFinite(event.t)) return -1;
     const length = clamp(
@@ -407,10 +504,12 @@ class Mixer {
       0,
       MAX_TAIL_SECONDS,
     );
-    const count = Math.max(1, Math.ceil(length * this.sampleRate));
+    let count = Math.max(1, Math.ceil(length * this.sampleRate));
     const start = Math.round(event.t * this.sampleRate);
     if (!this.loop && (start >= this.frames || start + count <= 0)) return -1;
     this.scratch(count);
+    // always rendered whole (the one random draw of the hit and its sound up to
+    // the choke do not depend on what follows), then faded where the next stroke lands
     drums.render(
       this.noteLeft,
       this.noteRight,
@@ -420,6 +519,18 @@ class Mixer {
       clamp01(event.vel),
       context,
     );
+    const chokeAt = Math.round(choke * this.sampleRate);
+    if (chokeAt < count) {
+      const from = Math.max(0, chokeAt);
+      const span = Math.max(2, Math.round(fade * this.sampleRate));
+      const end = Math.min(count, from + span);
+      for (let i = from; i < end; i++) {
+        const gain = 0.5 + 0.5 * Math.cos((Math.PI * (i - from + 1)) / span);
+        this.noteLeft[i] *= gain;
+        this.noteRight[i] *= gain;
+      }
+      count = end;
+    }
     return this.place(count, start) ? 1 : 0;
   }
 
@@ -538,33 +649,49 @@ class Mixer {
         for (let i = 0; i < run; i++)
           delaySend[target + i] += (workLeft[i] + workRight[i]) * send;
       }
+      if (this.energy) this.energy.dry += squares(workLeft, workRight, run);
       source += run;
       target = target + run >= frames ? 0 : target + run;
     }
     return check;
   }
 
-  /** Run `fx` over the tail of the loop so it is ringing at frame 0. */
-  warmSend(
+  /**
+   * Running `fx` over the tail of the loop leaves it ringing at frame 0:
+   * seek it there and return the blocks to feed it, in order, with
+   * warmSendBlock (a long hall takes a while, so the caller paces them).
+   */
+  warmSendBlocks(fx: SendFx, warmFrames: number): [from: number, count: number][] {
+    const blocks: [number, number][] = [];
+    if (!this.loop || warmFrames <= 0) return blocks;
+    fx.seek?.(-warmFrames);
+    forLoopTail(this.frames, warmFrames, FX_BLOCK, (from, count) =>
+      blocks.push([from, count]),
+    );
+    return blocks;
+  }
+
+  /** One warm-up block: the effect hears it, its output is thrown away. */
+  warmSendBlock(
     fx: SendFx,
     inLeft: Float32Array,
     inRight: Float32Array,
-    warmFrames: number,
+    from: number,
+    count: number,
   ): void {
-    if (!this.loop || warmFrames <= 0) return;
-    fx.seek?.(-warmFrames);
-    forLoopTail(this.frames, warmFrames, FX_BLOCK, (from, count) =>
-      fx.process(
-        inLeft.subarray(from, from + count),
-        inRight.subarray(from, from + count),
-        this.wetLeft,
-        this.wetRight,
-        count,
-      ),
+    fx.process(
+      inLeft.subarray(from, from + count),
+      inRight.subarray(from, from + count),
+      this.wetLeft,
+      this.wetRight,
+      count,
     );
   }
 
-  /** One block of a send effect: `gain` times its wet output is added to the stem. */
+  /**
+   * One block of a send effect: `gain` times its wet output is added to the
+   * stem. Returns the energy added while `energy` is being measured, else 0.
+   */
   sendBlock(
     fx: SendFx,
     inLeft: Float32Array,
@@ -573,7 +700,7 @@ class Mixer {
     gain: number,
     from: number,
     count: number,
-  ): void {
+  ): number {
     const { wetLeft, wetRight } = this;
     fx.process(
       inLeft.subarray(from, from + count),
@@ -588,7 +715,64 @@ class Mixer {
       stemLeft[from + i] += wetLeft[i] * gain;
       stemRight[from + i] += wetRight[i] * gain;
     }
+    return this.energy ? squares(wetLeft, wetRight, count) * gain * gain : 0;
   }
+}
+
+function squares(left: Float32Array, right: Float32Array, n: number): number {
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += left[i] * left[i] + right[i] * right[i];
+  return sum;
+}
+
+/**
+ * Detach `array` and free its memory immediately (ArrayBuffer.transfer, where
+ * the runtime has it; otherwise the collector gets to it in its own time).
+ * The array must not be used afterwards.
+ */
+export function freeBuffer(array: Float32Array): void {
+  const buffer = array.buffer as ArrayBuffer & {
+    transfer?: (length?: number) => ArrayBuffer;
+  };
+  try {
+    if (typeof buffer.transfer === "function" && buffer.byteLength > 0)
+      buffer.transfer(0);
+  } catch {
+    // a buffer that cannot be detached is simply left to the collector
+  }
+}
+
+/**
+ * For every hit, seconds until a later hit of the part chokes it (Infinity:
+ * never). `loopSeconds` > 0: the part repeats, so the search wraps around.
+ */
+function chokeTimes(hits: readonly DrumEvent[], loopSeconds: number): number[] {
+  const times = new Array<number>(hits.length).fill(Infinity);
+  for (let index = 0; index < hits.length; index++) {
+    const rule = CHOKES[hits[index].kind];
+    if (!rule) continue;
+    const from = hits[index].t;
+    let found = Infinity;
+    for (let next = index + 1; next < hits.length; next++) {
+      const other = hits[next];
+      // strokes that land together are one stroke
+      if (other.t - from > 0.012 && rule[0].includes(other.kind)) {
+        found = other.t - from;
+        break;
+      }
+    }
+    if (found === Infinity && loopSeconds > 0)
+      for (let next = 0; next <= index; next++) {
+        const other = hits[next];
+        const gap = other.t + loopSeconds - from;
+        if (gap > 0.012 && rule[0].includes(other.kind)) {
+          found = gap;
+          break;
+        }
+      }
+    times[index] = found;
+  }
+  return times;
 }
 
 function eventCount(part: Part): number {
@@ -620,18 +804,48 @@ export async function renderScoreWith(
   let noteCount = 0;
   let hitCount = 0;
   let master: MasterReport;
-
-  if (!active) {
-    options.onProgress?.(0);
-    master = await masterStems(stems, score.master, {
+  const ambience = options.measureAmbience
+    ? (Object.fromEntries(
+        TRACKS.map((track) => [track, { dry: 0, reverb: 0, delay: 0 }]),
+      ) as Record<TrackName, AmbienceEnergy>)
+    : undefined;
+  /** Master the stems — or, for measurements, only describe them as they are. */
+  const finish = async (
+    scratch?: Float32Array,
+    tick?: (fraction: number) => void | Promise<void>,
+  ): Promise<MasterReport> => {
+    if (options.master === false)
+      return {
+        silent: false,
+        targetLufs: score.master.targetLufs,
+        ...measureMix(stems, undefined, sampleRate),
+        shortfallLu: 0,
+        gainDb: 0,
+        compressor: { thresholdDb: 0, maxReductionDb: 0, meanReductionDb: 0 },
+        limiter: { ceiling: 1, maxReductionDb: 0, activeRatio: 0 },
+      };
+    return masterStems(stems, score.master, {
       sampleRate,
       loop,
       seed: score.seed,
+      scratch,
+      tick,
     });
+  };
+
+  if (!active) {
+    options.onProgress?.(0);
+    master = await finish();
     options.onProgress?.(1);
   } else {
     const duration = frames / sampleRate;
     const loopSeconds = loop ? duration : undefined;
+    // when the last held note of the piece is released (the end of the final chord)
+    let lastNoteOff = 0;
+    for (const part of parts)
+      if (part.kind === "notes")
+        for (const note of part.notes)
+          if (note.t + note.d > lastNoteOff) lastNoteOff = note.t + note.d;
     const space = score.space;
     const chains = new Map<Part, PartChain>(
       parts.map((part) => [
@@ -683,6 +897,7 @@ export async function renderScoreWith(
       const trackParts = parts.filter((part) => part.track === track);
       if (!trackParts.length) continue;
       const stem = stems[track];
+      mixer.energy = ambience ? ambience[track] : null;
       const reverbLeft = usesReverb(track) ? mixer.reverbLeft : null;
       const reverbRight = mixer.reverbRight;
       const delaySend = usesDelay(track) ? mixer.delaySend : null;
@@ -704,8 +919,20 @@ export async function renderScoreWith(
             throw new Error(
               `renderScore: no voice "${part.voice}" (part ${part.id})`,
             );
+          // the last bass note of a piece that ends rings out under the final chord
+          const ringFrom =
+            !loop && part.track === "bass" ? lastNoteOff - 0.06 : Infinity;
+          const ring = Math.min(
+            BASS_RING_SECONDS,
+            Math.max(0, duration - lastNoteOff - 0.1),
+          );
           for (const event of part.notes) {
-            const placed = mixer.note(voice, event, context);
+            const placed = mixer.note(
+              voice,
+              event,
+              context,
+              event.t + event.d >= ringFrom ? ring : 0,
+            );
             if (placed < 0) continue;
             if (placed) cut = true;
             noteCount++;
@@ -713,9 +940,18 @@ export async function renderScoreWith(
             const pending = pacer.maybe();
             if (pending) await pending;
           }
-        } else
-          for (const event of part.hits) {
-            const placed = mixer.hit(banks.drums, event, part.kit, context);
+        } else {
+          const chokes = chokeTimes(part.hits, loop ? duration : 0);
+          for (let index = 0; index < part.hits.length; index++) {
+            const event = part.hits[index];
+            const placed = mixer.hit(
+              banks.drums,
+              event,
+              part.kit,
+              context,
+              chokes[index],
+              CHOKES[event.kind]?.[1] ?? 0,
+            );
             if (placed < 0) continue;
             if (placed) cut = true;
             hitCount++;
@@ -723,6 +959,7 @@ export async function renderScoreWith(
             const pending = pacer.maybe();
             if (pending) await pending;
           }
+        }
         if (cut) mixer.fadeBusEnd();
         seconds.voices += now() - mark;
 
@@ -750,18 +987,20 @@ export async function renderScoreWith(
       if (reverbLeft && reverbRight) {
         const reverb = new Reverb(sampleRate, space, {
           loopSeconds,
-          lowCutHz: REVERB_LOW_CUT,
+          lowCutHz: track === "drums" ? REVERB_LOW_CUT_DRUMS : REVERB_LOW_CUT,
         });
         const gain = reverbReturnGain(space);
-        mixer.warmSend(
+        for (const [from, count] of mixer.warmSendBlocks(
           reverb,
-          reverbLeft,
-          reverbRight,
           Math.ceil(reverb.tailSeconds * 1.4 * sampleRate),
-        );
+        )) {
+          mixer.warmSendBlock(reverb, reverbLeft, reverbRight, from, count);
+          const pending = pacer.maybe();
+          if (pending) await pending;
+        }
         for (let from = 0; from < frames; from += FX_BLOCK) {
           const count = Math.min(FX_BLOCK, frames - from);
-          mixer.sendBlock(
+          const added = mixer.sendBlock(
             reverb,
             reverbLeft,
             reverbRight,
@@ -770,6 +1009,7 @@ export async function renderScoreWith(
             from,
             count,
           );
+          if (ambience) ambience[track].reverb += added;
           pacer.add(count * 0.8);
           const pending = pacer.maybe();
           if (pending) await pending;
@@ -782,15 +1022,26 @@ export async function renderScoreWith(
           space.delayFeedback,
         );
         const gain = delayReturnGain(space);
-        mixer.warmSend(
+        for (const [from, count] of mixer.warmSendBlocks(
           delay,
-          delaySend,
-          delaySend,
           Math.ceil(Math.min(delay.tailSeconds, 30) * sampleRate),
-        );
+        )) {
+          mixer.warmSendBlock(delay, delaySend, delaySend, from, count);
+          const pending = pacer.maybe();
+          if (pending) await pending;
+        }
         for (let from = 0; from < frames; from += FX_BLOCK) {
           const count = Math.min(FX_BLOCK, frames - from);
-          mixer.sendBlock(delay, delaySend, delaySend, stem, gain, from, count);
+          const added = mixer.sendBlock(
+            delay,
+            delaySend,
+            delaySend,
+            stem,
+            gain,
+            from,
+            count,
+          );
+          if (ambience) ambience[track].delay += added;
           pacer.add(count * 0.2);
           const pending = pacer.maybe();
           if (pending) await pending;
@@ -801,15 +1052,10 @@ export async function renderScoreWith(
 
     const mark = now();
     const masterFrom = pacer.fraction;
-    master = await masterStems(stems, score.master, {
-      sampleRate,
-      loop,
-      seed: score.seed,
-      // the part bus has done its job; the master may use it as work space
-      scratch: mixer.busLeft,
-      tick: (fraction) =>
-        pacer.maybe(masterFrom + (0.999 - masterFrom) * fraction),
-    });
+    // the part bus has done its job; the master may use it as work space
+    master = await finish(mixer.busLeft, (fraction) =>
+      pacer.maybe(masterFrom + (0.999 - masterFrom) * fraction),
+    );
     seconds.master = now() - mark;
     pacer.finish();
   }
@@ -830,7 +1076,9 @@ export async function renderScoreWith(
     fullLengthStereoBuffers: mixer.allocated / 2,
     bufferBytes: mixer.allocated * frames * 4,
     master,
+    ...(ambience ? { ambience } : {}),
   });
+  mixer.release();
   return { sampleRate, frames, stems };
 }
 

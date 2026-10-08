@@ -16,6 +16,7 @@ import {
   Adsr,
   BEND_TIME,
   Biquad,
+  biquadChain,
   OnePoleLP,
   REFERENCE_RMS,
   WhiteNoise,
@@ -208,14 +209,8 @@ export const choir: Voice = {
     // --- tilt, vowel, envelope, out ---
     rig.tiltLeft.process(l, frames);
     rig.tiltRight.process(r, frames);
-    for (const filter of rig.vowelLeft) {
-      filter.reset();
-      filter.process(l, frames);
-    }
-    for (const filter of rig.vowelRight) {
-      filter.reset();
-      filter.process(r, frames);
-    }
+    biquadChain(rig.vowelLeft, l, frames);
+    biquadChain(rig.vowelRight, r, frames);
     const out = guardGain(l, r, frames, gain);
     for (let i = 0; i < frames; i++) {
       const a = env[i] * out;

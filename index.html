@@ -2,12 +2,41 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-    <meta name="theme-color" content="#101112" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101113" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="application-name" content="音序 Muse" />
+    <meta name="apple-mobile-web-app-title" content="音序 Muse" />
+    <meta
+      name="description"
+      content="音序 Muse：用一句话生成纯音乐背景配乐。22 种风格、四条分轨，可继续对话调整；本地作曲完全离线，不需要账号。"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="音序 Muse · BGM 创作工作台" />
+    <meta
+      property="og:description"
+      content="用一句话生成纯音乐背景配乐，本地作曲完全离线。"
+    />
     <title>音序 Muse · BGM 创作工作台</title>
+    <!-- Inline icon (the app's own mark): the page asks the network for nothing, not even a favicon. -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23b8a3fa'/%3E%3Cpath d='M9 19v-6M13.7 23V9M18.3 20.5v-9M23 17.5v-3' stroke='%231a1530' stroke-width='2.6' stroke-linecap='round' fill='none'/%3E%3C/svg%3E"
+    />
+    <!-- Painted before the script loads, so the frame is never a white flash. -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #101113;
+        color: #ececf1;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>音序 Muse 需要启用 JavaScript 才能运行。</noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

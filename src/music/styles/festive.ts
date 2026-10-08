@@ -138,18 +138,18 @@ export const festive: StyleDef = {
     voice: ["piano", "marimba"],
     from: 0,
     patterns: {
-      low: [{ rows: { low: "x.......x.......", upper: "....o.......o..." } }],
+      low: [{ rows: { low: "X.......X.......", upper: "....x.......x..." } }],
       mid: [
         { rows: { low: "X.......x.......", upper: "....x.x.....x.x." } },
         { rows: { low: "X...x...X...x...", upper: "..o...o...o...o." } },
       ],
       high: [
-        { rows: { low: "X...x...X...x...", upper: "..x.x.x...x.x.x." } },
-        { rows: { all: "X.x.x.x.X.x.x.x." }, gate: 0.7 },
+        { rows: { low: "X...x...X...x...", upper: "..x.o.x...x.o.x." } },
+        { rows: { all: "X.o.x.o.X.o.x.o." }, gate: 0.7 },
       ],
     },
   },
-  pad: { voice: ["strings", "pad"], from: 0.6, register: [52, 74] },
+  pad: { voice: ["strings", "pad"], from: 0.7, register: [52, 74] },
   arp: {
     voice: ["musicbox", "pluck"],
     from: 0.55,
@@ -158,43 +158,51 @@ export const festive: StyleDef = {
     register: [67, 91],
     gate: 0.6,
   },
-  counter: { voice: ["brass", "strings"], from: 0.78, mode: "guide" },
+  counter: { voice: ["brass", "strings"], from: 0.74, mode: "guide" },
   bass: {
     voice: "fingerBass",
     from: 0.2,
     feel: { low: "root", mid: "root", high: "octave" },
     register: [33, 47],
     approach: 0.4,
-    gate: 0.75,
+    gate: 0.85,
     riffs: {
-      low: ["1...-...5...-..."],
+      low: ["1..-....5..-...."],
       mid: ["1...-...5...-...", "1...-.1.5...-..."],
-      high: ["1.-.5.-.1.-.5.-.", "1.-.1.-.5.-.5.-a"],
+      high: ["1..-5..-1..-5..-", "1..-1..-5..-5.-a"],
     },
   },
   drums: {
     kit: "pop",
     from: 0.25,
     grooves: {
-      low: [{ kick: "x.......x.......", tambourine: "....o.......o..." }],
+      low: [{ kick: "x.......x.......", tambourine: "....X.......X..." }],
       mid: [
-        { kick: "X.......x.x.....", snare: "....x.......x...", hatClosed: "x.o.x.o.x.o.x.o." },
-        { kick: "X...x...X...x...", clap: "....x.......x...", hatClosed: "o.x.o.x.o.x.o.x." },
+        { kick: "x.......x.o.....", snare: "....x.......x...", hatClosed: "X.x.X.x.X.x.X.x." },
+        { kick: "x...o...x...o...", clap: "....x.......x...", hatClosed: "x.X.x.X.x.X.x.X." },
       ],
       high: [
         {
           kick: "X.....x.x.x.....",
           snare: "....X.......X...",
           clap: "....x.......x...",
-          hatClosed: "x.x.x.x.x.x.x.x.",
-          hatOpen: "..............o.",
+          hatClosed: "X.x.X.x.X.x.X.x.",
+          hatOpen: "..............x.",
         },
         {
-          kick: "X...X...X...X...",
+          kick: "X...x...X...x...",
           snare: "....X.......X.x.",
-          hatClosed: "x.x.x.x.x.x.x.x.",
-          tambourine: "..x...x...x...x.",
+          hatClosed: "X.x.X.x.X.x.X.x.",
+          tambourine: "..X...X...X...X.",
         },
+      ],
+    },
+    // jingling fills: snare and tambourine rather than a run down the toms
+    fills: {
+      light: [{ snare: "..............ox" }, { tambourine: "............x.xX" }],
+      full: [
+        { snare: "........o.o.oxxX" },
+        { snare: "............o.xX", tambourine: "........X.X.X.X." },
       ],
     },
     crash: "crash",
@@ -204,23 +212,39 @@ export const festive: StyleDef = {
   perc: {
     from: 0.2,
     grooves: [
-      { sleighBell: "x.o.x.o.x.o.x.o." },
-      { sleighBell: "x.o.x.o.x.o.x.o.", tambourine: "....x.......x..." },
+      { sleighBell: "X.x.X.x.X.x.X.x." },
+      { sleighBell: "X.x.X.x.X.x.X.x.", tambourine: "....X.......X..." },
     ],
     byLead: { guzheng: LUOGU, dizi: LUOGU },
   },
+  // other leads are set where the bells sit; mellow keys and mallets get a little saturation for presence
+  lead: {
+    epiano: { gain: 0.89, drive: 0.3 },
+    marimba: { gain: 1.08, drive: 0.3 },
+    vibes: { gain: 0.89, drive: 0.2 },
+    pluck: { gain: 0.78, drive: 0.2 },
+  },
   swing: 0,
   humanize: { timing: 6, velocity: 0.09 },
-  form: { loop: "AB", intro: 0.8, outro: 0.9, tail: 2.5 },
+  // the verse is already a party: a smaller step up to the chorus keeps a loop from lurching at its seam
+  form: {
+    loop: "AB",
+    intro: 0.8,
+    outro: 0.9,
+    tail: 2,
+    energy: { verse: [0.9, 0.02], chorus: [1, 0.06] },
+  },
+  // The bells are bright enough by themselves (no extra tilt). The bouncing bass plays short notes and
+  // needs the gain to sit 7 LU under the mix; kit 6 LU under, saturated so the kick does not own every peak.
   mix: {
-    lead: { gain: 0.78, reverb: 0.3, delay: 0.1 },
-    comp: { gain: 0.5, pan: -0.15 },
-    arp: { gain: 0.26, pan: 0.3, delay: 0.12 },
-    pad: { gain: 0.3 },
-    counter: { gain: 0.4, pan: 0.2 },
-    bass: { gain: 0.72 },
-    kit: { gain: 0.75 },
-    perc: { gain: 0.34, pan: 0.25, width: 1.3 },
+    lead: { gain: 0.72, reverb: 0.3, delay: 0.1 },
+    comp: { gain: 0.5, pan: -0.2 },
+    arp: { gain: 0.4, pan: 0.3, delay: 0.12 },
+    pad: { gain: 0.34 },
+    counter: { gain: 0.5, pan: 0.2 },
+    bass: { gain: 1.18, duck: 0.25 },
+    kit: { gain: 1.68, drive: 0.15 },
+    perc: { gain: 0.86, pan: 0.25, width: 1.3 },
   },
   space: {
     size: 0.5,
@@ -231,5 +255,5 @@ export const festive: StyleDef = {
     delayBeats: 0.75,
     delayFeedback: 0.2,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "clean", tilt: 0.18 },
+  master: { targetLufs: -16, ceilingDb: -1, character: "clean", tilt: 0.05 },
 };

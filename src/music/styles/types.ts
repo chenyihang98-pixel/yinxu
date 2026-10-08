@@ -11,6 +11,18 @@
  *   -  comp rows only: note-off (a hit otherwise rings until the next hit,
  *      the next chord or the end of the bar)
  * Spaces and "|" are ignored, so "x... x... | x... x..." is fine.
+ *
+ * HOW LOUD A STEP IS. The written velocity is multiplied by the section's
+ * level (0.62–0.66 at energy 0, 1 at energy 1) and then meets the instrument:
+ *   - drums and percussion: peak ∝ (velocity / 0.8)^1.5, and soft hits are
+ *     also darker and shorter. In loudness an "o" lands about 13 dB and a "g"
+ *     about 27 dB under an "x" — a "g" is a ghost note in the true sense, felt
+ *     more than heard. A percussion layer that should be HEARD is written with
+ *     "x" and "X" and balanced with its part gain; "o" and "g" are for the
+ *     notes between the accents;
+ *   - pitched voices: about 32·log10(velocity) dB, so "o" is 6.5 dB under "x".
+ * Small percussion is also quieter by nature: at equal velocity and gain a
+ * shaker or a closed hat is 17–19 LU under a kick (see DRUM_PEAKS).
  */
 import type {
   BassFeel,
@@ -176,6 +188,12 @@ export interface CompPattern {
   push?: boolean;
   /** 0..1 hold time relative to the written length (default 1) */
   gate?: number;
+  /**
+   * Velocity factor of the whole pattern (default 1). The part gain is one
+   * number for all tiers, but a held low-tier figure and a chopped high-tier
+   * one carry very different loudness at equal velocities: trim here.
+   */
+  level?: number;
 }
 
 interface LayerDef {
@@ -249,6 +267,12 @@ export interface BassDef {
   /** always play long notes, whatever the energy (drones under ambient textures) */
   calm?: boolean;
   /**
+   * Velocity factor per tier (default 1). Long low-tier notes carry more
+   * loudness than a pulsed high-tier line at the same velocity and part gain;
+   * this is where a style evens the two out.
+   */
+  level?: Partial<Tier<number>>;
+  /**
    * Written bass figures per tier (one bar of 16 steps each), used instead of
    * `feel` unless a hint asks for a feel. Characters:
    *   1 root   3 third   5 fifth   7 seventh below the root   8 octave
@@ -307,7 +331,14 @@ export interface FormDef {
   intro: number;
   /** outro length relative to the default */
   outro: number;
-  /** seconds reserved after the last note for the natural tail, 1.5..3 (default 2.2) */
+  /**
+   * Seconds reserved after the last note for the natural tail, 1.5..3
+   * (default 2.2). The final chord starts on the last downbeat that leaves
+   * this much room, so near a bar line a few tenths of a second decide whether
+   * the piece has one bar more or less of music — and with it, in short
+   * pieces, whether there is room for an intro. Check the form of a 30 s piece
+   * after changing it.
+   */
   tail?: number;
   /** per-section energy: section = clamp(energy × mul + add); overrides the engine default */
   energy?: Partial<Record<SectionType, [mul: number, add: number]>>;

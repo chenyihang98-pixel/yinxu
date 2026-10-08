@@ -474,7 +474,7 @@ test("importing an incomplete bank fails loudly under the test runner", () => {
   assert.match(output, /pass 1/);
 });
 
-test("placeholder drums: every kind of every kit is finite, bounded and click-free", () => {
+test("drums through the voice harness: every kind of every kit is finite, bounded and click-free", () => {
   for (const kit of DRUM_KITS)
     for (const kind of DRUM_KINDS) {
       const length = DRUMS.length(kind, kit);
@@ -502,7 +502,7 @@ test("placeholder drums: every kind of every kit is finite, bounded and click-fr
       // louder when hit harder
       assert.ok(peak(renderDrum(DRUMS, kind, kit, 1)) > peak(renderDrum(DRUMS, kind, kit, 0.4)) * 1.5);
     }
-  // the three engines sound like different things
+  // kick, snare and hat sit where they belong (the kits themselves are covered by tests/drums.test.ts)
   const kick = renderDrum(DRUMS, "kick", "pop", 1);
   const snare = renderDrum(DRUMS, "snare", "pop", 1);
   const hat = renderDrum(DRUMS, "hatClosed", "pop", 1);

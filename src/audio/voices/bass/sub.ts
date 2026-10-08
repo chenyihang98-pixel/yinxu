@@ -6,7 +6,8 @@
  * -13 / -14 / -19 / -25 dB (2nd..5th), so an E1 still has energy at
  * 120-210 Hz. The waveshape is static per note: its mean and RMS are
  * measured over one cycle up front, so there is no DC and the level is exact
- * on every pitch. Mono, soft 12 ms attack, 90 ms release. NoteEvent.bend
+ * on every pitch. Mono, soft attack (12 ms, up to 80 ms on long notes),
+ * 90 ms release. NoteEvent.bend
  * glides into the note.
  */
 import type { Voice } from "../types";
@@ -76,7 +77,10 @@ export const subBass: Voice = {
 
     const env = scratch(0, frames);
     new Adsr(sr, {
-      attack: 0.012,
+      // a pulsed line speaks at once; a long drone note swells in over a few
+      // cycles (a 12 ms rise on a 50 Hz tone is a thump across the spectrum,
+      // plain to hear when a held note is re-struck in a quiet texture)
+      attack: clamp(0.012 + 0.03 * (note.duration - 0.6), 0.012, 0.08),
       decay: 0.1,
       sustain: 1,
       release: 0.09,

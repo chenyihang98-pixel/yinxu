@@ -101,8 +101,8 @@ const KICK: Record<Kit, Membrane> = {
   pop: m({ len: 0.36, hz: 52, bend: 3.2, bendTau: 0.019, sag: 0.22, sagTau: 0.09, t60: 0.33, drive: 1.3, click: 0.2, clickHz: 3400, clickT60: 0.012, slap: 0.05, slapHz: 900, slapT60: 0.03 }),
   // sampled-from-vinyl thud: rounder attack, heavy saturation, no top
   lofi: m({ len: 0.3, hz: 57, bend: 2.4, bendTau: 0.026, sag: 0.18, sagTau: 0.1, t60: 0.27, attack: 0.002, drive: 2.4, click: 0.06, clickHz: 1500, clickT60: 0.012, slap: 0.06, slapHz: 500, slapT60: 0.04, lowpass: 3200, grit: 0.07 }),
-  // 808: held sine that rings on, very short pitch blip
-  electro: m({ len: 0.56, hz: 48, bend: 2.6, bendTau: 0.011, sag: 0.3, sagTau: 0.06, t60: 0.58, hold: 0.04, attack: 0.0004, drive: 0.9, click: 0.15, clickHz: 2600, clickT60: 0.008 }),
+  // 808: held sine that rings on, very short pitch blip (short enough to be over before the next beat at 128 BPM)
+  electro: m({ len: 0.46, hz: 50, bend: 2.6, bendTau: 0.011, sag: 0.3, sagTau: 0.06, t60: 0.44, hold: 0.04, attack: 0.0004, drive: 0.9, click: 0.15, clickHz: 2600, clickT60: 0.008 }),
   // beater on a real head: shell overtones, felt click, a breath of room
   acoustic: m({ len: 0.42, hz: 61, bend: 1.8, bendTau: 0.016, sag: 0.12, sagTau: 0.1, t60: 0.34, attack: 0.001, overtones: [[1.59, 0.22, 0.4], [2.3, 0.14, 0.3], [3.6, 0.06, 0.2]], drive: 0.5, click: 0.2, clickHz: 2900, clickT60: 0.015, slap: 0.14, slapHz: 1100, slapT60: 0.045, room: 0.3 }),
   // jazz kick: tuned higher, open, felt beater played softly

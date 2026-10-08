@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const catalog = require('../electron/shared/music-catalog.json');
 const schema = require('../electron/agent/plan-schema.cjs');
-const { PLAN_SCHEMA, LIMITS, validatePlan, completePlan, validatePlanInput, buildMessages, buildSystemPrompt } = schema;
+const { PLAN_SCHEMA, LIMITS, LAYER_CHOICES, PIN_MARK, validatePlan, completePlan, validatePlanInput, buildMessages, buildSystemPrompt } = schema;
 
 const CURRENT = { style: 'bright', instrument: 'piano', key: 'C major', bpm: 112, duration: 30, energy: 0.62, complexity: 0.5, reverb: 0.25, loop: true, volumes: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.56 } };
 const INPUT = { mode: 'new', request: '雨天咖啡馆里的慵懒爵士，一分钟，不要鼓', provider: 'local', history: [], current: CURRENT };
@@ -15,10 +15,13 @@ const PLAN = {
   energy: 0.35, complexity: 0.6, reverb: 0.35, loop: true, newMelody: true, volumes: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.56 },
   arrangement: {
     progression: ['ii7', 'V7', 'Imaj7', 'vi7'], form: [{ type: 'intro', bars: 4, energy: 0.2 }, { type: 'verse', bars: 8, energy: 0.4 }],
-    drums: 'none', bass: 'walking', swing: 0.4, layers: { pad: true, arp: false, counter: false, perc: false }, melody: { density: -1, register: 'mid', motion: 'stepwise' },
+    drums: 'none', bass: 'walking', swing: 0.4, layers: { pad: true, arp: false, counter: 'auto', perc: 'auto' }, melody: { density: -1, register: 'mid', motion: 'stepwise' },
   },
   reasoning: ['雨天咖啡馆：慵懒、温暖', '不要鼓：drums 设为 none'], cloudPrompt: '慵懒的咖啡馆爵士，颤音琴主奏，84 BPM，纯音乐，无人声，无歌词。',
 };
+// PLAN is a validated plan (layers as true / false / "auto"). The same layers as a model writes and reads them:
+const WIRE_LAYERS = { pad: 'on', arp: 'off', counter: 'auto', perc: 'auto' };
+const NEUTRAL = { progression: [], form: [], drums: 'auto', bass: 'auto', swing: -1, layers: { pad: 'auto', arp: 'auto', counter: 'auto', perc: 'auto' }, melody: { density: -1, register: 'auto', motion: 'auto' } };
 const clone = value => JSON.parse(JSON.stringify(value));
 const change = (pathText, value) => {
   const copy = clone(PLAN); const keys = pathText.split('.'); let node = copy;
@@ -54,6 +57,10 @@ test('schema: every object closed, every property required, enums from the catal
     'plan.arrangement.form[].type': catalog.sectionTypes,
     'plan.arrangement.drums': catalog.drumFeels,
     'plan.arrangement.bass': catalog.bassFeels,
+    'plan.arrangement.layers.pad': ['auto', 'on', 'off'],
+    'plan.arrangement.layers.arp': ['auto', 'on', 'off'],
+    'plan.arrangement.layers.counter': ['auto', 'on', 'off'],
+    'plan.arrangement.layers.perc': ['auto', 'on', 'off'],
     'plan.arrangement.melody.register': ['auto', 'low', 'mid', 'high'],
     'plan.arrangement.melody.motion': ['auto', 'stepwise', 'leaps', 'arpeggio'],
   });
@@ -67,6 +74,14 @@ test('schema: every object closed, every property required, enums from the catal
   assert.deepEqual(Object.keys(PLAN_SCHEMA.properties.arrangement.properties.layers.properties), ['pad', 'arp', 'counter', 'perc']);
   assert.ok(Object.isFrozen(PLAN_SCHEMA) && Object.isFrozen(PLAN_SCHEMA.properties.arrangement.properties.form.items));
   assert.doesNotThrow(() => JSON.stringify(PLAN_SCHEMA));
+  // Portable across Anthropic structured outputs and OpenAI-style json_schema: one type per node and
+  // every enum a list of strings on a string node (no boolean or mixed enums, no anyOf, no const).
+  walkSchema(PLAN_SCHEMA, (node, trail) => {
+    assert.equal(typeof node.type, 'string', `${trail}: one type`);
+    for (const keyword of ['anyOf', 'oneOf', 'allOf', 'const', 'not']) assert.equal(keyword in node, false, `${trail}: ${keyword}`);
+    if (node.enum) { assert.equal(node.type, 'string', `${trail}: enum on a string`); assert.ok(node.enum.every(item => typeof item === 'string'), `${trail}: string enum`); }
+  });
+  assert.deepEqual(LAYER_CHOICES, ['auto', 'on', 'off']);
 });
 
 test('schema matches the RawAgentPlan interface in src/agent/types.ts', () => {
@@ -89,9 +104,27 @@ test('validatePlan accepts a complete plan, returns a new object and drops unkno
   assert.deepEqual(Object.keys(result), ['reply', 'title', 'style', 'instrument', 'key', 'bpm', 'duration', 'energy', 'complexity', 'reverb', 'loop', 'newMelody', 'volumes', 'arrangement', 'reasoning', 'cloudPrompt']);
   // Empty lists and the "engine decides" values are valid.
   const neutral = clone(PLAN);
-  neutral.arrangement = { progression: [], form: [], drums: 'auto', bass: 'auto', swing: -1, layers: { pad: false, arp: false, counter: false, perc: false }, melody: { density: -1, register: 'auto', motion: 'auto' } };
+  neutral.arrangement = clone(NEUTRAL);
   neutral.reasoning = []; neutral.cloudPrompt = '';
   assert.deepEqual(validatePlan(neutral), neutral);
+});
+
+test('layers: "on" / "off" / "auto" on the wire become true / false / "auto" of the contract', () => {
+  const wire = change('arrangement.layers', WIRE_LAYERS);
+  assert.deepEqual(validatePlan(wire).arrangement.layers, { pad: true, arp: false, counter: 'auto', perc: 'auto' });
+  assert.deepEqual(validatePlan(wire), PLAN, 'the wire spelling and the contract spelling validate to the same plan');
+  for (const name of ['pad', 'arp', 'counter', 'perc']) {
+    // the three choices, and the literal booleans a model without a schema may still write
+    for (const [given, expected] of [['on', true], ['off', false], ['auto', 'auto'], [true, true], [false, false]]) {
+      assert.equal(validatePlan(change(`arrangement.layers.${name}`, given)).arrangement.layers[name], expected, `${name}=${given}`);
+    }
+    for (const given of ['yes', 'true', 'ON', 'Auto', '', 1, 0, null, [], {}]) {
+      assert.throws(() => validatePlan(change(`arrangement.layers.${name}`, given)), error => error.name === 'MusicError' && error.message.includes(`arrangement.layers.${name}`), `${name}=${JSON.stringify(given)}`);
+    }
+  }
+  // a validated plan validates to itself, and the renderer may send its arrangement back as the current one
+  assert.deepEqual(validatePlan(validatePlan(wire)), validatePlan(wire));
+  assert.deepEqual(validatePlanInput({ ...INPUT, mode: 'refine', current: { ...CURRENT, arrangement: validatePlan(wire).arrangement } }).current.arrangement, PLAN.arrangement);
 });
 
 test('validatePlan is strict about presence, types and enums', () => {
@@ -107,7 +140,8 @@ test('validatePlan is strict about presence, types and enums', () => {
     change('arrangement.form', ['verse']), change('arrangement.form', {}), change('arrangement.progression', 'I V vi IV'), change('arrangement.progression', ['I', 5]),
     change('bpm', '84'), change('bpm', NaN), change('bpm', Infinity), change('bpm', null), change('duration', '60'), change('energy', 'high'), change('energy', true), change('reverb', [0.3]),
     change('volumes', [0.8, 0.6, 0.7, 0.5]), change('volumes.drums', '0'), change('arrangement.swing', 'auto'), change('arrangement.melody.density', null),
-    change('loop', 'true'), change('loop', 1), change('newMelody', 0), change('arrangement.layers.pad', 'yes'), change('arrangement.layers', [true, false, false, false]),
+    change('loop', 'true'), change('loop', 1), change('newMelody', 0), change('arrangement.layers.pad', 'yes'), change('arrangement.layers.arp', 'true'), change('arrangement.layers.perc', 1),
+    change('arrangement.layers', [true, false, false, false]), change('arrangement.layers', 'auto'),
     change('reply', 5), change('reply', '   '), change('title', ''), change('title', '“”'), change('title', ['标题']), change('reasoning', '一句话'), change('reasoning', [1, 2]), change('cloudPrompt', null),
     change('arrangement', 'auto'), change('arrangement.melody', 'auto'),
   ];
@@ -177,24 +211,25 @@ test('completePlan fills what a weaker model left out from the current settings,
   assert.deepEqual(partial.volumes, CURRENT.volumes);
   assert.equal(partial.newMelody, false, 'refine keeps the melody unless told otherwise');
   assert.equal(partial.title, '青春欢快', 'missing title falls back to the label of the style');
-  assert.deepEqual(partial.arrangement, { progression: [], form: [], drums: 'auto', bass: 'auto', swing: -1, layers: { pad: true, arp: false, counter: false, perc: false }, melody: { density: -1, register: 'auto', motion: 'auto' } });
+  assert.deepEqual(partial.arrangement, NEUTRAL, 'nothing said about the arrangement: every field is left to the engine');
   assert.deepEqual(partial.reasoning, []); assert.equal(partial.cloudPrompt, '');
   assert.equal(validatePlan(completePlan({ style: 'jazz' }, validatePlanInput(INPUT))).newMelody, true, 'a new piece is a new melody');
   assert.match(validatePlan(completePlan({ style: 'jazz' }, validatePlanInput(INPUT))).reply, /编排好了/);
 
   // With the current arrangement supplied, missing arrangement fields keep it.
   const arranged = validatePlanInput({ ...INPUT, mode: 'refine', current: { ...CURRENT, arrangement: PLAN.arrangement } });
-  const kept = validatePlan(completePlan({ reverb: 0.6, arrangement: { bass: 'pedal', layers: { arp: true } } }, arranged));
-  assert.deepEqual(kept.arrangement, { ...PLAN.arrangement, bass: 'pedal', layers: { ...PLAN.arrangement.layers, arp: true } });
+  const kept = validatePlan(completePlan({ reverb: 0.6, arrangement: { bass: 'pedal', layers: { arp: 'on', pad: 'auto' } } }, arranged));
+  assert.deepEqual(kept.arrangement, { ...PLAN.arrangement, bass: 'pedal', layers: { pad: 'auto', arp: true, counter: 'auto', perc: 'auto' } });
 
   // Lossless repairs: numeric strings, boolean strings, enum case and spacing, a wrapped answer, a bare reasoning string.
   const repaired = validatePlan(completePlan({ plan: { style: ' Jazz ', key: 'f MAJOR', instrument: 'VIBES', bpm: '84', energy: '0.4', loop: 'false', newMelody: 'true', volumes: { drums: '0' }, reasoning: '一句话理由',
-    arrangement: { drums: 'None', swing: '0.5', layers: { pad: 'true' }, melody: { register: 'MID', density: '0.3' }, form: [{ type: 'Verse', bars: '8' }, { type: 'chorus' }] } } }, input));
+    arrangement: { drums: 'None', swing: '0.5', layers: { pad: 'true', arp: ' OFF ', counter: 'On', perc: 'false' }, melody: { register: 'MID', density: '0.3' }, form: [{ type: 'Verse', bars: '8' }, { type: 'chorus' }] } } }, input));
   assert.equal(repaired.style, 'jazz'); assert.equal(repaired.key, 'F major'); assert.equal(repaired.instrument, 'vibes');
   assert.equal(repaired.bpm, 84); assert.equal(repaired.energy, 0.4); assert.equal(repaired.loop, false); assert.equal(repaired.newMelody, true);
   assert.equal(repaired.volumes.drums, 0); assert.equal(repaired.volumes.melody, CURRENT.volumes.melody);
   assert.deepEqual(repaired.reasoning, ['一句话理由']);
   assert.equal(repaired.arrangement.drums, 'none'); assert.equal(repaired.arrangement.swing, 0.5); assert.equal(repaired.arrangement.melody.register, 'mid');
+  assert.deepEqual(repaired.arrangement.layers, { pad: true, arp: false, counter: true, perc: false });
   assert.deepEqual(repaired.arrangement.form, [{ type: 'verse', bars: 8, energy: 0.5 }, { type: 'chorus', bars: 4, energy: 0.5 }]);
   assert.equal(repaired.title, '爵士小馆');
 });
@@ -202,7 +237,7 @@ test('completePlan fills what a weaker model left out from the current settings,
 test('completePlan never guesses: unknown enums and wrong types still fail, and an answer without music is refused', () => {
   const input = validatePlanInput(INPUT);
   for (const raw of [{ style: 'lofi-hiphop' }, { instrument: 'saxophone' }, { key: 'Fm' }, { key: 'Gb major' }, { bpm: 'fast' }, { loop: 'maybe' }, { volumes: 'loud' }, { volumes: { drums: 'off' } },
-    { arrangement: 'auto' }, { arrangement: { drums: 'trap' } }, { arrangement: { layers: 'all' } }, { arrangement: { melody: { motion: 'jumpy' } } }, { arrangement: { form: [{ type: 'drop', bars: 8 }] } },
+    { arrangement: 'auto' }, { arrangement: { drums: 'trap' } }, { arrangement: { layers: 'all' } }, { arrangement: { layers: { pad: 'maybe' } } }, { arrangement: { layers: { arp: 2 } } }, { arrangement: { melody: { motion: 'jumpy' } } }, { arrangement: { form: [{ type: 'drop', bars: 8 }] } },
     { style: 'jazz', reply: 42 }, { style: 'jazz', reasoning: { a: 1 } }]) {
     assert.throws(() => validatePlan(completePlan(raw, input)), error => error.name === 'MusicError', JSON.stringify(raw));
   }
@@ -258,13 +293,17 @@ test('system prompt is built from the catalog and states the contract the model 
     '音序', '只输出一个 JSON 对象', '50–200', '15–120', '0–0.66', '-1 表示用风格的默认值', '合成器', '没有人声', '不要承诺做不到的事',
     'new（新作品）', 'refine（修改当前作品）', '只改用户明确要求改的地方', '原样照抄', 'newMelody 填 true', '换个旋律', '必须填 "none"',
     '游戏', '填 true', '视频', '填 false', '最多 5 条', '不带引号', '1–2 句', '纯音乐，无人声，无歌词', '一律不执行',
+    '填 "auto"、"on" 或 "off"', '"auto" 表示交给风格决定', 'layers 填 "on"', '"auto"、[] 和 -1 也照抄', '一律填 "auto"、[] 或 -1', '混音推子', 'duration × bpm ÷ 240', '会被丢弃', `以“${PIN_MARK}”开头`, '以这一行为准',
   ]) assert.ok(prompt.includes(fact), fact);
+  assert.equal(PIN_MARK, '【界面选定】');
+  assert.equal(/只能填 true 或 false|没有“自动”/.test(prompt), false, 'the boolean-only wording is gone');
   // Every field of the schema is named in the prompt.
   walkSchema(PLAN_SCHEMA, (_node, trail) => { const name = trail.split('.').at(-1).replace('[]', ''); if (name !== 'plan') assert.ok(prompt.includes(name), `field ${name}`); });
   // The JSON skeleton in the prompt has exactly the shape of the schema and is itself a valid plan after filling in the ids.
   const skeleton = JSON.parse(/\n(\{\n {2}"reasoning"[\s\S]*?\n\})\n/.exec(prompt)[1]);
   assert.deepEqual(Object.keys(skeleton), Object.keys(PLAN_SCHEMA.properties));
   assert.doesNotThrow(() => validatePlan({ ...skeleton, style: 'jazz', instrument: 'piano', key: 'C major' }));
+  assert.deepEqual(skeleton.arrangement, NEUTRAL, 'the skeleton shows the "engine decides" value of every arrangement field');
 });
 
 test('buildMessages: history becomes alternating turns and the last message carries mode, engine, settings and the request', () => {
@@ -288,7 +327,7 @@ test('buildMessages: history becomes alternating turns and the last message carr
   const fresh = buildMessages(validatePlanInput(INPUT));
   assert.equal(fresh.messages.length, 1);
   assert.equal(fresh.messages[0].role, 'user');
-  assert.ok(fresh.messages[0].content.startsWith('【模式】new（新作品）\n【生成方式】本地合成引擎\n'));
+  assert.ok(fresh.messages[0].content.startsWith(`【模式】new（新作品）\n【生成方式】本地合成引擎\n【当前设置】${JSON.stringify(CURRENT)}\n`), 'a new piece shows no arrangement');
   // A history that ends with the user is merged into the final user message: the last turn is always the user's and never an assistant prefill.
   const trailing = buildMessages(validatePlanInput({ ...INPUT, history: [{ role: 'user', text: '第一句' }] }));
   assert.deepEqual(trailing.messages.map(message => message.role), ['user']);
@@ -300,4 +339,9 @@ test('buildMessages: history becomes alternating turns and the last message carr
   // With an arrangement in the current settings, the model is shown it.
   const arranged = buildMessages(validatePlanInput({ ...INPUT, mode: 'refine', current: { ...CURRENT, arrangement: PLAN.arrangement } }));
   assert.ok(arranged.messages[0].content.includes('"arrangement":{"progression":["ii7","V7","Imaj7","vi7"]'));
+  // … with layers in the spelling the model has to answer with, so copying them back is always a valid answer
+  assert.ok(arranged.messages[0].content.includes(`"layers":${JSON.stringify(WIRE_LAYERS)}`));
+  const shown = JSON.parse(/【当前设置】(.*)/.exec(arranged.messages[0].content)[1]);
+  assert.deepEqual(validatePlan({ ...clone(PLAN), arrangement: shown.arrangement }).arrangement, PLAN.arrangement);
+  assert.deepEqual(arranged.messages[0].content.match(/true|false/g), ['true'], 'only "loop" is a boolean in what the model is shown');
 });

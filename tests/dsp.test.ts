@@ -4,6 +4,7 @@ import {
   Adsr,
   Allpass1,
   Biquad,
+  biquadChain,
   DcBlocker,
   DelayLine,
   ExpDecay,
@@ -554,6 +555,47 @@ test("one-pole, biquad and state-variable filters match their ideal responses", 
     lag -= Math.round(lag / (TAU / omega)) * (TAU / omega);
     near(lag, delay, 1e-3, `measured allpass delay ${delay}`);
     near(result.amplitude, 1, 1e-4, "allpass gain");
+  }
+});
+
+test("biquadChain gives the samples of reset() + process() on every filter, bit for bit, for any chain length", () => {
+  const sampleRate = 48000;
+  const designs = [
+    () => new Biquad().setHighpass(45, 0.7, sampleRate),
+    () => new Biquad().setPeak(285, 3, 3, sampleRate),
+    () => new Biquad().setPeak(470, 3.5, 3.5, sampleRate),
+    () => new Biquad().setPeak(1350, 1.2, -2.5, sampleRate),
+    () => new Biquad().setPeak(2500, 1.3, 4.5, sampleRate),
+    () => new Biquad().setHighShelf(1000, 7, sampleRate, 0.5),
+    () => new Biquad().setAllpass(210, 0.8, sampleRate),
+    () => new Biquad().setAllpass(640, 1, sampleRate),
+    () => new Biquad().setAllpass(1900, 1, sampleRate),
+    () => new Biquad().setLowpass(5200, 0.7, sampleRate),
+    () => new Biquad().setNotch(3000, 4, sampleRate),
+  ];
+  const random = createRng(77);
+  const frames = 6000;
+  const source = Float32Array.from({ length: frames }, (_, i) => (i < 4000 ? 0.4 * Math.sin(i * 0.031) + 0.5 * (random() - 0.5) : 0));
+  for (let count = 0; count <= designs.length; count++) {
+    const filters = designs.slice(0, count).map((design) => design());
+    // the filters are in use elsewhere: the chain must neither need nor disturb their state
+    for (const filter of filters) filter.next(0.3);
+    const expected = Float32Array.from(source);
+    for (const design of designs.slice(0, count)) design().process(expected, frames);
+    const chained = Float32Array.from(source);
+    biquadChain(filters, chained, frames);
+    assert.deepEqual(chained, expected, `${count} sections`);
+    // only the first n frames are touched
+    const partial = Float32Array.from(source);
+    biquadChain(filters, partial, 1000);
+    assert.deepEqual(partial.subarray(0, 1000), expected.subarray(0, 1000));
+    assert.deepEqual(partial.subarray(1000), source.subarray(1000));
+    // and the filters still continue from where they were
+    filters.forEach((filter, index) => {
+      const twin = designs[index]();
+      twin.next(0.3);
+      assert.equal(filter.next(0.1), twin.next(0.1));
+    });
   }
 });
 

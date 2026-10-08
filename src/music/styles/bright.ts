@@ -96,8 +96,8 @@ export const bright: StyleDef = {
     from: 0,
     patterns: {
       low: [
-        { rows: { all: "X.......o......." }, strum: 0.012 },
-        { rows: { low: "X...............", upper: "....o.......o..." } },
+        { rows: { all: "X...x...X...x..." }, strum: 0.012 },
+        { rows: { low: "X.......X.......", upper: "....x.x.....x..." } },
       ],
       mid: [
         { rows: { low: "X.....x.X.......", upper: "....x.......x.x." } },
@@ -132,27 +132,27 @@ export const bright: StyleDef = {
     from: 0.22,
     grooves: {
       low: [
-        { kick: "x.......o.......", rim: "....o.......o...", hatClosed: "o...o...o...o..." },
-        { kick: "x.........o.....", rim: "....o.......o...", shaker: "o.g.o.g.o.g.o.g." },
+        { kick: "x.......o.......", rim: "....X.......X...", hatClosed: "x...x...x...x..." },
+        { kick: "x.........o.....", rim: "....X.......X...", shaker: "x.o.x.o.x.o.x.o." },
       ],
       mid: [
-        { kick: "X.......x.x.....", snare: "....X.......X...", hatClosed: "x.o.x.o.x.o.x.o." },
-        { kick: "X.....x...x.....", snare: "....X.......X...", hatClosed: "x.o.x.o.x.o.x.o." },
-        { kick: "X..x....x.x.....", snare: "....X.......X...", hatClosed: "x.o.x.o.x.o.x.o." },
+        { kick: "X.......x.x.....", snare: "....X.......X...", hatClosed: "X.x.X.x.X.x.X.x." },
+        { kick: "X.....x...x.....", snare: "....X.......X...", hatClosed: "X.x.X.x.X.x.X.x." },
+        { kick: "X..x....x.x.....", snare: "....X.......X...", hatClosed: "X.x.X.x.X.x.X.x." },
       ],
       high: [
         {
           kick: "X.....x.x.x.....",
           snare: "....X.......X...",
           clap: "....x.......x...",
-          hatClosed: "x.o.x.o.x.o.x.o.",
-          hatOpen: "..............o.",
+          hatClosed: "X.x.X.x.X.x.X.x.",
+          hatOpen: "..............x.",
         },
         {
           kick: "X..x..x...x.x...",
           snare: "....X.......X..g",
-          hatClosed: "x.x.x.x.x.x.x.x.",
-          hatOpen: "......o.........",
+          hatClosed: "X.x.X.x.X.x.X.x.",
+          hatOpen: "......x.........",
         },
       ],
     },
@@ -160,21 +160,41 @@ export const bright: StyleDef = {
     swell: true,
     ghost: 0.4,
   },
+  // shaken percussion is some 20 LU quieter than a kick at equal velocity: written loud and mixed up
   perc: {
     from: 0.66,
     grooves: [
-      { tambourine: "....x.......x...", shaker: "o.g.o.g.o.g.o.g." },
-      { tambourine: "..o...o...o...o." },
+      { tambourine: "....X.......X...", shaker: "X.x.X.x.X.x.X.x." },
+      { tambourine: "..X...X...X...X.", shaker: "X.x.X.x.X.x.X.x." },
     ],
+  },
+  // every lead sits where the piano does: mellow mallets and tines come up (with a little
+  // saturation for presence), the piercing dizi and guzheng come down
+  lead: {
+    piano: { gain: 0.92 },
+    epiano: { gain: 0.95, drive: 0.3 },
+    marimba: { gain: 1.1, drive: 0.3 },
+    vibes: { gain: 0.92, drive: 0.2 },
+    pluck: { gain: 0.85, drive: 0.2 },
+    bell: { gain: 0.78 },
+    guzheng: { gain: 0.72 },
+    dizi: { gain: 0.66 },
   },
   swing: 0,
   humanize: { timing: 7, velocity: 0.08 },
-  form: { loop: "AB", intro: 1, outro: 1 },
+  form: { loop: "AB", intro: 1, outro: 1, tail: 1.7 },
+  // Measured at the default faders: lead about 3 LU over the chords, bass 7 and kit 5–6 LU under the
+  // mix. Saturation on the drum bus trades the kit's 23 dB crest for body (and lifts the hats against
+  // the kick); the bass ducks a little under the kick.
   mix: {
-    lead: { reverb: 0.25, delay: 0.08 },
-    comp: { pan: -0.15 },
-    pad: { gain: 0.32 },
-    arp: { gain: 0.32 },
+    lead: { gain: 0.85, reverb: 0.28, delay: 0.08 },
+    comp: { gain: 0.42, pan: -0.28, width: 1.1 },
+    pad: { gain: 0.36 },
+    arp: { gain: 0.32, pan: 0.32 },
+    counter: { gain: 0.46, pan: 0.3 },
+    bass: { gain: 1.3, duck: 0.25 },
+    kit: { gain: 1.69, drive: 0.15 },
+    perc: { gain: 1.4, pan: 0.3, width: 1.3 },
   },
   space: {
     size: 0.4,

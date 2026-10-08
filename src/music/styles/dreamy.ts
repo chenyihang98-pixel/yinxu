@@ -100,9 +100,23 @@ export const dreamy: StyleDef = {
     // floating: notes that arrive late and ring
     cells: ["x.....x.", "__x.....", "x...x...", "x.x.....", "____x..."],
   },
+  // bowed, blown and held leads are louder than a struck bar at the same setting; leads that
+  // move in stereo by themselves are narrowed so the wide master leaves them a centre
+  lead: {
+    strings: { gain: 0.73, width: 0.6 },
+    flute: { gain: 0.68 },
+    dizi: { gain: 0.58 },
+    synth: { gain: 0.7 },
+    chip: { gain: 0.61 },
+    guzheng: { gain: 0.8 },
+    vibes: { gain: 0.9, width: 0.6 },
+    epiano: { gain: 0.95, width: 0.6 },
+    musicbox: { gain: 1 },
+    marimba: { gain: 1.1 },
+  },
   comp: {
     voice: ["epiano", "piano"],
-    from: 0.5,
+    from: 0.36,
     patterns: {
       low: [{ rows: { all: "X..............." }, strum: 0.03 }],
       mid: [{ rows: { all: "X.........o....." }, strum: 0.03 }],
@@ -112,7 +126,7 @@ export const dreamy: StyleDef = {
   pad: { voice: ["airpad", "pad"], from: 0, register: [52, 79], voices: 4 },
   arp: {
     voice: ["pluck", "musicbox"],
-    from: 0.12,
+    from: 0.1,
     pattern: ["updown", "up", "broken"],
     rate: { low: 2, mid: 2, high: 1 },
     octaves: 2,
@@ -122,10 +136,10 @@ export const dreamy: StyleDef = {
   counter: { voice: ["choir", "flute"], from: 0.6, mode: "guide" },
   bass: {
     voice: "subBass",
-    from: 0.2,
+    from: 0.1,
     feel: { low: "root", mid: "root", high: "root" },
-    register: [29, 43],
-    approach: 0.2,
+    register: [33, 45],
+    approach: 0,
     gate: 0.97,
     calm: true,
   },
@@ -133,9 +147,9 @@ export const dreamy: StyleDef = {
     kit: "soft",
     from: 0.48,
     grooves: {
-      low: [{ kick: "o...............", rim: "........o.......", shaker: "..g...g...g...g." }],
-      mid: [{ kick: "x.........o.....", rim: "....o.......o...", shaker: "o.g.o.g.o.g.o.g." }],
-      high: [{ kick: "x.....o...x.....", snare: "....o.......o...", hatClosed: "o.g.o.g.o.g.o.g." }],
+      low: [{ kick: "x...............", rim: "........x.......", shaker: "..o...o...o...o." }],
+      mid: [{ kick: "x.........o.....", rim: "....x.......x...", shaker: "x.o.x.o.x.o.x.o." }],
+      high: [{ kick: "X.....o...x.....", snare: "....x.......x...", hatClosed: "x.o.x.o.x.o.x.o." }],
     },
     crash: null,
     swell: true,
@@ -145,10 +159,12 @@ export const dreamy: StyleDef = {
   humanize: { timing: 12, velocity: 0.1 },
   form: { loop: "AB", intro: 1.2, outro: 1.2, tail: 3 },
   mix: {
-    lead: { reverb: 0.5, delay: 0.25 },
-    arp: { gain: 0.36, reverb: 0.45, delay: 0.3 },
-    pad: { gain: 0.45, reverb: 0.6, chorus: 0.5, width: 1.5 },
-    comp: { gain: 0.45, reverb: 0.4, chorus: 0.3 },
+    lead: { gain: 0.84, reverb: 0.42, delay: 0.25 },
+    arp: { gain: 0.55, reverb: 0.45, delay: 0.3 },
+    pad: { gain: 0.4, reverb: 0.45, chorus: 0.25, width: 0.9, lowCut: 110 },
+    comp: { gain: 0.42, reverb: 0.4, chorus: 0.3 },
+    bass: { gain: 0.6, drive: 0.3 },
+    kit: { gain: 1.05, reverb: 0.3 },
   },
   space: {
     size: 0.88,
@@ -159,5 +175,5 @@ export const dreamy: StyleDef = {
     delayBeats: 0.75,
     delayFeedback: 0.42,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "wide", tilt: 0.1 },
+  master: { targetLufs: -16, ceilingDb: -1, character: "wide", tilt: 0 },
 };

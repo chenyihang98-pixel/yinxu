@@ -18,6 +18,7 @@ import {
   Adsr,
   BEND_TIME,
   Biquad,
+  biquadChain,
   REFERENCE_RMS,
   WhiteNoise,
   bendOffset,
@@ -84,9 +85,9 @@ function body(sr: number, air: number, wood: number, hill: number): Biquad[] {
     new Biquad().setPeak(air, 3, 3, sr),
     new Biquad().setPeak(wood, 3.5, 3.5, sr),
     new Biquad().setPeak(1350, 1.2, -2.5, sr),
-    new Biquad().setPeak(hill, 1.3, 4.5, sr),
+    new Biquad().setPeak(hill, 1.3, 3.5, sr),
     // a violin body radiates better the higher the partial, up to the bridge hill
-    new Biquad().setHighShelf(1000, 7, sr, 0.5),
+    new Biquad().setHighShelf(1000, 4.5, sr, 0.5),
     // ... and smears each cycle in time (the same on both channels)
     ...SMEAR.map(([hz, q]) => new Biquad().setAllpass(hz, q, sr)),
   ];
@@ -215,14 +216,8 @@ export const strings: Voice = {
     }
 
     // --- body, envelope, out ---
-    for (const filter of rig.bodyLeft) {
-      filter.reset();
-      filter.process(l, frames);
-    }
-    for (const filter of rig.bodyRight) {
-      filter.reset();
-      filter.process(r, frames);
-    }
+    biquadChain(rig.bodyLeft, l, frames);
+    biquadChain(rig.bodyRight, r, frames);
     const out = guardGain(l, r, frames, gain);
     for (let i = 0; i < frames; i++) {
       const a = env[i] * out;

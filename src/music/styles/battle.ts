@@ -112,9 +112,23 @@ export const battle: StyleDef = {
     // pushed three-against-four accents and running eighths
     cells: ["x..x..x.", "x.x.x.x.", "x.x.x...", "x...x.x.", "x..x.x..", "x.x...x.", "x......."],
   },
+  // struck and plucked leads are saturated so they cut through like the synth; soft ones are pushed up
+  lead: {
+    piano: { drive: 0.2 },
+    guitar: { gain: 1, drive: 0.2 },
+    pluck: { drive: 0.2 },
+    bell: { gain: 0.92, drive: 0.15 },
+    musicbox: { gain: 0.9, drive: 0.15 },
+    marimba: { gain: 1.22, drive: 0.2 },
+    vibes: { drive: 0.15 },
+    flute: { gain: 1.18 },
+    strings: { gain: 1.18 },
+    guzheng: { gain: 0.9, drive: 0.2, highCut: 5500 },
+    dizi: { gain: 0.98, highCut: 5500 },
+  },
   comp: {
     voice: ["strings", "brass"],
-    from: 0.3,
+    from: 0.12,
     patterns: {
       low: [{ rows: { all: "X-......x-......" } }],
       mid: [{ rows: { all: "X-....x-..x-...." } }, { rows: { all: "X-.x-...X-.x-..." } }],
@@ -192,13 +206,13 @@ export const battle: StyleDef = {
     energy: { verse: [0.9, 0.02], breakdown: [0.55, 0.05] },
   },
   mix: {
-    lead: { gain: 0.8, reverb: 0.2, delay: 0.15, chorus: 0.15 },
-    comp: { gain: 0.5, pan: 0.2, reverb: 0.25 },
-    pad: { gain: 0.32 },
-    arp: { gain: 0.3, pan: -0.3, delay: 0.15 },
-    counter: { gain: 0.4, pan: 0.15 },
-    bass: { gain: 0.82, drive: 0.3 },
-    kit: { gain: 0.9, reverb: 0.1, drive: 0.1 },
+    lead: { gain: 1.12, reverb: 0.2, delay: 0.15, chorus: 0.15 },
+    comp: { gain: 1.25, pan: 0.2, reverb: 0.25, drive: 0.2 },
+    pad: { gain: 0.56 },
+    arp: { gain: 0.5, pan: -0.3, delay: 0.15 },
+    counter: { gain: 0.48, pan: 0.15 },
+    bass: { gain: 1.5, drive: 0.45 },
+    kit: { gain: 1.38, reverb: 0.1, drive: 0.1 },
   },
   space: {
     size: 0.4,

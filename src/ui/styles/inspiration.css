@@ -1,0 +1,143 @@
+/* 灵感 */
+
+.style-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
+  gap: var(--s-3);
+}
+
+.style-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  background: var(--panel);
+  text-align: left;
+  transition:
+    border-color var(--fast) var(--ease),
+    background-color var(--fast) var(--ease),
+    transform var(--fast) var(--ease);
+}
+
+.style-card:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--panel-raised);
+  transform: translateY(-1px);
+}
+
+.style-card:active:not(:disabled) {
+  transform: none;
+}
+
+.style-card:disabled {
+  opacity: 0.55;
+}
+
+.style-card:focus-visible {
+  outline-offset: 2px;
+}
+
+.style-card-art {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  width: 100%;
+  height: 84px;
+  flex: none;
+  padding: 10px 14px;
+  border-radius: 0;
+}
+
+.style-card-english {
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-style: italic;
+  line-height: 1.1;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+}
+
+.style-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 6px;
+  padding: var(--s-3) 14px 14px;
+}
+
+.style-card-body strong {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.style-card-text {
+  flex: 1 1 auto;
+  color: var(--text-soft);
+  font-size: var(--t-12);
+  line-height: 1.6;
+}
+
+.style-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 2px;
+}
+
+.style-card-tags span {
+  padding: 0 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  color: var(--muted);
+  font-size: var(--t-12);
+  line-height: 18px;
+}
+
+.scenario-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+.scenario-title {
+  margin-bottom: var(--s-2);
+  color: var(--text-soft);
+  font-size: var(--t-13);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 519px) {
+  .style-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--s-2);
+  }
+
+  .style-card-art {
+    height: 64px;
+    padding: 8px 10px;
+  }
+
+  .style-card-english {
+    font-size: 15px;
+  }
+
+  .style-card-body {
+    padding: 10px;
+  }
+
+  .style-card-tags {
+    display: none;
+  }
+}
+
+@media (max-width: 339px) {
+  .style-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -102,7 +102,7 @@ export const sad: StyleDef = {
     syncopation: 0.15,
     motifBars: 2,
     stepBias: 0.8,
-    pickup: 0.35,
+    pickup: 0.55,
     ornaments: 0.2,
     space: 0.5,
     chorusLift: 3,
@@ -116,22 +116,22 @@ export const sad: StyleDef = {
     patterns: {
       low: [
         { rows: { low: "X...............", upper: "........o......." } },
-        { rows: { "1": "X...............", "2": "....o.......o...", "3": "........o......." } },
+        { rows: { "1": "X...............", "2": "....x.......x...", "3": "........x......." } },
       ],
       mid: [
         {
           rows: {
-            "1": "X...............",
+            "1": "X.......o.......",
             "2": "..o...o...o...o.",
-            "3": "....o.......o...",
-            "4": "........o.......",
+            "3": "....x.......x...",
+            "4": "........x.......",
           },
         },
         {
           rows: {
             "1": "X.......x.......",
             "3": "..o.......o.....",
-            "2": "....o.......o...",
+            "2": "....x.......x...",
             top: "......o.......o.",
           },
         },
@@ -149,7 +149,7 @@ export const sad: StyleDef = {
       ],
     },
   },
-  pad: { voice: ["strings", "pad"], from: 0.2, register: [50, 76], voices: 4 },
+  pad: { voice: ["strings", "pad"], from: 0.17, register: [50, 76], voices: 4 },
   counter: { voice: ["strings", "flute"], from: 0.5, mode: "guide" },
   bass: {
     voice: "fingerBass",
@@ -165,33 +165,48 @@ export const sad: StyleDef = {
     kit: "soft",
     from: 0.62,
     grooves: {
-      low: [{ kick: "o...............", rim: "........o......." }],
-      mid: [{ kick: "o...............", rim: "........o......." }],
-      high: [{ kick: "x.........o.....", rim: "....o.......o...", shaker: "..g...g...g...g." }],
+      low: [{ kick: "o...............", rim: "........X......." }],
+      mid: [{ kick: "o...............", rim: "........X......." }],
+      high: [{ kick: "x.........o.....", rim: "....X.......X...", shaker: "..x...x...x...x." }],
     },
     crash: null,
     ghost: 0,
+  },
+  // sustained leads do not decay the way the piano does, so they are set back; mellow keys come
+  // forward; the brightest leads lose their top, which has no place in this piece
+  lead: {
+    epiano: { gain: 0.94, drive: 0.3 },
+    marimba: { gain: 1.1, drive: 0.3 },
+    vibes: { gain: 0.93, drive: 0.2 },
+    synth: { gain: 0.68, highCut: 5500 },
+    flute: { gain: 0.68 },
+    strings: { gain: 0.63 },
+    bell: { gain: 0.8, highCut: 5000 },
+    dizi: { gain: 0.63, highCut: 5500 },
+    chip: { gain: 0.66, highCut: 4500 },
   },
   swing: 0,
   rubato: 0.7,
   humanize: { timing: 18, velocity: 0.14 },
   form: { loop: "AB", intro: 1.2, outro: 1.4, tail: 3 },
+  // the right hand 3 LU over left hand and strings; the pad is narrowed and cut a little higher so
+  // that what little there is below 150 Hz stays near the centre
   mix: {
-    lead: { gain: 0.78, reverb: 0.45, delay: 0.05 },
-    comp: { gain: 0.5, reverb: 0.4 },
-    pad: { gain: 0.36, reverb: 0.55 },
+    lead: { gain: 0.8, reverb: 0.45, delay: 0.05 },
+    comp: { gain: 0.48, reverb: 0.4 },
+    pad: { gain: 0.32, width: 1.1, reverb: 0.55, lowCut: 180 },
     counter: { gain: 0.34, pan: 0.25, reverb: 0.5 },
-    bass: { gain: 0.6 },
-    kit: { gain: 0.5, reverb: 0.4 },
+    bass: { gain: 0.85 },
+    kit: { gain: 1.2, reverb: 0.4 },
   },
   space: {
     size: 0.75,
     decay: 2.8,
     damping: 0.5,
     preDelay: 0.03,
-    level: 0.6,
+    level: 0.55,
     delayBeats: 1,
     delayFeedback: 0.2,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: -0.12 },
+  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: -0.05 },
 };

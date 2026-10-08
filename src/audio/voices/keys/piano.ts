@@ -32,7 +32,9 @@ import {
  *  - gentle stereo the way a soundboard gives it: every partial sits at its
  *    own spot around the position of the key (bass left, treble right), in
  *    phase in both channels, so the mono sum is unchanged;
- *  - a short low-passed noise burst for the hammer;
+ *  - a short low-passed noise burst for the hammer, and with it a few
+ *    milliseconds of high "tick" (felt meeting steel) that a harder blow
+ *    brings out: most of what a piano has above 6 kHz is in its attack;
  *  - at note-off the damper shortens every partial (dampers get weaker towards
  *    the top and stop above F#6, where notes simply ring out).
  * The level is calibrated analytically from the partial table, so the note
@@ -44,6 +46,7 @@ const promptBank = new ModalBank(PIANO_PARTIALS);
 const afterBank = new ModalBank(PIANO_PARTIALS);
 const hammerFilter = new Biquad();
 const hammerHighpass = new Biquad();
+const tickHighpass = new Biquad();
 const partialHz = new Float64Array(PIANO_PARTIALS);
 const partialAmp = new Float64Array(PIANO_PARTIALS);
 const partialRate = new Float64Array(PIANO_PARTIALS); // dB per second
@@ -110,6 +113,7 @@ export const piano: Voice = {
     // hammer felt: spectral e-fold frequency, harder (brighter) with velocity and up the keyboard
     const hammerHz =
       680 * Math.pow(2, (midi - 60) / 36) * (0.4 + 0.95 * Math.pow(vel, 1.5));
+    const ring = 0.17 + 0.3 * Math.pow(vel, 1.5);
     const baseRate = pianoBaseRate(midi);
     const nyquist = sr * 0.45;
     const keyPan = clamp((midi - 64) / 90, -0.3, 0.3);
@@ -119,7 +123,10 @@ export const piano: Voice = {
       const hz = f0 * k * Math.sqrt(1 + inharmonicity * k * k) * stretch;
       if (hz >= nyquist) break;
       const x = (hz - f0) / hammerHz;
-      const rolloff = 0.86 * Math.exp(-x) + 0.14 / (1 + x * x);
+      // felt hammer: an exponential fall, over a -12 dB/octave floor of string
+      // "ring" that a harder blow raises (the top of a grand at mezzo-forte
+      // is some 40 dB down, not gone)
+      const rolloff = 0.86 * Math.exp(-x) + ring / (1 + x * x);
       const strike = Math.sin((Math.PI * k) / 8.4);
       const comb = Math.sqrt(strike * strike + 0.05);
       const board = (hz * hz) / (hz * hz + 3600);
@@ -128,7 +135,7 @@ export const piano: Voice = {
       if (k > 6 && amp < strongest * 0.005) break;
       partialHz[count] = hz;
       partialAmp[count] = amp;
-      partialRate[count] = baseRate * (1 + (hz - f0) / 700);
+      partialRate[count] = baseRate * (1 + (hz - f0) / 780);
       // golden-angle scatter: fixed per key and partial, the fundamental stays near the key position
       const scatter =
         (k === 1 ? 0.1 : 0.36) * Math.sin(k * 2.399963 + midi * 0.7);
@@ -251,13 +258,21 @@ export const piano: Voice = {
       -1 / (lerp(0.014, 0.007, clamp01((midi - 36) / 60)) * sr),
     );
     const thumpAttack = Math.max(8, Math.round(0.0012 * sr));
+    tickHighpass.setHighpass(Math.min(2500, sr * 0.2), 0.7, sr);
+    tickHighpass.reset();
+    const tickDecay = Math.exp(-1 / (0.003 * sr));
+    let tickEnv = REFERENCE_RMS * 0.8 * Math.pow(vel, 2);
     let thumpEnv = thumpGain;
     for (let i = 0; i < thumpFrames; i++) {
       const rise =
         i < thumpAttack ? 0.5 - 0.5 * Math.cos((Math.PI * i) / thumpAttack) : 1;
+      const white = noise.next();
       thump[i] =
-        hammerHighpass.next(hammerFilter.next(noise.next())) * thumpEnv * rise;
+        (hammerHighpass.next(hammerFilter.next(white)) * thumpEnv +
+          tickHighpass.next(white) * tickEnv) *
+        rise;
       thumpEnv *= thumpDecay;
+      tickEnv *= tickDecay;
     }
     fadeOut(thump, thumpFrames, Math.min(thumpFrames, 256));
 

@@ -30,6 +30,7 @@ import {
 import type { RenderReport } from "../src/audio/render";
 import {
   LIMITER_CEILING,
+  MIN_STEM_CORRELATION,
   masterStems,
   measureMix,
 } from "../src/audio/master";
@@ -463,7 +464,7 @@ test("render: a one-shot piece fades in over 5 ms and ends in exact silence", as
         assert.ok(data[n - 1] === 0, `${character} ${track}: ends at exact zero`);
         // fade-in: the first millisecond is far below the level after 5 ms
         assert.ok(peakOf(data.subarray(0, 48)) < peakOf(data.subarray(240, 2400)) * 0.2);
-        // fade-out: the last 30 ms fall away, the final millisecond is practically silent
+        // fade-out (the last quarter of so short a piece): it falls away, the final millisecond is practically silent
         const body = rms(data, n - 4800, n - 1440);
         assert.ok(body > 1e-3, `${character} ${track}: still sounding 30 ms before the end`);
         assert.ok(rms(data, n - 720, n) < body * 0.4);
@@ -949,9 +950,15 @@ test("master: a looping signal stays loopable", async () => {
       if (data !== stems.bass[0])
         assert.ok(Math.abs(result.levelDb) < 1, `${character}: level across the seam ${result.levelDb.toFixed(2)} dB`);
     }
-    // the gain envelope itself wraps: the tone's level just before the end equals the level just after the start
+    // the gain envelope itself wraps: the tone's level moves across the seam no faster than it does on either side of it
     const tone = stems.melody[0];
-    assert.ok(Math.abs(db(rms(tone, 0, 1455) / rms(tone, frames - 1455, frames))) < 0.2, `${character}: envelope continuous`);
+    const level = (window: number) => {
+      const from = (((window * 1455) % frames) + frames) % frames;
+      return db(rms(tone, from, from + 1455));
+    };
+    const across = Math.abs(level(0) - level(-1));
+    const beside = Math.max(Math.abs(level(-1) - level(-2)), Math.abs(level(1) - level(0)));
+    assert.ok(across < Math.max(0.2, beside + 0.1), `${character}: envelope continuous (${across.toFixed(2)} dB across the seam, ${beside.toFixed(2)} beside it)`);
   }
 });
 
@@ -1004,4 +1011,227 @@ test("renderScore: built-in voices and kits render a mastered, seamless, repeata
   assert.ok(image > 0.3 && image < 0.995, `left/right correlation ${image.toFixed(3)}`);
   // the kick on the downbeat is an onset, so only the step across the seam is judged
   for (const data of [left, right]) assert.ok(seam(data).jump < 1.5, `seam step ${seam(data).jump.toFixed(2)}`);
+});
+
+/* ---------- engine finalisation: chokes, the last bass note, drum-bus glue, stereo guard ---------- */
+
+/** Level (dB) of `data` over [from, to) seconds. */
+function levelDb(data: Float32Array, from: number, to: number): number {
+  let sum = 0;
+  const a = Math.round(from * SR);
+  const b = Math.round(to * SR);
+  for (let i = a; i < b; i++) sum += data[i] * data[i];
+  return 10 * Math.log10(sum / Math.max(1, b - a) + 1e-20);
+}
+
+/** A drum bank whose every hit is one second of steady tone, so what cuts it short is plain to see. */
+const LONG_DRUMS: DrumVoice = {
+  length: () => 1,
+  render(left, right, frames, _kind, _kit, vel, ctx) {
+    ctx.random();
+    for (let i = 0; i < frames; i++) {
+      const value = 0.3 * vel * Math.min(1, i / 48) * Math.min(1, (frames - 1 - i) / 48) * Math.sin((2 * Math.PI * 500 * i) / ctx.sampleRate);
+      left[i] += value;
+      right[i] += value;
+    }
+  },
+};
+
+test("renderScore: a closing hat chokes the open one, a drum is one voice, cymbals ring on", async () => {
+  const render = async (hits: DrumEvent[], loop = false) => {
+    const score = makeScore([drumPart("kit", hits, { gain: 1, reverb: 0 })], { loop, duration: 2 });
+    return (await renderScoreWith(score, { voices: TEST_VOICES, drums: LONG_DRUMS }, { master: false })).stems.drums[0];
+  };
+  // an open hat alone rings for its whole second
+  const open = await render([{ t: 0, kind: "hatOpen", vel: 0.8 }]);
+  assert.ok(levelDb(open, 0.6, 0.9) > -25, "the open hat rings");
+  // a closed hat 0.3 s later silences it within 20 ms; before that nothing changes
+  const choked = await render([
+    { t: 0, kind: "hatOpen", vel: 0.8 },
+    { t: 0.3, kind: "hatClosed", vel: 0.001 },
+  ]);
+  for (let i = 0; i < Math.round(0.3 * SR); i++) assert.equal(choked[i], open[i]);
+  assert.ok(levelDb(choked, 0.33, 0.9) < levelDb(open, 0.33, 0.9) - 40, "the open hat stops when the hat closes");
+  // a kick takes over from the kick before it, a tom from the same tom only
+  const kicks = await render([
+    { t: 0, kind: "kick", vel: 0.8 },
+    { t: 0.5, kind: "kick", vel: 0.001 },
+  ]);
+  assert.ok(levelDb(kicks, 0.55, 0.95) < -60, "a new kick stroke ends the ring of the last one");
+  const toms = await render([
+    { t: 0, kind: "tomLow", vel: 0.8 },
+    { t: 0.5, kind: "tomHigh", vel: 0.001 },
+  ]);
+  assert.ok(levelDb(toms, 0.55, 0.95) > -25, "another drum does not choke this one");
+  // cymbals and snares are never choked
+  for (const kind of ["crash", "ride", "snare", "gong"] as const) {
+    const twice = await render([
+      { t: 0, kind, vel: 0.8 },
+      { t: 0.5, kind, vel: 0.001 },
+    ]);
+    assert.ok(levelDb(twice, 0.55, 0.95) > -25, `${kind} rings through the next stroke`);
+  }
+  // strokes that land together are one stroke, and in a loop the first hat of the bar closes the last open one
+  const flam = await render([
+    { t: 0, kind: "kick", vel: 0.8 },
+    // (three whole cycles of the test tone later, so the two strokes add up)
+    { t: 0.006, kind: "kick", vel: 0.8 },
+  ]);
+  assert.ok(levelDb(flam, 0.5, 0.9) > -25, "a flam is not a choke");
+  const wrapped = await render(
+    [
+      { t: 0.2, kind: "hatClosed", vel: 0.001 },
+      { t: 1.5, kind: "hatOpen", vel: 0.8 },
+    ],
+    true,
+  );
+  assert.ok(levelDb(wrapped, 0.25, 0.45) < -60, "the tail of the open hat does not wrap past the closing hat");
+});
+
+test("renderScore: the last bass note of a piece that ends rings out; in a loop and elsewhere nothing changes", async () => {
+  const bank = { ...TEST_VOICES, subBass: toneVoice("subBass", 0.05) } as VoiceBank;
+  const parts = (): Part[] => [
+    notePart("lead", "melody", [{ t: 0, d: 2, midi: 72, vel: 0.7 }], { reverb: 0 }),
+    {
+      ...notePart(
+        "bass",
+        "bass",
+        [
+          { t: 0, d: 0.9, midi: 36, vel: 0.8 },
+          { t: 1, d: 1, midi: 36, vel: 0.8 },
+        ],
+        { reverb: 0, gain: 1 },
+        "subBass",
+      ),
+      role: "bass",
+    } as Part,
+  ];
+  const banks = { voices: bank, drums: TEST_DRUMS };
+  const song = (await renderScoreWith(makeScore(parts(), { loop: false, duration: 5 }), banks, { master: false })).stems.bass[0];
+  // the first note is released as ever (0.05 s tail) …
+  assert.ok(levelDb(song, 0.96, 0.99) < -80, "an inner bass note is not held");
+  // … the last one fades for more than a second: about -13 dB after 0.3 s, -43 dB after 1 s
+  const held = levelDb(song, 1.5, 1.9);
+  const after = (seconds: number) => levelDb(song, 2 + seconds - 0.02, 2 + seconds + 0.02) - held;
+  assert.ok(after(0.3) < -9 && after(0.3) > -17, `0.3 s after the release: ${after(0.3).toFixed(1)} dB`);
+  assert.ok(after(1) < -35 && after(1) > -50, `1 s after the release: ${after(1).toFixed(1)} dB`);
+  assert.ok(levelDb(song, 3.6, 4.9) < -100, "silent well before the end");
+  // a loop has no last note
+  const loop = (await renderScoreWith(makeScore(parts(), { loop: true, duration: 5 }), banks, { master: false })).stems.bass[0];
+  assert.ok(levelDb(loop, 2.1, 2.5) < -80, "no ring in a loop");
+});
+
+test("master: the drum-bus glue lowers the peaks of the kit at the same energy, by character and density", async () => {
+  const build = () => {
+    const stems = emptyStems(SR * 8);
+    fillNoise(stems.chords, 3, 0.2);
+    const random = createRng(5);
+    // a kick on every beat (loud tip, long body), hats in between
+    for (let beat = 0; beat < 16; beat++) {
+      const at = beat * 24000;
+      for (let i = 0; i < 12000; i++) {
+        const t = i / SR;
+        const value =
+          (0.9 * Math.exp(-t / 0.004) + 0.3 * Math.exp(-t / 0.09)) * Math.sin(2 * Math.PI * (50 + 80 * Math.exp(-t / 0.02)) * t) * Math.min(1, i / 16);
+        stems.drums[0][at + i] += value;
+        stems.drums[1][at + i] += value;
+      }
+      for (let i = 0; i < 1500; i++) {
+        const value = 0.08 * (random() * 2 - 1) * Math.exp(-i / 300);
+        stems.drums[0][at + 12000 + i] += value;
+        stems.drums[1][at + 12000 + i] += value;
+      }
+    }
+    return stems;
+  };
+  const meanSquare = (data: Float32Array) => {
+    let sum = 0;
+    for (const value of data) sum += value * value;
+    return sum / data.length;
+  };
+  const crest = (stem: StereoPcm) => {
+    let peak = 0;
+    for (const value of stem[0]) peak = Math.max(peak, Math.abs(value));
+    return db(peak / Math.sqrt(meanSquare(stem[0])));
+  };
+  const run = async (settings: Partial<MasterSettings>, loop = false) => {
+    const stems = build();
+    const report = await masterStems(stems, { ...SETTINGS, ...settings }, { sampleRate: SR, loop });
+    return {
+      stems,
+      report,
+      crest: crest(stems.drums),
+      drumsOverChords: db(Math.sqrt(meanSquare(stems.drums[0]) / meanSquare(stems.chords[0]))),
+    };
+  };
+  const off = await run({ density: 0 });
+  assert.equal(off.report.glue, undefined);
+  assert.equal(off.report.limiter.ceiling, LIMITER_CEILING);
+  const clean = await run({});
+  const punchy = await run({ character: "punchy" });
+  const full = await run({ density: 1 });
+  for (const [name, result] of [
+    ["clean", clean],
+    ["punchy", punchy],
+    ["density 1", full],
+  ] as const) {
+    const glue = result.report.glue;
+    assert.ok(glue, `${name}: glue ran`);
+    assert.ok(glue.maxReductionDb > 1.5 && glue.maxReductionDb < 9, `${name}: holds strokes ${glue.maxReductionDb.toFixed(1)} dB`);
+    // the energy the glue took comes back as gain, so the kit keeps its place against the other stems
+    // (what little it loses is the limiter working on the strokes under the lower ceiling)
+    assert.ok(glue.makeupDb > 0.3 && glue.makeupDb < glue.maxReductionDb, `${name}: make-up ${glue.makeupDb.toFixed(2)} dB`);
+    assert.ok(Math.abs(result.drumsOverChords - off.drumsOverChords) < 2.5, `${name}: drums moved ${(result.drumsOverChords - off.drumsOverChords).toFixed(2)} dB against the chords`);
+    // … and has lost crest
+    assert.ok(result.crest < off.crest - 0.5, `${name}: crest ${result.crest.toFixed(1)} against ${off.crest.toFixed(1)} dB`);
+    assert.ok(Math.abs(result.report.lufs - -16) < 0.3, `${name}: ${result.report.lufs} LUFS`);
+    // the lowered ceiling never costs loudness
+    assert.equal(result.report.shortfallLu, 0);
+  }
+  // a denser character holds harder, and asks for a lower limiter ceiling
+  assert.ok(punchy.report.glue!.depthDb > clean.report.glue!.depthDb);
+  assert.ok(full.crest < clean.crest - 0.5, "more density, less crest");
+  assert.ok(punchy.report.limiter.ceiling < LIMITER_CEILING && punchy.report.limiter.ceiling <= clean.report.limiter.ceiling + 1e-9);
+  // a loop stays a loop: the gain of the glue is continuous across the seam
+  const looped = await run({ character: "punchy" }, true);
+  const bed = looped.stems.chords[0];
+  assert.ok(Math.abs(levelDb(bed, 0, 0.03) - levelDb(bed, 8 - 0.03, 8)) < 3);
+  assert.ok(seam(looped.stems.drums[0]).jump < 1.5);
+});
+
+test("master: a stem with unrelated channels is narrowed to the correlation floor, others are left alone", async () => {
+  const correlation = (stem: StereoPcm) => {
+    let lr = 0;
+    let ll = 0;
+    let rr = 0;
+    for (let i = 0; i < stem[0].length; i++) {
+      lr += stem[0][i] * stem[1][i];
+      ll += stem[0][i] * stem[0][i];
+      rr += stem[1][i] * stem[1][i];
+    }
+    return lr / Math.sqrt(ll * rr);
+  };
+  const frames = SR * 4;
+  const stems = emptyStems(frames);
+  // chords: two unrelated noises (correlation 0); melody: mostly shared (about 0.8); bass: a tone in anti-phase
+  const one = emptyStems(frames).melody;
+  fillNoise(one, 11, 0.1);
+  const two = emptyStems(frames).melody;
+  fillNoise(two, 12, 0.1);
+  for (let i = 0; i < frames; i++) {
+    stems.chords[0][i] = one[0][i];
+    stems.chords[1][i] = two[0][i];
+    stems.melody[0][i] = one[0][i] + 0.35 * two[0][i];
+    stems.melody[1][i] = one[0][i] - 0.35 * two[0][i];
+    const tone = 0.1 * Math.sin((2 * Math.PI * 700 * i) / SR);
+    stems.bass[0][i] = tone + 0.02 * one[0][i];
+    stems.bass[1][i] = -tone + 0.02 * one[0][i];
+  }
+  const before = correlation(stems.melody);
+  const report = await masterStems(stems, SETTINGS, { sampleRate: SR, loop: false });
+  assert.ok(Math.abs(correlation(stems.chords) - MIN_STEM_CORRELATION) < 0.02, `chords now ${correlation(stems.chords).toFixed(3)}`);
+  assert.ok(Math.abs(correlation(stems.bass) - MIN_STEM_CORRELATION) < 0.02, `bass now ${correlation(stems.bass).toFixed(3)}`);
+  assert.ok(Math.abs(correlation(stems.melody) - before) < 0.02, "a healthy stem keeps its width");
+  const narrowed = report.narrowed ?? {};
+  assert.ok((narrowed.chords ?? 1) < 1 && (narrowed.bass ?? 1) < (narrowed.chords ?? 1) && narrowed.melody === undefined, JSON.stringify(narrowed));
 });

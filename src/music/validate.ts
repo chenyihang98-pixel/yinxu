@@ -101,11 +101,17 @@ export function scoreProblems(score: Score, config?: MusicConfig): string[] {
   for (const part of score.parts) {
     if (ids.has(part.id)) fail(`duplicate part id ${part.id}`);
     ids.add(part.id);
-    if (part.track !== ROLE_TRACK[part.role]) fail(`${part.id} is on track ${part.track}`);
+    // an arpeggio that carries the harmony alone sits on the chords fader (see compose.ts)
+    const arpAsChords =
+      part.role === "arp" &&
+      part.track === "chords" &&
+      !score.parts.some((other) => other.role === "comp" || other.role === "pad");
+    if (part.track !== ROLE_TRACK[part.role] && !arpAsChords)
+      fail(`${part.id} is on track ${part.track}`);
     const mix = part.mix;
     for (const value of Object.values(mix))
       if (!Number.isFinite(value)) fail(`${part.id} mix has a non-finite value`);
-    if (mix.pan < -1 || mix.pan > 1 || mix.gain <= 0 || mix.width < 0 || mix.width > 1.5)
+    if (mix.pan < -1 || mix.pan > 1 || mix.gain <= 0 || mix.gain > 3 || mix.width < 0 || mix.width > 1.5)
       fail(`${part.id} mix out of range`);
     for (const value of [mix.reverb, mix.delay, mix.chorus, mix.drive, mix.duck])
       if (value < 0 || value > 1) fail(`${part.id} mix send out of range`);
@@ -158,6 +164,8 @@ export function scoreProblems(score: Score, config?: MusicConfig): string[] {
   if (score.space.level > 1 || score.space.size > 1 || score.space.delayFeedback > 0.8)
     fail("space range");
   if (score.master.targetLufs !== -16 || score.master.ceilingDb !== -1) fail("master targets");
+  const density = score.master.density;
+  if (density !== undefined && !(density >= 0 && density <= 1)) fail("master density");
 
   // notes for the user
   if (score.notes.length < 3 || score.notes.length > 6) fail(`${score.notes.length} notes`);

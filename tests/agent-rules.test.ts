@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { planWithRules } from "../src/agent/rules";
+import { planWithRules, readMentions } from "../src/agent/rules";
 import { analyse, normalizeText, parseChineseNumber } from "../src/agent/lexicon";
 import type { AgentPlan, AgentRequest } from "../src/agent/types";
 import {
+  STYLE_IDS,
   isInstrumentId,
   isKey,
   isStyleId,
@@ -389,8 +390,13 @@ test("titles: the user's own short phrase, otherwise one of the style's titles",
   const before = plan("雨天咖啡馆");
   const after = plan("鼓轻一点", "refine", before.config);
   assert.equal(after.title, before.title);
-  const supplied = plan("鼓轻一点", "refine", before.config, { title: "我的曲子" } as Partial<AgentRequest>);
+  const supplied = plan("鼓轻一点", "refine", before.config, { title: "我的曲子" });
   assert.equal(supplied.title, "我的曲子");
+  // … as it is stored, also across a change of style; a new piece is a new work
+  assert.equal(plan("改成摇滚风格", "refine", before.config, { title: "  我的曲子 " }).title, "我的曲子");
+  assert.equal(plan("鼓轻一点", "refine", before.config, { title: "长".repeat(200) }).title.length, 80);
+  assert.equal(plan("鼓轻一点", "refine", before.config, { title: "   " }).title, before.title);
+  assert.equal(plan("雨天咖啡馆", "new", draft(), { title: "我的曲子" }).title, "雨天咖啡馆");
 });
 
 test("cloud providers always get a prompt, the local engine never does", () => {
@@ -678,6 +684,179 @@ test("hostile or broken requests never throw", () => {
     assert.deepEqual(clampConfig(result.config, result.config), result.config);
   }
   assert.equal(plan("钢琴".repeat(2000)).config.prompt.length, 1500);
+});
+
+/* ---------- pins: what the user fixed in the UI ---------- */
+
+test("a pinned style replaces style detection; the text still supplies the parameters", () => {
+  // the words say café jazz, the style chip says guofeng
+  const pinned = plan("雨天咖啡馆里的慵懒爵士，一分钟，不要鼓，速度 90", "new", draft(), { pins: { mood: "guofeng" } });
+  const c = pinned.config;
+  assert.equal(c.mood, "guofeng");
+  assert.equal(c.bpm, 90);
+  assert.equal(c.duration, 60);
+  assert.equal(c.volumes.drums, 0);
+  // what the text leaves open comes from the pinned style, not from the style the words suggest
+  assert.equal(c.key, styleInfo("guofeng").key);
+  assert.equal(c.instrument, styleInfo("guofeng").instrument);
+  assert.equal(c.reverb, styleInfo("guofeng").reverb);
+  assert.equal(c.seed, NEXT_SEED);
+  assert.equal(pinned.reasoning[0], "按你选的「国风古韵」风格来编");
+  assert.ok(!pinned.reasoning.some((item) => /风格定为|也很接近|没有.*听出/.test(item)), pinned.reasoning.join("｜"));
+  assert.match(pinned.reply, /^好的，做一段「国风古韵」风格的音乐：90 BPM、D 大调、古筝主奏，60 秒/);
+  assert.ok(!/没听出/.test(pinned.reply));
+  assert.deepEqual(pinned.tags.slice(0, 3), ["国风古韵", "90 BPM", "古筝"]);
+  assert.equal(pinned.unchanged, false);
+  // a lead, a key or a mood word in the text still shapes the pinned style
+  assert.equal(plan("钢琴", "new", draft(), { pins: { mood: "guofeng" } }).config.instrument, "piano");
+  assert.equal(plan("E minor", "new", draft(), { pins: { mood: "guofeng" } }).config.key, "E minor");
+  assert.ok(plan("安静一点", "new", draft(), { pins: { mood: "rock" } }).config.energy < styleInfo("rock").energy);
+  // a style defined by its sound still lends its lead to the pinned one — unless the lead is pinned too
+  const lent = plan("国风", "new", draft(), { pins: { mood: "dance" } });
+  assert.deepEqual([lent.config.mood, lent.config.instrument], ["dance", "guzheng"]);
+  const fixedLead = plan("国风", "new", draft(), { pins: { mood: "dance", instrument: "bell" } });
+  assert.deepEqual([fixedLead.config.mood, fixedLead.config.instrument], ["dance", "bell"]);
+  assert.ok(!fixedLead.reasoning.some((item) => item.includes("古筝")), fixedLead.reasoning.join("｜"));
+
+  // without a word of text the pinned style's preset is the piece
+  const bare = plan("", "new", { ...draft(), duration: 45, loop: false }, { pins: { mood: "battle" } });
+  assert.deepEqual(
+    { ...bare.config, seed: 0, prompt: "" },
+    { ...draft(), ...stylePreset("battle"), duration: 45, loop: false, seed: 0, prompt: "" },
+  );
+  assert.deepEqual(bare.reasoning, ["按你选的「热血战斗」风格来编"]);
+  // any style can be pinned against any text, and the plan stays valid and deterministic
+  for (const style of STYLE_IDS)
+    for (const text of ["雨天咖啡馆", "史诗战斗，古筝，140bpm", "像一只穿雨衣的河马", ""]) {
+      const result = plan(text, "new", draft(), { pins: { mood: style } });
+      assert.equal(result.config.mood, style, `${style}: ${text}`);
+      assert.deepEqual(clampConfig(result.config, result.config), result.config);
+      assert.deepEqual(plan(text, "new", draft(), { pins: { mood: style } }), result);
+    }
+});
+
+test("refining with a pinned style: a new one re-bases the piece, the current one holds it", () => {
+  const before = dreamy();
+  const swapped = plan("速度 100，鼓轻一点", "refine", before, { pins: { mood: "rock" } });
+  assert.equal(swapped.config.mood, "rock");
+  assert.equal(swapped.config.bpm, 100, "the text sets the tempo");
+  assert.equal(swapped.config.key, styleInfo("rock").key);
+  assert.equal(swapped.config.instrument, styleInfo("rock").instrument);
+  assert.equal(swapped.config.energy, styleInfo("rock").energy);
+  assert.ok(swapped.config.volumes.drums < before.volumes.drums);
+  assert.equal(swapped.config.seed, before.seed);
+  assert.equal(swapped.config.duration, before.duration);
+  assert.equal(swapped.reasoning[0], "按你选的「摇滚能量」风格来编");
+  assert.ok(!swapped.reasoning.some((item) => item.startsWith("风格改为")), "the pin is named once");
+  assert.ok(swapped.reasoning.includes("调性 D 大调 → E 小调"));
+  assert.match(swapped.reply, /^好的：风格改为「摇滚能量」/);
+  // the old piece's arrangement does not move into the new style
+  const hinted = { ...before, arrangement: { swing: 0.5, layers: { pad: true } } };
+  assert.equal(plan("", "refine", hinted, { pins: { mood: "rock" } }).config.arrangement, undefined);
+
+  // pinned to what the piece already is: the words cannot move it to another style
+  for (const text of ["改成爵士风格，慢一点", "摇滚，慢一点", "换成赛博朋克风格，慢一点", "来点爵士味，慢一点"]) {
+    const held = plan(text, "refine", before, { pins: { mood: "dreamy" } });
+    assert.deepEqual(changedFields(before, held.config), ["bpm"], text);
+    assert.equal(held.config.bpm, before.bpm - 12, text);
+  }
+  // … and with nothing else to do, nothing changes
+  const idle = plan("换个风格", "refine", before, { pins: { mood: "dreamy" } });
+  assert.equal(idle.unchanged, true);
+  assert.deepEqual(idle.config, before);
+  assert.ok(!/想换成什么风格/.test(idle.reply), idle.reply);
+  assert.equal(idle.reasoning[0], "按你选的「梦幻空灵」风格来编");
+});
+
+test("a pinned duration, loop, lead, key or tempo wins over what the text says", () => {
+  const pins = { instrument: "guzheng", key: "A minor", bpm: 90, duration: 45, loop: false } as const;
+  const fresh = plan("两分钟的钢琴曲，速度 140，C大调，无缝循环", "new", draft(), { pins });
+  for (const field of ["instrument", "key", "bpm", "duration", "loop"] as const)
+    assert.equal(fresh.config[field], pins[field], field);
+  assert.equal(fresh.reasoning[0], "按你的设定：古筝主奏、A 小调、90 BPM、45 秒、带完整结尾");
+  assert.match(fresh.reasoning[1], /^风格定为「/, "the style is still read from the words");
+  assert.ok(
+    !fresh.reasoning.slice(1).some((item) => /主奏换成|调性|速度 \d|时长 \d|完整版本|改为无缝/.test(item)),
+    `the pins are named once: ${fresh.reasoning.join("｜")}`,
+  );
+  assert.match(fresh.reply, /90 BPM、A 小调、古筝主奏，45 秒，带完整结尾/);
+  assert.deepEqual(plan("两分钟的钢琴曲，速度 140，C大调，无缝循环", "new", draft(), { pins }), fresh);
+  // each pin on its own
+  assert.equal(plan("一分钟", "new", draft(), { pins: { duration: 30 } }).config.duration, 30);
+  assert.equal(plan("游戏主菜单", "new", draft(), { pins: { loop: false } }).config.loop, false);
+  assert.equal(plan("不要钢琴，用吉他", "new", draft(), { pins: { instrument: "piano" } }).config.instrument, "piano");
+  assert.equal(plan("忧伤的小调", "new", draft(), { pins: { key: "G major" } }).config.key, "G major");
+  assert.equal(plan("很慢的冥想", "new", draft(), { pins: { bpm: 150 } }).config.bpm, 150);
+
+  // refining: pinned values are changes like any other, named once in the reasoning
+  const before = dreamy();
+  const refined = plan("慢一点", "refine", before, { pins: { duration: 60, loop: false } });
+  assert.deepEqual(changedFields(before, refined.config).sort(), ["bpm", "duration", "loop"]);
+  assert.equal(refined.config.seed, before.seed);
+  assert.deepEqual(refined.reasoning, ["按你的设定：60 秒、带完整结尾", "速度 74 → 62 BPM"]);
+  assert.equal(refined.reply, "好的：速度 74 → 62 BPM，时长 30 → 60 秒，改为带结尾的完整版本。旋律素材保持不变。");
+  // a pin alone is a request
+  const alone = plan("", "refine", before, { pins: { loop: false } });
+  assert.deepEqual(changedFields(before, alone.config), ["loop"]);
+  assert.equal(alone.unchanged, false);
+  // pins that only repeat the piece do nothing
+  const repeated = plan("鼓轻一点", "refine", before, { pins: { duration: 30, loop: true, bpm: 74, key: "D major", instrument: "bell" } });
+  assert.deepEqual(changedFields(before, repeated.config), ["volumes"]);
+  assert.equal(plan("", "refine", before, { pins: { duration: 30 } }).unchanged, true);
+  // the text asks for one value, the pin holds another
+  const held = plan("速度 120，换成钢琴，两分钟", "refine", before, { pins: { bpm: 80, instrument: "flute", duration: 45 } }).config;
+  assert.deepEqual([held.bpm, held.instrument, held.duration], [80, "flute", 45]);
+
+  // malformed pins are ignored, out-of-range ones clamped
+  const broken = plan("雨天咖啡馆", "new", draft(), {
+    pins: { mood: "nope", instrument: 7, key: "H major", bpm: "fast", duration: 1e9, loop: "yes" } as unknown as AgentRequest["pins"],
+  });
+  assert.equal(broken.config.mood, "chill");
+  assert.equal(broken.config.bpm, styleInfo("chill").bpm);
+  assert.equal(broken.config.duration, 120);
+  assert.equal(broken.config.loop, true);
+  for (const junk of [null, "jazz", 5, [], () => ({ mood: "rock" })])
+    assert.deepEqual(
+      plan("雨天咖啡馆", "new", draft(), { pins: junk as unknown as AgentRequest["pins"] }),
+      plan("雨天咖啡馆"),
+    );
+  // a cloud prompt describes the pinned piece
+  const cloud = plan("月下独酌", "new", draft(), { provider: "tencent", pins: { mood: "guofeng", duration: 60, loop: false } });
+  assert.match(cloud.cloudPrompt ?? "", /国风古韵/);
+  assert.match(cloud.cloudPrompt ?? "", /时长约 60 秒/);
+  assert.match(cloud.cloudPrompt ?? "", /自然的结尾/);
+});
+
+test("readMentions: which faders and which parameters a request is about", () => {
+  const cases: [string, "new" | "refine", TrackName[], ("tempo" | "energy" | "complexity" | "reverb")[]][] = [
+    ["雨天咖啡馆", "new", [], []],
+    ["换成小提琴", "refine", [], []],
+    ["不要鼓", "new", ["drums"], []],
+    ["140bpm 鼓和贝斯", "new", ["bass", "drums"], ["tempo"]],
+    ["鼓别那么抢戏", "refine", ["drums"], []],
+    ["旋律小一点，和声厚一些", "refine", ["chords", "melody"], []],
+    ["钢琴太响了", "refine", ["melody"], ["energy"]],
+    ["只要钢琴独奏", "new", ["bass", "chords", "drums", "melody"], []],
+    ["只留鼓", "refine", ["bass", "chords", "drums", "melody"], []],
+    ["整体音量小一点", "refine", ["bass", "chords", "drums", "melody"], []],
+    ["鼓的音量调到 30%", "refine", ["drums"], []],
+    ["睡前冥想", "new", ["drums"], []],
+    ["慢一点", "refine", [], ["tempo"]],
+    ["速度 96", "refine", [], ["tempo"]],
+    ["更温柔一点", "refine", [], ["energy"]],
+    ["再欢快一点", "refine", [], ["energy"]],
+    ["太单调了", "refine", [], ["complexity"]],
+    ["混响大一点", "refine", [], ["reverb"]],
+    // mood words move the energy as well
+    ["更空灵一些，节奏快一点", "refine", [], ["tempo", "energy", "reverb"]],
+    ["", "refine", [], []],
+  ];
+  for (const [text, mode, tracks, fields] of cases) {
+    const read = readMentions(text, mode);
+    assert.deepEqual([...read.tracks].sort(), tracks, `${text}: tracks`);
+    for (const field of ["tempo", "energy", "complexity", "reverb"] as const)
+      assert.equal(read[field], fields.includes(field), `${text}: ${field}`);
+  }
 });
 
 /* ---------- the reader itself ---------- */

@@ -108,7 +108,13 @@ export function lowPass(
 
 /** Amplitude that passes the drive curve unchanged, so loudness barely moves. */
 export const DRIVE_PIVOT = 0.25;
-/** From this drive upwards the curve runs at twice the sample rate. */
+/**
+ * From this drive upwards the curve runs at twice the sample rate. Below it
+ * the harmonics the curve adds to real parts stay more than 60 dB under the
+ * part (measured on kits at 0.1–0.3 and plucked leads at 0.2–0.35), and the
+ * oversampler would cost a quarter of a second per driven part in a
+ * two-minute piece.
+ */
 export const DRIVE_OVERSAMPLE_FROM = 0.4;
 
 /** Input gain of the tanh stage for a drive of 0..1 (1 .. 6). */

@@ -91,6 +91,22 @@ export const hiphop: StyleDef = {
     hook: 0.85,
     cells: ["x..x..x.", "__x.x...", "x.x...x.", "x..x....", "xx.x....", "x_..x.x.", "__x...x."],
   },
+  // struck and plucked leads are squeezed like a chopped sample; the brightest ones lose their top
+  lead: {
+    piano: { gain: 0.75, drive: 0.15 },
+    guitar: { gain: 0.73, drive: 0.15 },
+    synth: { gain: 0.75, highCut: 5000 },
+    pluck: { drive: 0.15, highCut: 6000 },
+    bell: { gain: 0.74, drive: 0.12, highCut: 4000 },
+    musicbox: { gain: 0.73 },
+    marimba: { drive: 0.15 },
+    vibes: { drive: 0.12 },
+    flute: { gain: 0.75 },
+    strings: { gain: 0.82, highCut: 2800 },
+    guzheng: { gain: 0.72, drive: 0.15, highCut: 2800 },
+    dizi: { gain: 0.74, highCut: 2800 },
+    chip: { gain: 0.75, highCut: 4500 },
+  },
   // the same electric piano as the riff: the whole loop sounds like one sample
   comp: {
     voice: "epiano",
@@ -174,9 +190,9 @@ export const hiphop: StyleDef = {
   perc: {
     from: 0.45,
     grooves: [
-      { fingerSnap: "........o......." },
-      { fingerSnap: "........o.......", shaker: "..g...g...g...g." },
-      { fingerSnap: "........o.....o.", rim: "...o......o....." },
+      { fingerSnap: "........x......." },
+      { fingerSnap: "........x.......", shaker: "..o...o...o...o." },
+      { fingerSnap: "........x.....o.", rim: "...o......o....." },
     ],
   },
   swing: 0.3,
@@ -184,13 +200,13 @@ export const hiphop: StyleDef = {
   humanize: { timing: 12, velocity: 0.1 },
   form: { loop: "AB", intro: 0.8, outro: 0.8, tail: 2 },
   mix: {
-    lead: { gain: 0.75, reverb: 0.2, delay: 0.12, chorus: 0.15, highCut: 8000 },
-    comp: { gain: 0.5, chorus: 0.25, highCut: 5000, drive: 0.1 },
-    arp: { gain: 0.24, reverb: 0.35, delay: 0.3 },
+    lead: { gain: 0.8, reverb: 0.2, delay: 0.12, chorus: 0.15, highCut: 8000 },
+    comp: { gain: 0.6, width: 1.3, chorus: 0.4, highCut: 5000, drive: 0.1 },
+    arp: { gain: 0.3, reverb: 0.35, delay: 0.3 },
     pad: { gain: 0.3, highCut: 4000 },
-    bass: { gain: 0.9, reverb: 0, drive: 0.25, highCut: 1500 },
-    kit: { gain: 0.85, reverb: 0.06, drive: 0.1 },
-    perc: { gain: 0.38, reverb: 0.15 },
+    bass: { gain: 0.9, reverb: 0, drive: 0.25, highCut: 1500, duck: 0.45 },
+    kit: { gain: 1.01, reverb: 0.06, drive: 0.1, lowCut: 40 },
+    perc: { gain: 0.8, reverb: 0.15 },
   },
   space: {
     size: 0.3,

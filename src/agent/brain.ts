@@ -3,7 +3,12 @@
  * one is configured, validate everything it returns, and fall back to the
  * offline rules brain whenever that fails — a request is never lost.
  */
-import type { ArrangementHints, DesktopAPI, MusicConfig } from "../types";
+import type {
+  ArrangementHints,
+  DesktopAPI,
+  MusicConfig,
+  TrackName,
+} from "../types";
 import {
   LIMITS,
   instrumentLabel,
@@ -13,7 +18,12 @@ import {
   styleInfo,
   styleLabel,
 } from "../music/catalog";
-import { cleanArrangement, clampConfig, stylePreset } from "../music/defaults";
+import {
+  clamp,
+  cleanArrangement,
+  clampConfig,
+  stylePreset,
+} from "../music/defaults";
 import type {
   AgentPlan,
   AgentPlanInput,
@@ -26,7 +36,8 @@ import {
   buildCloudPrompt,
   describeChanges,
 } from "./cloudPrompt";
-import { planWithRules } from "./rules";
+import { describePins, pinNote, readPins, withPins } from "./pins";
+import { keptTitle, planWithRules, readMentions } from "./rules";
 
 export { describeChanges };
 
@@ -36,11 +47,28 @@ const REPLY_CHARS = 400;
 const TITLE_CHARS = 40;
 const REASON_CHARS = 100;
 const MAX_REASONS = 8;
-
-/** An LLM plan also carries the id of the model that wrote it, for display. */
-export interface LlmAgentPlan extends AgentPlan {
-  model?: string;
-}
+const TRACKS: TrackName[] = ["melody", "chords", "bass", "drums"];
+const LAYERS = ["pad", "arp", "counter", "perc"] as const;
+/**
+ * What a style preset decides. A pinned style re-bases these when the model
+ * planned for another style.
+ */
+const PRESET_FIELDS = [
+  "bpm",
+  "key",
+  "instrument",
+  "energy",
+  "complexity",
+  "reverb",
+] as const;
+/**
+ * Refinements: a change this small on a parameter the user did not mention is
+ * the model drifting, not a decision (BPM / the three 0–1 controls).
+ */
+const DRIFT_BPM = 3;
+const DRIFT_UNIT = 0.06;
+/** A section plan is kept while its bars are within these factors of what the duration holds. */
+const FORM_FIT: [number, number] = [0.6, 1.5];
 
 type Bag = Record<string, unknown>;
 const isRecord = (value: unknown): value is Bag =>
@@ -63,28 +91,30 @@ const line = (value: unknown, max: number): string =>
         .trim()
     : "";
 const round2 = (value: number) => Math.round(value * 100) / 100;
-
-/** AgentPlanInput plus the piece's arrangement, which the main process accepts when refining. */
-export type AgentPlanInputWithArrangement = AgentPlanInput & {
-  current: { arrangement?: RawAgentPlan["arrangement"] };
-};
+/** The same value as far as a model can tell: it is shown numbers rounded to two decimals. */
+const same = (a: string | number, b: string | number) =>
+  typeof a === "number" && typeof b === "number"
+    ? Math.abs(a - b) < 0.005 + 1e-9
+    : a === b;
 
 /**
  * What the main process needs to ask the model: sizes capped, no free-text
  * prompt in `current`. A refinement also carries the piece's arrangement so
- * the model can keep what it is not asked to change.
+ * the model can keep what it is not asked to change, and pinned choices
+ * travel as one marked line after the user's words.
  */
-export function toAgentPlanInput(
-  request: AgentRequest,
-): AgentPlanInputWithArrangement {
+export function toAgentPlanInput(request: AgentRequest): AgentPlanInput {
   const current = clampConfig(request.current ?? {});
   const turns = Array.isArray(request.history) ? request.history : [];
   const mode = request.mode === "refine" ? "refine" : "new";
+  const note = pinNote(readPins(request));
+  const said = (typeof request.text === "string" ? request.text : "")
+    .trim()
+    .slice(0, LIMITS.promptChars - (note ? note.length + 1 : 0))
+    .trimEnd();
   return {
     mode,
-    request: (typeof request.text === "string" ? request.text : "")
-      .trim()
-      .slice(0, LIMITS.promptChars),
+    request: [said, note].filter(Boolean).join("\n"),
     provider: request.provider,
     history: turns
       .filter(
@@ -123,12 +153,16 @@ export function toAgentPlanInput(
   };
 }
 
-/** Copy only known, own, size-limited fields before handing them to cleanArrangement. */
+/**
+ * Copy only known, own, size-limited fields before handing them to
+ * cleanArrangement. "auto", [] and -1 leave a field to the style, so they
+ * become no hint at all.
+ */
 function arrangementFromRaw(value: unknown): ArrangementHints | undefined {
   if (!isRecord(value)) return undefined;
   const list = (item: unknown) =>
     Array.isArray(item) ? item.slice(0, 32) : undefined;
-  const pick = (item: unknown, keys: string[]) =>
+  const pick = (item: unknown, keys: readonly string[]) =>
     isRecord(item)
       ? Object.fromEntries(keys.map((key) => [key, own(item, key)]))
       : undefined;
@@ -140,17 +174,10 @@ function arrangementFromRaw(value: unknown): ArrangementHints | undefined {
     drums: own(value, "drums"),
     bass: own(value, "bass"),
     swing: own(value, "swing"),
-    layers: pick(own(value, "layers"), ["pad", "arp", "counter", "perc"]),
+    layers: pick(own(value, "layers"), LAYERS),
     melody: pick(own(value, "melody"), ["density", "register", "motion"]),
   });
 }
-
-const LAYERS = ["pad", "arp", "counter", "perc"] as const;
-/**
- * The plan format has no "style default" for a layer, so layers the piece
- * never fixed are shown to the model with these stand-in values.
- */
-const STAND_IN_LAYERS = { pad: true, arp: false, counter: false, perc: false };
 
 /** Arrangement hints in the shape the model reads and writes ("auto", [] and -1 = style default). */
 export function rawArrangement(
@@ -167,10 +194,10 @@ export function rawArrangement(
     bass: hints?.bass ?? "auto",
     swing: hints?.swing ?? -1,
     layers: {
-      pad: hints?.layers?.pad ?? STAND_IN_LAYERS.pad,
-      arp: hints?.layers?.arp ?? STAND_IN_LAYERS.arp,
-      counter: hints?.layers?.counter ?? STAND_IN_LAYERS.counter,
-      perc: hints?.layers?.perc ?? STAND_IN_LAYERS.perc,
+      pad: hints?.layers?.pad ?? "auto",
+      arp: hints?.layers?.arp ?? "auto",
+      counter: hints?.layers?.counter ?? "auto",
+      perc: hints?.layers?.perc ?? "auto",
     },
     melody: {
       density: hints?.melody?.density ?? -1,
@@ -183,15 +210,13 @@ export function rawArrangement(
 /**
  * A refinement: the model saw the piece's arrangement (rawArrangement) and
  * was told to copy what it does not change. A valid value replaces the hint,
- * "auto" / [] / -1 hands the field back to the style, anything invalid keeps
- * the current hint. A layer the piece never fixed becomes a hint only when the
- * model moved it away from the stand-in value — or when the request plainly
- * asks for it (the rules brain reads that), so "不要琶音" is never lost.
+ * "auto" / [] / -1 hands the field back to the style (which also brings back
+ * a layer or a part an earlier refinement forced off), anything invalid or
+ * missing keeps the current hint.
  */
 function refinedArrangement(
   current: ArrangementHints | undefined,
   value: unknown,
-  request: AgentRequest,
 ): ArrangementHints | undefined {
   if (!isRecord(value)) return current;
   const told = arrangementFromRaw(value) ?? {};
@@ -226,18 +251,10 @@ function refinedArrangement(
   const layers = own(value, "layers");
   if (isRecord(layers)) {
     const shape = { ...current?.layers };
-    let asked: ArrangementHints["layers"] | null = null;
     for (const name of LAYERS) {
-      const given = flag(own(layers, name));
-      if (given === undefined) continue;
-      if (shape[name] !== undefined || given !== STAND_IN_LAYERS[name])
-        shape[name] = given;
-      else {
-        asked ??=
-          planWithRules({ ...request, mode: "refine", provider: "local" })
-            .config.arrangement?.layers ?? {};
-        if (asked[name] !== undefined) shape[name] = asked[name];
-      }
+      const given = own(layers, name);
+      if (typeof given === "boolean") shape[name] = given;
+      else if (given === "auto") delete shape[name];
     }
     next.layers = shape;
   }
@@ -245,22 +262,54 @@ function refinedArrangement(
 }
 
 /**
+ * The model planned for another style than the pinned one: the harmony and
+ * groove it wrote belong to that style. What it removed, the layers, the
+ * melody shape and the section plan are kept.
+ */
+function withoutStyleTraits(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const rest: Bag = {};
+  for (const name of ["form", "layers", "melody"])
+    rest[name] = own(value, name);
+  for (const name of ["drums", "bass"])
+    if (own(value, name) === "none") rest[name] = "none";
+  return rest;
+}
+
+/** Do the sections add up to roughly the bars a 4/4 piece of this tempo and length holds? */
+function formFits(
+  form: NonNullable<ArrangementHints["form"]>,
+  config: Pick<MusicConfig, "bpm" | "duration">,
+): boolean {
+  const bars = form.reduce((sum, section) => sum + section.bars, 0);
+  const room = (config.duration * config.bpm) / 240;
+  return bars >= room * FORM_FIT[0] && bars <= room * FORM_FIT[1];
+}
+
+/**
  * Turn whatever a model returned into a safe plan. Unknown enums keep the
  * current value, numbers are clamped, text is trimmed and length-limited,
  * and only own properties of plain objects are read. Throws (with a message
  * the UI can show) only when nothing usable is there at all.
+ *
+ * The answer is then held to what the user actually asked for:
+ *  - pinned choices (request.pins) replace whatever the model said;
+ *  - a new piece keeps the user's faders unless the text is about that track;
+ *  - a refinement ignores tiny drifts on parameters the text does not mention;
+ *  - a section plan that does not fit the duration is left to the composer.
  */
 export function agentPlanFromRaw(
   raw: unknown,
   request: AgentRequest,
   model?: string,
-): LlmAgentPlan {
+): AgentPlan {
   if (!isRecord(raw)) throw new Error("大模型没有返回可用的编曲方案");
   const mode = request.mode === "refine" ? "refine" : "new";
   const current = clampConfig(request.current ?? {});
   const text = (typeof request.text === "string" ? request.text : "")
     .trim()
     .slice(0, LIMITS.promptChars);
+  const pins = readPins(request);
 
   const style = own(raw, "style");
   const instrument = own(raw, "instrument");
@@ -275,8 +324,8 @@ export function agentPlanFromRaw(
   const loop = flag(own(raw, "loop"));
   const newMelody = flag(own(raw, "newMelody"));
   const rawVolumes = own(raw, "volumes");
-  const givenArrangement = own(raw, "arrangement");
-  const reply = line(own(raw, "reply"), REPLY_CHARS);
+  const rawArrangementValue = own(raw, "arrangement");
+  const rawReply = line(own(raw, "reply"), REPLY_CHARS);
 
   const usable =
     isStyleId(style) ||
@@ -286,39 +335,134 @@ export function agentPlanFromRaw(
     loop !== undefined ||
     newMelody !== undefined ||
     isRecord(rawVolumes) ||
-    isRecord(givenArrangement) ||
-    reply.length > 0;
+    isRecord(rawArrangementValue) ||
+    rawReply.length > 0;
   if (!usable) throw new Error("大模型返回的内容里没有可用的编曲方案");
 
-  const mood = isStyleId(style) ? style : current.mood;
+  /** What the model said, in the engine's ranges. */
+  const told: Partial<
+    Pick<
+      MusicConfig,
+      | "bpm"
+      | "duration"
+      | "energy"
+      | "complexity"
+      | "reverb"
+      | "key"
+      | "instrument"
+      | "loop"
+    >
+  > = {
+    ...(numbers.bpm !== undefined
+      ? { bpm: Math.round(clamp(numbers.bpm, ...LIMITS.bpm)) }
+      : {}),
+    ...(numbers.duration !== undefined
+      ? { duration: Math.round(clamp(numbers.duration, ...LIMITS.duration)) }
+      : {}),
+    ...(numbers.energy !== undefined
+      ? { energy: clamp(numbers.energy, 0, 1) }
+      : {}),
+    ...(numbers.complexity !== undefined
+      ? { complexity: clamp(numbers.complexity, 0, 1) }
+      : {}),
+    ...(numbers.reverb !== undefined
+      ? { reverb: clamp(numbers.reverb, 0, 1) }
+      : {}),
+    ...(isKey(key) ? { key } : {}),
+    ...(isInstrumentId(instrument) ? { instrument } : {}),
+    ...(loop !== undefined ? { loop } : {}),
+  };
+  // when the model went against a pin, its own words describe a different piece
+  const offStyle = !!pins.mood && isStyleId(style) && style !== pins.mood;
+  const overruled =
+    offStyle ||
+    (["instrument", "key", "bpm", "duration", "loop"] as const).some(
+      (field) =>
+        pins[field] !== undefined &&
+        told[field] !== undefined &&
+        told[field] !== pins[field],
+    );
+  const givenArrangement = offStyle
+    ? withoutStyleTraits(rawArrangementValue)
+    : rawArrangementValue;
+
+  const chosen = isStyleId(style) ? style : current.mood;
+  const mood = pins.mood ?? chosen;
   const restyled = mood !== current.mood;
   // a new style brings its own tempo, key and lead unless the model set them
-  const base: MusicConfig = restyled
-    ? { ...current, ...stylePreset(mood) }
-    : current;
-  const volumes = isRecord(rawVolumes)
-    ? Object.fromEntries(
-        (["melody", "chords", "bass", "drums"] as const).flatMap((track) => {
-          const value = finite(own(rawVolumes, track));
-          return value === undefined ? [] : [[track, value]];
-        }),
+  const base: MusicConfig =
+    restyled || (mode === "new" && !!pins.mood)
+      ? { ...current, ...stylePreset(mood) }
+      : current;
+
+  if (pins.mood && chosen !== pins.mood) {
+    // The model planned for another style. What it merely took from that
+    // style's defaults (or, refining, left as it was) follows the pinned style;
+    // anything else is treated as the user's explicit wish and kept.
+    const theirs = stylePreset(chosen);
+    for (const field of PRESET_FIELDS) {
+      const value = told[field];
+      if (value === undefined) continue;
+      if (
+        same(value, theirs[field]) ||
+        (mode === "refine" && same(value, current[field]))
       )
-    : {};
+        delete told[field];
+    }
+  }
+
+  const mentions = readMentions(text, mode);
+  const kept = base === current;
+  for (const field of ["energy", "complexity", "reverb"] as const) {
+    const value = told[field];
+    if (value === undefined || !kept) continue;
+    const delta = Math.abs(value - current[field]);
+    const drift =
+      mode === "refine" &&
+      !mentions[field] &&
+      Math.round(delta * 1000) < Math.round(DRIFT_UNIT * 1000);
+    // an echo of the rounded number the model was shown is not a change either
+    if (drift || same(value, round2(current[field]))) delete told[field];
+  }
+  if (
+    mode === "refine" &&
+    kept &&
+    told.bpm !== undefined &&
+    !mentions.tempo &&
+    Math.abs(told.bpm - current.bpm) < DRIFT_BPM
+  )
+    delete told.bpm;
+
   const arrangement =
     mode === "refine" && !restyled
-      ? refinedArrangement(current.arrangement, givenArrangement, request)
+      ? refinedArrangement(current.arrangement, givenArrangement)
       : arrangementFromRaw(givenArrangement);
 
-  const config = clampConfig(
+  const volumes: Partial<Record<TrackName, number>> = {};
+  if (isRecord(rawVolumes))
+    for (const track of TRACKS) {
+      const value = finite(own(rawVolumes, track));
+      if (value === undefined) continue;
+      if (same(value, round2(current.volumes[track]))) continue;
+      // the faders are the user's: a new piece moves one only when the text
+      // is about that track
+      if (mode === "new" && !mentions.tracks.has(track)) continue;
+      // a part the arrangement removes is silent anyway: its fader stays
+      // where it was, ready for the part to return
+      if (
+        (track === "drums" || track === "bass") &&
+        arrangement?.[track] === "none"
+      )
+        continue;
+      volumes[track] = value;
+    }
+
+  let config = clampConfig(
     {
       prompt: mode === "new" && text ? text : current.prompt,
       mood,
-      ...Object.fromEntries(
-        Object.entries(numbers).filter(([, value]) => value !== undefined),
-      ),
-      ...(isKey(key) ? { key } : {}),
-      ...(isInstrumentId(instrument) ? { instrument } : {}),
-      ...(loop !== undefined ? { loop } : {}),
+      ...told,
+      ...pins,
       volumes: volumes as MusicConfig["volumes"],
       seed:
         mode === "new" || newMelody === true ? request.nextSeed : current.seed,
@@ -327,23 +471,57 @@ export function agentPlanFromRaw(
     base,
   );
 
+  // A section plan is checked whenever this answer wrote it, or changed the
+  // tempo or the length it has to fit.
+  let formNote = "";
+  const form = config.arrangement?.form;
+  const formAtStake =
+    mode === "new" ||
+    restyled ||
+    config.bpm !== current.bpm ||
+    config.duration !== current.duration ||
+    JSON.stringify(form) !== JSON.stringify(current.arrangement?.form);
+  if (form && formAtStake && !formFits(form, config)) {
+    const rest = cleanArrangement({ ...config.arrangement, form: undefined });
+    const next = { ...config };
+    if (rest) next.arrangement = rest;
+    else delete next.arrangement;
+    config = next;
+    formNote = "段落安排和时长对不上，改由引擎按时长编排";
+  }
+
   const changes = describeChanges(current, config);
   const unchanged = mode === "refine" && changes.length === 0;
   const info = styleInfo(config.mood);
-  const rawReasons = own(raw, "reasoning");
-  const reasoning = (Array.isArray(rawReasons) ? rawReasons.slice(0, 32) : [])
+  const reply = overruled ? "" : rawReply;
+  const pinNotes = describePins(pins);
+  const rawReasons = overruled ? [] : own(raw, "reasoning");
+  const theirs = (Array.isArray(rawReasons) ? rawReasons.slice(0, 32) : [])
     .map((item) => line(item, REASON_CHARS))
-    .filter(Boolean)
-    .slice(0, MAX_REASONS);
-  const keptTitle = (request as { title?: unknown }).title;
+    .filter(Boolean);
+  const ours = theirs.length
+    ? theirs
+    : mode === "refine"
+      ? // the pins are named once, not again as changes
+        describeChanges(withPins(current, pins), config)
+      : pins.mood
+        ? []
+        : [`风格定为「${styleLabel(config.mood)}」`];
+  const reasoning = [
+    ...pinNotes,
+    ...ours.slice(0, MAX_REASONS - pinNotes.length - (formNote ? 1 : 0)),
+    ...(formNote ? [formNote] : []),
+  ];
   const title =
-    (mode === "refine" ? line(keptTitle, TITLE_CHARS) : "") ||
-    line(own(raw, "title"), TITLE_CHARS) ||
+    (mode === "refine" ? keptTitle(request) : "") ||
+    (offStyle ? "" : line(own(raw, "title"), TITLE_CHARS)) ||
     info.titles[config.seed % info.titles.length];
 
   let cloudPrompt: string | undefined;
   if (request.provider !== "local") {
-    const written = line(own(raw, "cloudPrompt"), CLOUD_PROMPT_MAX);
+    const written = overruled
+      ? ""
+      : line(own(raw, "cloudPrompt"), CLOUD_PROMPT_MAX);
     if ([...written].length < 12)
       cloudPrompt = buildCloudPrompt(config, mode === "refine" ? text : undefined);
     else if (/无人声|纯音乐|no vocals?|instrumental/i.test(written))
@@ -368,11 +546,7 @@ export function agentPlanFromRaw(
         : changes.length
           ? `好的：${changes.slice(0, 3).join("，")}。`
           : "这次没有需要改动的地方，作品保持不变。"),
-    reasoning: reasoning.length
-      ? reasoning
-      : mode === "new"
-        ? [`风格定为「${styleLabel(config.mood)}」`]
-        : changes.slice(0, MAX_REASONS),
+    reasoning,
     tags: [
       info.label,
       `${config.bpm} BPM`,
@@ -389,7 +563,7 @@ export function agentPlanFromRaw(
 export async function planWithLlm(
   request: AgentRequest,
   agentPlan: DesktopAPI["agentPlan"],
-): Promise<LlmAgentPlan> {
+): Promise<AgentPlan> {
   const output: unknown = await agentPlan(toAgentPlanInput(request));
   if (!isRecord(output)) throw new Error("大模型没有返回可用的编曲方案");
   const model = own(output, "model");
@@ -438,7 +612,7 @@ function fallbackReason(error: unknown): string {
 export async function producePlan(
   request: AgentRequest,
   options: { llm?: DesktopAPI["agentPlan"] } = {},
-): Promise<AgentPlan & { fallbackReason?: string }> {
+): Promise<AgentPlan> {
   const hasText =
     typeof request.text === "string" && request.text.trim().length > 0;
   if (!options.llm || !hasText) return planWithRules(request);

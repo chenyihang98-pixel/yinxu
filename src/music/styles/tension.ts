@@ -124,22 +124,36 @@ export const tension: StyleDef = {
     cells: ["x.......", "__x.....", "x.....x.", "x_......", "x...__x.", "____x..."],
   },
   comp: {
-    voice: ["strings", "pizzicato"],
+    // always the plucked tick: bowed strings are the cluster above it
+    voice: "pizzicato",
     from: 0.2,
     patterns: {
       low: [
-        { rows: { top: "o-..o-..o-..o-.." } },
-        { rows: { "2": "o-......o-......", "3": "....o-......o-.." } },
+        { rows: { top: "x-..o-..x-..o-.." } },
+        { rows: { "2": "x-......x-......", "3": "....o-......o-.." } },
       ],
       mid: [
-        { rows: { low: "x...............", upper: "..o-..o-..o-..o-" } },
-        { rows: { all: "o-..o-..o-..o-.." } },
+        { rows: { low: "x...............", upper: "..x-..o-..x-..o-" } },
+        { rows: { all: "x-..o-..o-..o-.." } },
       ],
       high: [
-        { rows: { all: "X-.x-.x-X-.x-.x-" } },
-        { rows: { all: "x-x-x-x-x-x-x-x-" } },
+        { rows: { low: "X-.x-.x-X-.x-.x-", upper: "x-.o-.o-x-.o-.o-" } },
+        { rows: { low: "x-o-x-o-x-o-x-o-", upper: "x-g-o-g-o-g-o-g-" } },
       ],
     },
+  },
+  // struck and plucked leads carry little above 1 kHz this low and need more level against the
+  // strings; the flutes cut through them and need less
+  lead: {
+    marimba: { gain: 0.96 },
+    vibes: { gain: 0.92 },
+    epiano: { gain: 0.92 },
+    piano: { gain: 0.88 },
+    guitar: { gain: 0.88 },
+    musicbox: { gain: 0.86 },
+    pluck: { gain: 1 },
+    flute: { gain: 0.66 },
+    dizi: { gain: 0.62 },
   },
   // always strings, even under a string melody: this is the cluster itself
   pad: { voice: "strings", from: 0, register: [53, 77], voices: 4, voicing: "close" },
@@ -148,9 +162,12 @@ export const tension: StyleDef = {
     voice: "synthBass",
     from: 0,
     feel: { low: "pedal", mid: "pedal", high: "pedal" },
-    register: [28, 40],
+    // the tonic between G1 and G2: a pulse small speakers can still reproduce
+    register: [31, 43],
     approach: 0,
     gate: 0.7,
+    // the long low-tier drone is trimmed against the pulse of the busier tiers
+    level: { low: 0.8 },
   },
   drums: {
     kit: "cinematic",
@@ -188,19 +205,19 @@ export const tension: StyleDef = {
   perc: {
     kit: "cinematic",
     from: 0.22,
-    grooves: [{ rim: "o...g...o...g..." }, { woodblock: "o...o...o...o..." }],
+    grooves: [{ rim: "x...o...x...o..." }, { woodblock: "x...o...x...o..." }],
   },
   swing: 0,
   humanize: { timing: 5, velocity: 0.08 },
   form: { loop: "AB", intro: 1.2, outro: 1.2, tail: 3 },
   mix: {
-    lead: { gain: 0.7, reverb: 0.45, delay: 0.15 },
-    comp: { gain: 0.42, pan: 0.2, reverb: 0.35 },
-    pad: { gain: 0.42, reverb: 0.55, chorus: 0.2, lowCut: 180 },
-    counter: { gain: 0.3, reverb: 0.7 },
-    bass: { gain: 0.78, drive: 0.2, highCut: 1800 },
-    kit: { gain: 0.85, reverb: 0.5 },
-    perc: { gain: 0.3, pan: -0.3, reverb: 0.4 },
+    lead: { gain: 0.8, reverb: 0.4, delay: 0.15 },
+    comp: { gain: 0.5, pan: 0.2, reverb: 0.35 },
+    pad: { gain: 0.36, reverb: 0.55, chorus: 0.2, lowCut: 180 },
+    counter: { gain: 0.32, reverb: 0.7 },
+    bass: { gain: 0.74, drive: 0.25, highCut: 1800 },
+    kit: { gain: 0.72, reverb: 0.5 },
+    perc: { gain: 0.9, pan: -0.3, reverb: 0.4 },
   },
   space: {
     size: 0.85,
@@ -211,5 +228,5 @@ export const tension: StyleDef = {
     delayBeats: 0.75,
     delayFeedback: 0.4,
   },
-  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: -0.15 },
+  master: { targetLufs: -16, ceilingDb: -1, character: "warm", tilt: -0.02 },
 };

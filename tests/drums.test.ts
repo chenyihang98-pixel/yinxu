@@ -1,8 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { DRUM_KINDS, DRUM_KITS, SAMPLE_RATE } from "../src/music/score";
+import { CYMBAL_SWELL_SECONDS, DRUM_KINDS, DRUM_KITS, SAMPLE_RATE } from "../src/music/score";
+import { SWELL_LEAD_SECONDS } from "../src/music/rhythm";
 import type { DrumKind, DrumKitId } from "../src/music/score";
 import {
   DRUMS,
@@ -463,7 +462,8 @@ test("kick: most of the energy below 150 Hz, plus a click", () => {
   for (const kit of ["pop", "acoustic", "electro", "cinematic"] as DrumKitId[])
     assert.ok(click(kit) > click("soft") + 10, `${kit} kick has no click (${click(kit).toFixed(0)} dB vs soft ${click("soft").toFixed(0)} dB)`);
   // the 808 rings on
-  assert.ok(lateT60(hit("kick", "electro")) > lateT60(hit("kick", "pop")) * 1.5);
+  // (it used to ring 1.75× as long; that put a fifth of a dance mix's energy under 60 Hz)
+  assert.ok(lateT60(hit("kick", "electro")) > lateT60(hit("kick", "pop")) * 1.2);
 });
 
 test("snare: a tuned shell and noisy wires at once", () => {
@@ -630,10 +630,9 @@ test("cymbalSwell: grows towards SWELL_PEAK_SECONDS in every kit, then lets go",
     if (kit !== "soft" && kit !== "lofi")
       assert.ok(centroid(spectrum(r, 1.4, 1.8)) > centroid(spectrum(r, 0.2, 0.8)) * 1.15, `${kit} swell does not brighten`);
   }
-  // the composer starts a swell this long before the downbeat
-  const rhythm = fileURLToPath(new URL("../src/music/rhythm.ts", import.meta.url));
-  const lead = existsSync(rhythm) ? /SWELL_LEAD_SECONDS\s*=\s*([\d.]+)/.exec(readFileSync(rhythm, "utf8")) : null;
-  if (lead) assert.equal(Number(lead[1]), SWELL_PEAK_SECONDS, "src/music/rhythm.ts places the swell for a different peak time");
+  // the composer starts a swell this long before the downbeat: one shared constant
+  assert.equal(SWELL_PEAK_SECONDS, CYMBAL_SWELL_SECONDS);
+  assert.equal(SWELL_LEAD_SECONDS, CYMBAL_SWELL_SECONDS, "src/music/rhythm.ts places the swell for a different peak time");
 });
 
 test("small percussion: claps come in bursts, shakers swell, jingles ring high, wood and snaps are short", () => {

@@ -20,6 +20,7 @@ import {
   Adsr,
   BEND_TIME,
   Biquad,
+  biquadChain,
   REFERENCE_RMS,
   bendOffset,
   clamp,
@@ -249,14 +250,8 @@ export const brass: Voice = {
     // --- tilt, EQ, envelope, out ---
     rig.tiltLeft.process(l, frames);
     rig.tiltRight.process(r, frames);
-    for (const filter of rig.eqLeft) {
-      filter.reset();
-      filter.process(l, frames);
-    }
-    for (const filter of rig.eqRight) {
-      filter.reset();
-      filter.process(r, frames);
-    }
+    biquadChain(rig.eqLeft, l, frames);
+    biquadChain(rig.eqRight, r, frames);
     const out = guardGain(l, r, frames, gain);
     for (let i = 0; i < frames; i++) {
       const a = env[i] * out;

@@ -126,7 +126,7 @@ const DIZI: WindConfig = {
     const octaves = Math.log2(hz / 3600) / 0.6;
     // (its energy is shared by the harmonics inside it: fewer per harmonic on low notes)
     const membrane =
-      (0.8 + 4.5 * Math.pow(vel, 1.5)) *
+      (0.6 + 2.7 * Math.pow(vel, 1.5)) *
       Math.min(1, Math.sqrt(f0 / 500)) *
       Math.exp(-0.5 * octaves * octaves);
     return Math.pow(k, -slope) * (1 + membrane);

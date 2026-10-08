@@ -38,6 +38,7 @@ import {
   type Target,
   type Token,
 } from "./lexicon";
+import { describePins, readPins, withPins } from "./pins";
 
 const TRACKS: TrackName[] = ["melody", "chords", "bass", "drums"];
 const isTrack = (target: Target): target is TrackName =>
@@ -127,6 +128,8 @@ interface Intent {
   soloLead: boolean;
   padFromStrings: boolean;
   trackOps: ((volumes: Record<TrackName, number>) => void)[];
+  /** every track the text names or balances, even where no level word was understood */
+  tracks: Set<TrackName>;
   touchedDrums: boolean;
   delta: Record<Dim, number>;
   absolute: Partial<Record<Exclude<Dim, "tempo">, 1 | -1>>;
@@ -281,6 +284,7 @@ function interpret(text: string, mode: "new" | "refine"): Intent {
     soloLead: false,
     padFromStrings: false,
     trackOps: [],
+    tracks: new Set(),
     touchedDrums: false,
     delta: { energy: 0, complexity: 0, reverb: 0, tempo: 0 },
     absolute: {},
@@ -442,6 +446,10 @@ function interpret(text: string, mode: "new" | "refine"): Intent {
       ? undefined
       : (levelNear(group[0], -1, dimOf(targets[0])) ??
         levelNear(last, 1, dimOf(targets[targets.length - 1])));
+    const named = targets.filter(isTrack);
+    // "只要鼓和贝斯" is about the other tracks as well
+    const everyTrack = named.length > 0 && (only || level?.kind === "only");
+    for (const track of everyTrack ? TRACKS : named) intent.tracks.add(track);
 
     if (
       !negated &&
@@ -506,6 +514,7 @@ function interpret(text: string, mode: "new" | "refine"): Intent {
     const level = levelNear(i, 1, "energy", true);
     if (!level) return;
     word.leveled = true;
+    intent.tracks.add("melody");
     intent.trackOps.push((volumes) => {
       const current = volumes.melody;
       volumes.melody =
@@ -656,6 +665,9 @@ function interpret(text: string, mode: "new" | "refine"): Intent {
     intent.lexical.romantic += 1.3;
     intent.lexical.cinematic += 1.2;
   }
+  // a solo says something about every other track, sleep music about the drums
+  if (intent.soloLead) for (const track of TRACKS) intent.tracks.add(track);
+  if (intent.noDrums) intent.tracks.add("drums");
   // several words pulling the same way do not add up without limit
   for (const dim of ["energy", "complexity", "reverb"] as const)
     intent.delta[dim] = clamp(intent.delta[dim], -0.4, 0.4);
@@ -664,6 +676,56 @@ function interpret(text: string, mode: "new" | "refine"): Intent {
   intent.arousal = clamp(intent.arousal, -1, 1);
   intent.feeling = clamp(intent.feeling, -1, 1);
   return intent;
+}
+
+/** What a request talks about, as far as the lexicon can tell. */
+export interface Mentions {
+  /** tracks whose loudness or presence the text speaks about */
+  tracks: Set<TrackName>;
+  tempo: boolean;
+  energy: boolean;
+  complexity: boolean;
+  reverb: boolean;
+}
+
+/** Whole-mix words: with no track named beside them they concern every fader. */
+const MIX_WORDS =
+  /音量|响度|混音|推子|volume|loudness|\bmix(?:ing)?\b|\bbalance\b/i;
+
+/**
+ * Which faders and which continuous parameters the text mentions. This is
+ * deliberately generous (naming a track is enough): it decides whether a
+ * language model was asked to move a value, not how far.
+ */
+export function readMentions(text: string, mode: "new" | "refine"): Mentions {
+  const said = (typeof text === "string" ? text : "")
+    .trim()
+    .slice(0, LIMITS.promptChars);
+  const intent = interpret(said, mode);
+  const about = (dim: Dim) =>
+    intent.words.some(({ lex }) => lex.dim === dim || lex.target === dim);
+  return {
+    tracks: new Set(
+      intent.tracks.size === 0 && MIX_WORDS.test(said) ? TRACKS : intent.tracks,
+    ),
+    tempo: about("tempo") || intent.analysis.bpm !== undefined,
+    // mood words move the energy of a piece as well ("更温柔一点")
+    energy:
+      about("energy") ||
+      intent.words.some(({ lex }) => lex.cat === "emotion" && !!lex.a),
+    complexity: about("complexity"),
+    reverb: about("reverb"),
+  };
+}
+
+/** The title a refinement keeps: the work's own, as stored (at most 80 characters). */
+export function keptTitle(request: AgentRequest): string {
+  return typeof request.title === "string"
+    ? request.title
+        .replace(/[\u0000-\u001f\u007f]+/g, " ")
+        .trim()
+        .slice(0, 80)
+    : "";
 }
 
 /* ---------- choosing the style ---------- */
@@ -901,8 +963,10 @@ export function planWithRules(request: AgentRequest): AgentPlan {
     .slice(0, LIMITS.promptChars);
   const mode = request.mode === "refine" ? "refine" : "new";
   const current = clampConfig(request.current ?? {});
+  const pins = readPins(request);
   const intent = interpret(text, mode);
-  const choice = chooseStyle(intent);
+  // a pinned style replaces style detection; the text still sets the parameters
+  const choice: Choice = pins.mood ? {} : chooseStyle(intent);
   const notes: string[] = [];
   const styleNotes: string[] = [];
   const because = (id: StyleId) => {
@@ -926,7 +990,8 @@ export function planWithRules(request: AgentRequest): AgentPlan {
       delete config.arrangement;
       fresh = true;
     };
-    if (!text) styleNotes.push("没有收到描述，按当前参数制作");
+    if (pins.mood) adopt(pins.mood);
+    else if (!text) styleNotes.push("没有收到描述，按当前参数制作");
     else if (choice.best) {
       adopt(choice.best);
       styleNotes.push(
@@ -947,6 +1012,12 @@ export function planWithRules(request: AgentRequest): AgentPlan {
       styleNotes.push(
         `没有从“${quote(text)}”里听出风格，沿用当前的「${styleLabel(current.mood)}」`,
       );
+    }
+  } else if (pins.mood) {
+    if (pins.mood !== current.mood) {
+      config = { ...config, ...stylePreset(pins.mood) };
+      delete config.arrangement;
+      fresh = true;
     }
   } else if (choice.best) {
     const best = choice.best;
@@ -981,10 +1052,16 @@ export function planWithRules(request: AgentRequest): AgentPlan {
     }
   }
 
-  if (mode === "refine" && intent.restyle && !fresh && !styleNotes.length)
+  if (
+    mode === "refine" &&
+    intent.restyle &&
+    !fresh &&
+    !styleNotes.length &&
+    !pins.mood
+  )
     styleNotes.push("想换成什么风格？可以说“改成爵士风格”或“换成国风”");
   const baseline = copyConfig(config);
-  if (fresh && !intent.leads.length)
+  if (fresh && !intent.leads.length && !pins.instrument)
     for (const [id, lead] of SIGNATURE_LEADS)
       if (id !== config.mood && intent.lexical[id] >= 3) {
         config.instrument = lead;
@@ -1009,24 +1086,29 @@ export function planWithRules(request: AgentRequest): AgentPlan {
   config.seed =
     mode === "new" || intent.newSeed ? request.nextSeed : current.seed;
   config.prompt = mode === "new" && text ? text : current.prompt;
-  config = clampConfig(config, current);
+  // pinned values win over whatever the text said about the same parameter
+  config = clampConfig(withPins(config, pins), current);
   notes.push(...intent.notes);
 
-  const changes = describeChanges(
-    mode === "new" ? { ...clampConfig(baseline, current), seed: config.seed } : current,
-    config,
-  );
+  const before =
+    mode === "new"
+      ? { ...clampConfig(baseline, current), seed: config.seed }
+      : current;
+  const changes = describeChanges(before, config);
   const unchanged = mode === "refine" && changes.length === 0;
+  // the reasoning names the pins once, not again as changes
+  const pinNotes = describePins(pins);
+  const told = pinNotes.length
+    ? describeChanges(withPins(before, pins), config)
+    : changes;
 
-  const titleOverride = (request as { title?: unknown }).title;
   const title =
     mode === "new"
       ? pickTitle(text, config.mood, config.seed)
-      : typeof titleOverride === "string" && titleOverride.trim()
-        ? titleOverride.trim().slice(0, 60)
-        : config.mood === current.mood
+      : keptTitle(request) ||
+        (config.mood === current.mood
           ? pickTitle(current.prompt, current.mood, current.seed)
-          : pickTitle("", config.mood, current.seed);
+          : pickTitle("", config.mood, current.seed));
 
   const label = styleLabel(config.mood);
   const summary = `${config.bpm} BPM、${keyLabel(config.key)}、${instrumentLabel(config.instrument)}主奏`;
@@ -1054,8 +1136,9 @@ export function planWithRules(request: AgentRequest): AgentPlan {
       (notes.length ? `${notes[0]}。` : "");
 
   const reasoning = [
+    ...pinNotes,
     ...styleNotes,
-    ...changes.slice(0, 8),
+    ...told.slice(0, 8),
     ...notes,
     ...(unchanged && !styleNotes.length && !notes.length
       ? [`没有从“${quote(text)}”里识别到可执行的调整`]

@@ -9,7 +9,11 @@ export interface LlmPreset {
   id: string;
   label: string;
   kind: LlmKind;
-  /** OpenAI-compatible endpoint; absent for Claude (official SDK) and for "custom" */
+  /**
+   * OpenAI-compatible endpoint, already in the form the main process stores
+   * (kind "openai": public https; kind "ollama": http on this computer).
+   * Absent for Claude (official SDK) and for "custom" (the user types it).
+   */
   baseUrl?: string;
   /** selectable model ids, default first; empty = type the id by hand */
   models: string[];
@@ -119,7 +123,7 @@ export const LLM_PRESETS: readonly LlmPreset[] = [
     models: [],
     modelPlaceholder: CONSOLE_MODEL,
     keyHint: "该服务提供的 API Key",
-    note: "填写以 https:// 开头的接口地址（通常以 /v1 结尾）；仅本机地址可以使用 http://。",
+    note: "填写以 https:// 开头的公网接口地址（通常以 /v1 结尾），不支持 http://、本机或内网地址；本机模型请改选“本机 Ollama”。",
   },
 ];
 

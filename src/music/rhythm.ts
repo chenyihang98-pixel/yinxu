@@ -7,6 +7,7 @@ import type { BassFeel, DrumFeel, SectionType } from "./catalog";
 import { energyAtBar, type SectionPlan, type Timing } from "./form";
 import { isLifted, pickRanked, tierOf, type Ctx } from "./harmony";
 import type { Rng } from "./random";
+import { CYMBAL_SWELL_SECONDS } from "./score";
 import type { DrumKind, DrumKitId } from "./score";
 import type { BassDef, DrumsDef, Groove, PercDef, Tier } from "./styles/types";
 import {
@@ -77,7 +78,7 @@ export interface BeatHit {
 }
 
 /** Seconds before a section downbeat at which a cymbalSwell starts. */
-export const SWELL_LEAD_SECONDS = 1.8;
+export const SWELL_LEAD_SECONDS = CYMBAL_SWELL_SECONDS;
 
 type Feel = Exclude<DrumFeel, "auto" | "none">;
 
@@ -506,6 +507,14 @@ export function composeBass(
   const add = (beat: number, len: number, midi: number, vel: number) => {
     const note: BeatNote = { beat, len: Math.max(0.1, len), midi: fit(midi), vel: clamp(vel, 0.1, 1) };
     const last = notes[notes.length - 1];
+    // a held note that would be struck again at the very moment it ends (a
+    // drone under a new section, the tonic under the final chord) is tied
+    // instead: see the pedal figure below for what the re-strike sounds like
+    if (last && last.midi === note.midi && last.len >= 2 && Math.abs(last.beat + last.len - beat) < 0.05) {
+      last.len = beat + note.len - last.beat;
+      previous = note.midi;
+      return;
+    }
     if (def.slide && last && last.midi !== note.midi && Math.abs(last.midi - note.midi) <= 12) {
       const dice = rng.fork(`slide:${Math.round(beat * 4) % 64}`);
       if (dice.chance(def.slide)) note.bend = last.midi - note.midi;
@@ -525,10 +534,26 @@ export function composeBass(
     above(chord, chord.intervals.find((t) => t === 3 || t === 4) ?? fifthInterval(chord)) || 12;
 
   /** approach note one eighth (or one beat) before the next root */
+  // a five-note tune has no leading tones: under it the bass approaches by
+  // the scale's own neighbours (or the fifth), never by a semitone from outside
+  const pentatonic = key.pcs.length <= 5;
+  const inScale = (midi: number) => key.pcs.includes(mod(midi, 12));
   const approach = (target: number, from: number, dice: Rng): number => {
-    const options = [target - 1, target + 1];
-    for (const step of [-2, 2]) if (key.parent[mod(target + step, 12)]) options.push(target + step);
-    options.push(target + 7 > high + 5 ? target - 5 : target + 7);
+    const options: number[] = [];
+    if (pentatonic) {
+      for (const direction of [-1, 1])
+        for (let step = 1; step <= 4; step++)
+          if (inScale(target + direction * step)) {
+            options.push(target + direction * step);
+            break;
+          }
+    } else {
+      options.push(target - 1, target + 1);
+      for (const step of [-2, 2]) if (key.parent[mod(target + step, 12)]) options.push(target + step);
+    }
+    const fifth = target + 7 > high + 5 ? target - 5 : target + 7;
+    // (over an inversion the fifth above the bass note may be foreign to chord and scale alike)
+    if (!pentatonic || inScale(fifth)) options.push(fifth);
     const usable = options.filter((option) => option !== from);
     // prefer the neighbour that continues the line; chromatic approaches from
     // above are a colour for busier, jazzier settings
@@ -551,7 +576,7 @@ export function composeBass(
       const tier = def.calm ? "low" : tierOf(energy);
       const dice = rng.fork(`bass:${section.type}:${b % 8}`);
       const barBeat = bar * beatsPerBar;
-      const loud = 0.66 + 0.26 * energy;
+      const loud = (0.66 + 0.26 * energy) * (def.level?.[tierOf(energy)] ?? 1);
       const approachChance = def.approach * (0.35 + 0.65 * complexity);
 
       // chord segments inside this bar
@@ -624,9 +649,13 @@ export function composeBass(
       if (feel === "pedal") {
         const tonic = place(key.tonic, home);
         if (tier === "low") {
-          // one long drone note, re-struck every four bars
+          // One drone note for as long as it lasts. It is never re-struck:
+          // a sustained bass has no reverb and a release of a tenth of a
+          // second, and a new note of the same pitch starting where the old
+          // one ends meets it at an arbitrary phase — a 20 dB hole of 40 ms
+          // in the drone every time (seen in spectrograms of ambient pieces).
           const held = notes[notes.length - 1];
-          if (held && b % 4 !== 0 && Math.abs(held.beat + held.len - barBeat) < 0.05 && held.midi === tonic)
+          if (held && Math.abs(held.beat + held.len - barBeat) < 0.05 && held.midi === tonic)
             held.len += beatsPerBar;
           else add(barBeat, beatsPerBar, tonic, loud * 0.9);
         } else {

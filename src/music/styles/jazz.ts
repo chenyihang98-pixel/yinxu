@@ -81,6 +81,18 @@ export const jazz: StyleDef = {
     // swung eighth-note lines that start off the beat and anticipate the next one
     cells: ["__x.x.x.", "x.x...x.", "__x...x.", "x.x.x.x.", "x.....x.", "__x.x..."],
   },
+  // a warm room: the brightest leads are rounded off and sit a little lower
+  lead: {
+    guitar: { gain: 0.5 },
+    synth: { highCut: 5000 },
+    pluck: { highCut: 6000 },
+    bell: { gain: 0.5, highCut: 3000 },
+    musicbox: { gain: 0.48 },
+    strings: { gain: 0.58, highCut: 2600 },
+    guzheng: { gain: 0.5, highCut: 2600 },
+    dizi: { gain: 0.56, highCut: 2400 },
+    chip: { highCut: 4500 },
+  },
   comp: {
     voice: ["piano", "epiano"],
     from: 0,
@@ -114,18 +126,18 @@ export const jazz: StyleDef = {
     from: 0.08,
     grooves: {
       low: [
-        { brushSnare: "o...o...o...o...", hatClosed: "....o.......o..." },
-        { ride: "o...o.g.o...o.g.", hatClosed: "....o.......o..." },
+        { brushSnare: "o...x.g.o...x.g.", hatClosed: "....o.......o..." },
+        { ride: "x...x.o.x...x.o.", hatClosed: "....o.......o..." },
       ],
       mid: [
         {
-          ride: "x...x.o.x...x.o.",
+          ride: "x...X.o.x...X.o.",
           hatClosed: "....x.......x...",
           kick: "o.........g.....",
           brushSnare: "......g........g",
         },
         {
-          ride: "x...x.o.x...x.o.",
+          ride: "x...X.o.x...X.o.",
           hatClosed: "....x.......x...",
           kick: "g...g...g...g...",
           brushSnare: "..........g..g..",
@@ -133,13 +145,13 @@ export const jazz: StyleDef = {
       ],
       high: [
         {
-          ride: "X...x.x.X...x.x.",
+          ride: "X...X.x.X...X.x.",
           hatClosed: "....x.......x...",
           kick: "o.....g...o.....",
           snare: "......g.....o...",
         },
         {
-          ride: "X...x.x.X...x.x.",
+          ride: "X...X.x.X...X.x.",
           hatClosed: "....x.......x...",
           kick: "o...g...o..g....",
           snare: "..........o...g.",
@@ -161,17 +173,17 @@ export const jazz: StyleDef = {
   humanize: { timing: 11, velocity: 0.12 },
   form: { loop: "AABA", intro: 1, outro: 1 },
   mix: {
-    lead: { reverb: 0.25 },
-    comp: { gain: 0.5, pan: -0.2 },
-    bass: { gain: 0.8 },
-    kit: { gain: 0.7, reverb: 0.18 },
+    lead: { gain: 0.54, pan: 0.1, reverb: 0.3 },
+    comp: { gain: 0.44, pan: -0.2 },
+    bass: { gain: 0.5 },
+    kit: { gain: 1.5, reverb: 0.22 },
   },
   space: {
-    size: 0.35,
-    decay: 1.1,
+    size: 0.38,
+    decay: 1.3,
     damping: 0.6,
     preDelay: 0.012,
-    level: 0.4,
+    level: 0.45,
     delayBeats: 0.75,
     delayFeedback: 0.15,
   },
