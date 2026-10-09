@@ -136,7 +136,7 @@
 | `release/Muse-BGM-Setup-0.3.0-x64.exe` | 81,973,608 | `efcb42d6adeab27fc3166e2c3262b30c3b99db170069c4e728ef9a47cea78597` |
 | `release/Muse-BGM-Portable-0.3.0-x64.exe` | 81,808,209 | `3bd2ac6593c1755391a64e314ea59b2502b1db99bc0992d623ddad0534c1962a` |
 
-同样的两行在 `release/SHA256SUMS.txt`（`sha256sum -c` 通过）和 `release/RELEASE-NOTES-0.3.0.md` 的末尾。重新打包后哈希会变，这张表、那两个文件和 HANDOFF S10 要一起更新（`npm run test:packaged` 会在前两者对不上时失败）。这两个 EXE 来自**没有提交的工作区**，不是 Git 的 HEAD。什么都没有发布。`release/` 里 0.1.0 和 0.2.0 的旧 EXE 没有动（打包前后哈希相同）。
+同样的两行在 `release/SHA256SUMS.txt`（`sha256sum -c` 通过）和 `release/RELEASE-NOTES-0.3.0.md` 的末尾。重新打包后哈希会变，这张表、那两个文件和 HANDOFF S10 要一起更新（`npm run test:packaged` 会在前两者对不上时失败）。这两个 EXE 由本地提交 `a5cb422` 的代码打出。什么都没有发布。`release/` 里 0.1.0 和 0.2.0 的旧 EXE 没有动（打包前后哈希相同）。
 
 **包的内容**：`app.asar` 4,824,742 字节、1156 个条目（1051 个文件），其中 Claude SDK 573 个文件；`release/win-unpacked` 共 318,344,222 字节。`package.json` 的 `build.files` 只收 `dist/`、`electron/`、`package.json` 和生产依赖，并去掉依赖里从不运行的文件（源码映射、TypeScript 源码与声明、README 等）；发行程序冒烟的第一步核对了包里没有这类文件、SDK 的脚本一个不少、包里的 `dist/` 和 `electron/` 与工作区一致。（过滤前后逐个加载 SDK 模块的对比是第一次打包时做的，这次没有重做。）
 
@@ -158,5 +158,5 @@
 - **Chromium 以外的浏览器**：网页版没有在 Firefox、Safari 和真实的手机上运行过；没有用过屏幕阅读器、输入法组字、强制颜色模式。
 - **听感**：没有任何人听过生成的音频。上面的音频结论全部是测量值；这一轮改过的旋律（删稀后的声部进行、换调时折回八度的音）和摇滚能量移动了的平衡同样没有人听过。
 - **真实的系统代理、Windows 10、macOS / Linux**：只在一台直连网络的 Windows 11 电脑上构建和测试过。
-- **门户页面**：门户仓库的草稿副本里导入的是上一轮的网页版，这一轮的构建还没有导入；门户的发布同步脚本没有对着真实的 GitHub release 跑过。门户页面上线之前，网页版里「下载 Windows 版」的链接是 404。
+- **门户页面**：门户仓库的草稿副本里已经导入最终的网页版，并在本机预览里通过了嵌入验证（10 / 10、33 / 33），但没有部署过；门户的发布同步脚本没有对着真实的 GitHub release 跑过。门户页面上线之前，网页版里「下载 Windows 版」的链接是 404。
 - **真实使用中的长期表现**：大量作品、长时间运行、磁盘写满等情况没有专门的测试。

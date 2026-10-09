@@ -16,8 +16,8 @@
 - **数据**：作品在 IndexedDB `muse-bgm` / `projects`；桌面数据目录 `%APPDATA%\Muse BGM`，凭据在其中的 `music-credentials.json`（Windows safeStorage 加密）。开发时不需要读取或清空它们；测试和套件都用临时目录。
 - **不要运行旧程序**：`release/` 里的 0.1.0 / 0.2.0 EXE 与 0.3 共用数据目录和数据库，会把 0.3 的作品改写成旧引擎作品并丢掉对话（S11）。`启动音序.cmd` 只启动与 `package.json` 版本一致的便携版。
 - **最低开发动作**：`npm run typecheck`、`npm test`（约 1 分钟；`npm run test:fast` 几秒）。改了界面或主进程：`npm run build` 后跑相应的 Electron 套件；`npm run test:all` 是完整回归（约 5 分钟，不含打包）。
-- **仓库**：本地 Git，没有远端，什么都没有推送；五个提交，基线 `634c650`（v0.2.0），HEAD `6f6e2cc`（第三轮评审的修复、排版、第一次打包和文档）。**HEAD 之后的第四轮——发行物验收后的修复、集成、重新打包和这次的文档——都在工作区里没有提交**（91 个路径），提交与否由仓库主人决定。文本固定为 LF，代码用 Prettier。
-- **发行物**：`release/` 里有从当前工作区的代码打出的 0.3.0 安装版和便携版（文件名与哈希见 S10；它们对应的是没提交的工作区，不是 HEAD）。**什么都没有发布**：没有 GitHub 仓库和 release，门户页面没有上线。
+- **仓库**：本地 Git，没有远端，什么都没有推送；全部工作都已提交在本地（`git log --oneline` 查看），基线 `634c650` 是 v0.2.0，提交 `a5cb422` 是打出 0.3.0 发行物的那份代码，其后的提交只改文档。文本固定为 LF，代码用 Prettier。
+- **发行物**：`release/` 里有 0.3.0 的安装版和便携版（文件名与哈希见 S10；由提交 `a5cb422` 的代码打出）。**什么都没有发布**：没有 GitHub 仓库和 release，门户页面没有上线。
 - **最该先做的事**（S11 第一组）：仓库主人听一遍 `demos/` 的 22 段示例；用真实账号各做一次最便宜的云端生成和一次托管大模型的规划。
 
 ## S01｜阅读与改动导航
@@ -710,7 +710,7 @@ npm run test:packaged   # 校验值没改对会在第一步失败
 
 **发布到 GitHub（给仓库主人的步骤；目前什么都没有发布）**：
 
-1. 仓库现在只有本地提交、没有远端。先把工作区里没提交的改动提交掉（`release/` 里的两个 EXE 就是从这份工作区打出来的，标签应当打在包含它们的那个提交上），然后在 GitHub 建仓库（门户那边的占位名是 `chenyihang98-pixel/yinxu`，可以改，改了要同步告诉门户的 `content/tools.json`）并推送。`release/`、`demos/`、`.scratch/` 都被忽略，不会进仓库。
+1. 仓库现在只有本地提交、没有远端。`release/` 里的两个 EXE 由提交 `a5cb422` 的代码打出，`v0.3.0` 标签应当打在它或其后只改文档的提交上。然后在 GitHub 建仓库（门户那边的占位名是 `chenyihang98-pixel/yinxu`，可以改，改了要同步告诉门户的 `content/tools.json`）并推送。`release/`、`demos/`、`.scratch/` 都被忽略，不会进仓库。
 2. 打标签并创建**非草稿**的 release，标签等于版本号（`v0.3.0`，门户要求它与网页版的版本一致）。上传三个文件：两个 0.3.0 的 EXE 和 `SHA256SUMS.txt`。文件名必须保持 `Muse-BGM-Setup-0.3.0-x64.exe` / `Muse-BGM-Portable-0.3.0-x64.exe`——门户靠 `setup` / `portable` 识别安装版和便携版。
 3. release 的正文用 `release/RELEASE-NOTES-0.3.0.md` 的**全文**；它以 `### SHA-256` 小节的代码块结尾，里面是和 `SHA256SUMS.txt` 相同的两行「哈希、两个空格、文件名」。例如：
 
@@ -729,7 +729,7 @@ npm run test:packaged   # 校验值没改对会在第一步失败
 - 目标：工具页 `https://starwright.xyz/tools/yinxu/`，其中的 iframe 加载 `https://starwright.xyz/play/yinxu/`。桌面上框宽最多 1098 px、高 560–860 px，手机上是 390 / 320 px 通栏。界面按 320 px 起不出现横向滚动来设计（≥ 1100 px 是侧栏加双列；以下是顶栏加单列；720 px 以下风格改为一行横向滚动、弹窗变成全屏；520 px 以下导航只剩图标）；第二轮的截图审计覆盖到 320 px，最后一轮的 `web-smoke` 核对的是 390×780 的触屏和 1000×760 的框架。
 - 门户是另一个私有仓库（`chenyihang98-pixel/ai-creation-platform`）。它的克隆在 `.scratch/site/ai-creation-platform`，分支 `add-yinxu`（基于 `4aaa7cd`），**全部改动都没有提交、暂存或推送**；`.scratch/site-kit/` 里有 `site.patch` 和 `site-untracked.tar.gz`（在 `4aaa7cd` 的全新克隆上重现这些改动）、交接笔记 `NOTES.md`、四张截图和验证脚本。这些都在被忽略的草稿区里，需要的话先另存。
 - 第四轮里门户那边做到了哪一步（来自那一轮的报告，这次没有重跑）：导入了当时的 v0.3.0 网页版，按最终的应用和 `docs/QA.md` 重写了页面，`verify-embed.cjs`（10 / 10）和 `verify-behaviour.cjs`（33 / 33）在导入的真实构建上通过；发布说明里校验值的读取改成了按行解析（所以发布说明不再需要任何额外的隐藏内容）；`downloads` 仍为空、页面标着「Windows 版待发布」。
-- **这一轮之后那份导入已经过时**：克隆里 `public/play/yinxu/assets/` 是上一轮的构建（`index-DGjv9PHy.js` 等），而现在的 `dist-web/` 是 `index-DcAQ4BEN.js`、`index-DrdnUZdD.css`、`worker-BrbxvWFD.js`；页面上的测试数字（967 = 748 + 219，云端 21 步）也是上一轮的，现在是 1048 = 796 + 252、云端 23 步（网页 27、界面 14、发行程序 23 不变）。
+- **最后一轮之后已重新导入**：克隆里 `public/play/yinxu/` 是最终的 `dist-web/`（`index-DcAQ4BEN.js`、`index-DrdnUZdD.css`、`worker-BrbxvWFD.js`，共约 1.42 MB），页面上的测试数字已更新为 1048 = 796 + 252、云端 23 步（网页 27、界面 14、发行程序 23）；`verify-embed.cjs` 10 / 10、`verify-behaviour.cjs` 33 / 33、校验值解析自检 37 / 37 在这份构建上通过。克隆仍然全部没有提交和推送，交接说明在 `.scratch/site-kit/NOTES.md`。注意：发布说明里已经没有隐藏注释，所以门户必须先用上这个分支里按行解析的 `sync-releases.mjs`，再同步音序的发布。
 - 剩下的步骤（详见 NOTES）：
   1. 在门户仓库里重新 `npm run import:yinxu`（把现在的 `dist-web/` 灌进 `public/play/yinxu/`）、更新 `content/tools.json` 里 `yinxu` 的测试数字、`npm run build`、`npm run preview`，再跑 `verify-embed.cjs` 和 `verify-behaviour.cjs`。
   2. GitHub release 存在之后，在 `content/tools.json` 的 `yinxu` 项里补上 `github` 和 `releasesUrl`，换掉「Windows 版待发布」的标记，`npm run sync:releases`（它没有对着真实的 release 跑过）。
