@@ -129,8 +129,7 @@ export const synthBass: Voice = {
           1 -
           2 * phase +
           edge +
-          SQUARE_LEVEL *
-            ((phase < 0.5 ? 1 : -1) + edge - polyBlep(half, inc));
+          SQUARE_LEVEL * ((phase < 0.5 ? 1 : -1) + edge - polyBlep(half, inc));
         phase += inc;
         if (phase >= 1) phase -= 1;
       }

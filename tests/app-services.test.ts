@@ -11,6 +11,7 @@ import {
   exportName,
   exportWork,
   repeatWav,
+  sniffAudioFormat,
 } from "../src/services/exporter";
 import type { ExportDeps } from "../src/services/exporter";
 import {
@@ -104,13 +105,20 @@ const cloudProject = (patch: Partial<Project> = {}): Project => ({
 test("runLocal: renders through the injected engine and keeps the engine of the config", async () => {
   const seen: MusicConfig[] = [];
   const progress: number[] = [];
-  const render = async (config: MusicConfig, options?: { onProgress?: (value: number) => void }) => {
+  const render = async (
+    config: MusicConfig,
+    options?: { onProgress?: (value: number) => void },
+  ) => {
     seen.push(config);
     options?.onProgress?.(0.25);
     options?.onProgress?.(7);
     return renderResult(config, 0.02);
   };
-  const audio = await runLocal(DEFAULT_CONFIG, { onProgress: (value) => progress.push(value) }, { renderMusic: render });
+  const audio = await runLocal(
+    DEFAULT_CONFIG,
+    { onProgress: (value) => progress.push(value) },
+    { renderMusic: render },
+  );
   assert.equal(audio.kind, "stems");
   assert.equal(audio.engine, 2);
   assert.equal(audio.duration, 0.02);
@@ -128,10 +136,28 @@ test("runLocal: renders through the injected engine and keeps the engine of the 
   // Where the engine says the samples were computed is kept (the player card shows it as data-render-path).
   assert.equal(audio.renderPath, undefined, "a stand-in engine says nothing");
   for (const path of ["worker", "main", "legacy"] as const) {
-    const told = await runLocal(DEFAULT_CONFIG, {}, { renderMusic: async (config) => ({ ...renderResult(config, 0.02), diagnostics: { path } }) });
+    const told = await runLocal(
+      DEFAULT_CONFIG,
+      {},
+      {
+        renderMusic: async (config) => ({
+          ...renderResult(config, 0.02),
+          diagnostics: { path },
+        }),
+      },
+    );
     assert.equal(told.renderPath, path);
   }
-  const odd = await runLocal(DEFAULT_CONFIG, {}, { renderMusic: async (config) => ({ ...renderResult(config, 0.02), diagnostics: { path: "gpu" } }) });
+  const odd = await runLocal(
+    DEFAULT_CONFIG,
+    {},
+    {
+      renderMusic: async (config) => ({
+        ...renderResult(config, 0.02),
+        diagnostics: { path: "gpu" },
+      }),
+    },
+  );
   assert.equal("renderPath" in odd, false);
 });
 
@@ -140,7 +166,13 @@ test("runLocal: an aborted signal rejects with AbortError and reports no more pr
   controller.abort();
   let called = false;
   await assert.rejects(
-    runLocal(DEFAULT_CONFIG, { signal: controller.signal }, { renderMusic: async (config) => ((called = true), renderResult(config)) }),
+    runLocal(
+      DEFAULT_CONFIG,
+      { signal: controller.signal },
+      {
+        renderMusic: async (config) => ((called = true), renderResult(config)),
+      },
+    ),
     { name: "AbortError" },
   );
   assert.equal(called, false);
@@ -163,7 +195,16 @@ test("runLocal: an aborted signal rejects with AbortError and reports no more pr
   );
   assert.deepEqual(progress, []);
   await assert.rejects(
-    runLocal(DEFAULT_CONFIG, {}, { renderMusic: async () => ({ ...renderResult(DEFAULT_CONFIG), duration: 0 }) }),
+    runLocal(
+      DEFAULT_CONFIG,
+      {},
+      {
+        renderMusic: async () => ({
+          ...renderResult(DEFAULT_CONFIG),
+          duration: 0,
+        }),
+      },
+    ),
     /没有生成可用的音频/,
   );
 });
@@ -184,7 +225,9 @@ test("runCloud: the paid bytes are stored before anything is decoded", async () 
     },
     {
       generateMusic: async (input) => {
-        order.push(`generate:${input.provider}:${input.duration}:${input.prompt}`);
+        order.push(
+          `generate:${input.provider}:${input.duration}:${input.prompt}`,
+        );
         return { audio: MP3_BYTES.slice().buffer, mimeType: "audio/mpeg" };
       },
       decode: async (data) => {
@@ -203,7 +246,11 @@ test("runCloud: the paid bytes are stored before anything is decoded", async () 
   ]);
   assert.equal(result.saved, true);
   assert.equal(result.format, "mp3");
-  assert.equal(result.audio?.duration, 1.5, "the actual duration, not the requested one");
+  assert.equal(
+    result.audio?.duration,
+    1.5,
+    "the actual duration, not the requested one",
+  );
   assert.deepEqual(result.audio?.peaks, [0.5, 1]);
   assert.deepEqual(new Uint8Array(await result.blob.arrayBuffer()), MP3_BYTES);
   assert.equal(stored, result.blob);
@@ -216,7 +263,10 @@ test("runCloud: undecodable audio is still returned, saved and exportable (APP-0
     { provider: "aliyun", prompt: "x", duration: 30 },
     { persist: async () => (persisted++, true) },
     {
-      generateMusic: async () => ({ audio: MP3_BYTES.slice().buffer, mimeType: "audio/x-unknown" }),
+      generateMusic: async () => ({
+        audio: MP3_BYTES.slice().buffer,
+        mimeType: "audio/x-unknown",
+      }),
       decode: async () => {
         throw new DOMException("Unable to decode audio data", "EncodingError");
       },
@@ -233,7 +283,10 @@ test("runCloud: undecodable audio is still returned, saved and exportable (APP-0
 test("runCloud: a failed save does not lose the audio; a cancelled job skips decoding", async () => {
   let decodes = 0;
   const base = {
-    generateMusic: async () => ({ audio: MP3_BYTES.slice().buffer, mimeType: "audio/mpeg" }),
+    generateMusic: async () => ({
+      audio: MP3_BYTES.slice().buffer,
+      mimeType: "audio/mpeg",
+    }),
     decode: async () => (decodes++, buffer(1, 0.1)),
   };
   const unsaved = await runCloud(
@@ -247,14 +300,22 @@ test("runCloud: a failed save does not lose the audio; a cancelled job skips dec
   );
   assert.equal(unsaved.saved, false);
   assert.ok(unsaved.audio, "still decoded and playable");
-  const refused = await runCloud({ provider: "tencent", prompt: "x", duration: 30 }, { persist: async () => false }, base);
+  const refused = await runCloud(
+    { provider: "tencent", prompt: "x", duration: 30 },
+    { persist: async () => false },
+    base,
+  );
   assert.equal(refused.saved, false);
 
   decodes = 0;
   const order: string[] = [];
   const late = await runCloud(
     { provider: "tencent", prompt: "x", duration: 30 },
-    { persist: async () => (order.push("persist"), true), wanted: () => false, onDecoding: () => order.push("decoding") },
+    {
+      persist: async () => (order.push("persist"), true),
+      wanted: () => false,
+      onDecoding: () => order.push("decoding"),
+    },
     base,
   );
   assert.deepEqual(order, ["persist"], "kept, but not decoded");
@@ -270,7 +331,10 @@ test("runCloud: no audio from the service is an error and nothing is stored", as
   const decode = async () => buffer(1, 0.1);
   await assert.rejects(
     runCloud({ provider: "tencent", prompt: "x", duration: 30 }, hooks, {
-      generateMusic: async () => ({ audio: new ArrayBuffer(0), mimeType: "audio/mpeg" }),
+      generateMusic: async () => ({
+        audio: new ArrayBuffer(0),
+        mimeType: "audio/mpeg",
+      }),
       decode,
     }),
     /没有返回音频/,
@@ -297,7 +361,10 @@ test("decodeBlob and describeMix", async () => {
   assert.equal(received, MP3_BYTES.length);
   assert.equal(audio.duration, 2);
   assert.deepEqual(audio.peaks, [0, 1, 0.5]);
-  await assert.rejects(decodeBlob(new Blob([]), { decode: async () => buffer(1, 0) }), /空的/);
+  await assert.rejects(
+    decodeBlob(new Blob([]), { decode: async () => buffer(1, 0) }),
+    /空的/,
+  );
   assert.throws(() => describeMix(buffer(0, 0), () => []), /音频内容为空/);
   assert.deepEqual(normalisePeaks([0, 0]), [0, 0]);
 });
@@ -306,17 +373,31 @@ test("decodeBlob and describeMix", async () => {
 
 test("full mix = softClip(Σ stem × committed fader), at the audio's own rate", async () => {
   const project = localProject("p1", {}, { volumes: VOLUMES, loop: false });
-  const file = await buildExport(project, stemsAudio(), { kind: "mix" }, deps());
+  const file = await buildExport(
+    project,
+    stemsAudio(),
+    { kind: "mix" },
+    deps(),
+  );
   assert.equal(file.format, "wav");
   assert.equal(file.name, "夏日小事");
   const info = header(file.data);
-  assert.deepEqual([info.riff, info.wave, info.channels, info.sampleRate, info.bits], ["RIFF", "WAVE", 2, 48000, 16]);
+  assert.deepEqual(
+    [info.riff, info.wave, info.channels, info.sampleRate, info.bits],
+    ["RIFF", "WAVE", 2, 48000, 16],
+  );
   assert.equal(info.dataBytes, 480 * 2 * 2);
   const expected = softClip(
-    STEM_LEVELS.melody * 0.8 + STEM_LEVELS.chords * 0.5 + STEM_LEVELS.bass * 1 + STEM_LEVELS.drums * 0.25,
+    STEM_LEVELS.melody * 0.8 +
+      STEM_LEVELS.chords * 0.5 +
+      STEM_LEVELS.bass * 1 +
+      STEM_LEVELS.drums * 0.25,
   );
   const pcm = samples(file.data);
-  assert.ok(near(pcm[0], expected) && near(pcm[1], -expected), `${pcm[0]} vs ${expected * 32768}`);
+  assert.ok(
+    near(pcm[0], expected) && near(pcm[1], -expected),
+    `${pcm[0]} vs ${expected * 32768}`,
+  );
   assert.ok(near(pcm[pcm.length - 2], expected));
 });
 
@@ -325,47 +406,101 @@ test("export ignores everything about playback — there is no solo parameter (A
   const audio = stemsAudio();
   const full = await buildExport(project, audio, { kind: "mix" }, deps());
   const again = await buildExport(project, audio, { kind: "mix" }, deps());
-  assert.deepEqual(new Uint8Array(full.data), new Uint8Array(again.data), "reproducible");
-  const drums = await buildExport(project, audio, { kind: "stem", track: "drums" }, deps());
+  assert.deepEqual(
+    new Uint8Array(full.data),
+    new Uint8Array(again.data),
+    "reproducible",
+  );
+  const drums = await buildExport(
+    project,
+    audio,
+    { kind: "stem", track: "drums" },
+    deps(),
+  );
   assert.equal(drums.name, "夏日小事-鼓组");
   const pcm = samples(drums.data);
-  assert.ok(near(pcm[0], softClip(STEM_LEVELS.drums * 0.25)), "one stem at its fader");
+  assert.ok(
+    near(pcm[0], softClip(STEM_LEVELS.drums * 0.25)),
+    "one stem at its fader",
+  );
   assert.notDeepEqual(new Uint8Array(full.data), new Uint8Array(drums.data));
   // A muted stem exports as digital silence rather than as the full mix.
   const muted = localProject("p1", {}, { volumes: { ...VOLUMES, drums: 0 } });
-  const silent = samples((await buildExport(muted, audio, { kind: "stem", track: "drums" }, deps())).data);
+  const silent = samples(
+    (await buildExport(muted, audio, { kind: "stem", track: "drums" }, deps()))
+      .data,
+  );
   assert.ok(silent.every((value) => value === 0));
-  await assert.rejects(buildExport(project, audio, { kind: "stem", track: "vocals" as never }, deps()), /没有这条音轨/);
+  await assert.rejects(
+    buildExport(
+      project,
+      audio,
+      { kind: "stem", track: "vocals" as never },
+      deps(),
+    ),
+    /没有这条音轨/,
+  );
 });
 
 test("loop works: 循环次数 repeats the audio sample-exactly, without gaps", async () => {
-  const loop = localProject("p1", { revision: 3 }, { loop: true, volumes: VOLUMES });
+  const loop = localProject(
+    "p1",
+    { revision: 3 },
+    { loop: true, volumes: VOLUMES },
+  );
   const audio = stemsAudio(2, 0.005);
   // Give the loop a recognisable shape: a ramp in the melody stem.
   const melody = audio.stems.melody.getChannelData(0);
   for (let i = 0; i < melody.length; i++) melody[i] = (i / melody.length) * 0.5;
-  const once = await buildExport(loop, audio, { kind: "mix", repeats: 1 }, deps());
-  const four = await buildExport(loop, audio, { kind: "mix", repeats: 4 }, deps());
+  const once = await buildExport(
+    loop,
+    audio,
+    { kind: "mix", repeats: 1 },
+    deps(),
+  );
+  const four = await buildExport(
+    loop,
+    audio,
+    { kind: "mix", repeats: 4 },
+    deps(),
+  );
   assert.equal(once.name, "夏日小事 v3");
   assert.equal(four.name, "夏日小事 v3-循环x4");
   const single = new Uint8Array(once.data.slice(44));
   const repeated = new Uint8Array(four.data.slice(44));
   assert.equal(repeated.length, single.length * 4);
   for (let part = 0; part < 4; part++)
-    assert.deepEqual(repeated.slice(part * single.length, (part + 1) * single.length), single, `repeat ${part}`);
+    assert.deepEqual(
+      repeated.slice(part * single.length, (part + 1) * single.length),
+      single,
+      `repeat ${part}`,
+    );
   const info = header(four.data);
   assert.equal(info.dataBytes, single.length * 4);
   assert.equal(info.riffSize, 36 + single.length * 4);
   assert.equal(info.sampleRate, 48000);
   // Non-loop works do not repeat, whatever is asked; invalid counts fall back to 1.
   const ending = localProject("p1", {}, { loop: false, volumes: VOLUMES });
-  const plain = await buildExport(ending, audio, { kind: "mix", repeats: 4 }, deps());
+  const plain = await buildExport(
+    ending,
+    audio,
+    { kind: "mix", repeats: 4 },
+    deps(),
+  );
   assert.equal(plain.data.byteLength, once.data.byteLength);
   assert.equal(plain.name, "夏日小事");
-  const odd = await buildExport(loop, audio, { kind: "mix", repeats: 3 as never }, deps());
+  const odd = await buildExport(
+    loop,
+    audio,
+    { kind: "mix", repeats: 3 as never },
+    deps(),
+  );
   assert.equal(odd.data.byteLength, once.data.byteLength);
   assert.equal(repeatWav(once.data, 1), once.data);
-  assert.throws(() => repeatWav(new ArrayBuffer(44 + 100 * 1024 * 1024), 4), /文件过大/);
+  assert.throws(
+    () => repeatWav(new ArrayBuffer(44 + 100 * 1024 * 1024), 4),
+    /文件过大/,
+  );
 });
 
 test("a WAV export pauses for the interface before each heavy step, and gives the same bytes", async () => {
@@ -389,53 +524,131 @@ test("a WAV export pauses for the interface before each heavy step, and gives th
   const once = await buildExport(loop, audio, { kind: "mix" }, traced);
   assert.deepEqual(log, ["breathe", "mix", "breathe", "encode"]);
   log.length = 0;
-  const four = await buildExport(loop, audio, { kind: "mix", repeats: 4 }, traced);
+  const four = await buildExport(
+    loop,
+    audio,
+    { kind: "mix", repeats: 4 },
+    traced,
+  );
   assert.deepEqual(log, ["breathe", "mix", "breathe", "encode", "breathe"]);
   log.length = 0;
-  const stem = await buildExport(loop, audio, { kind: "stem", track: "bass" }, traced);
+  const stem = await buildExport(
+    loop,
+    audio,
+    { kind: "stem", track: "bass" },
+    traced,
+  );
   assert.deepEqual(log, ["breathe", "mix", "breathe", "encode"]);
   log.length = 0;
   await buildExport(loop, audio, { kind: "project" }, traced);
   await buildExport(cloudProject(), mixAudio(), { kind: "original" }, traced);
   assert.deepEqual(log, [], "nothing heavy in a recipe or in stored bytes");
   // Pausing changes nothing in the file.
-  assert.deepEqual(new Uint8Array(once.data), new Uint8Array((await buildExport(loop, audio, { kind: "mix" }, deps())).data));
+  assert.deepEqual(
+    new Uint8Array(once.data),
+    new Uint8Array(
+      (await buildExport(loop, audio, { kind: "mix" }, deps())).data,
+    ),
+  );
   assert.equal(four.data.byteLength, 44 + (once.data.byteLength - 44) * 4);
-  assert.deepEqual(new Uint8Array(stem.data), new Uint8Array((await buildExport(loop, audio, { kind: "stem", track: "bass" }, deps())).data));
+  assert.deepEqual(
+    new Uint8Array(stem.data),
+    new Uint8Array(
+      (await buildExport(loop, audio, { kind: "stem", track: "bass" }, deps()))
+        .data,
+    ),
+  );
   // A pause that fails stops the export instead of handing over half a file.
   await assert.rejects(
-    buildExport(loop, audio, { kind: "mix" }, { ...traced, breathe: async () => { throw new Error("页面已关闭"); } }),
+    buildExport(
+      loop,
+      audio,
+      { kind: "mix" },
+      {
+        ...traced,
+        breathe: async () => {
+          throw new Error("页面已关闭");
+        },
+      },
+    ),
     /页面已关闭/,
   );
 });
 
 test("the v0.2 fade is offered only for engine-1 and cloud works that do not loop", async () => {
   const local = localProject("p1", {}, { loop: false });
-  assert.equal(exportChoices(local, stemsAudio(2)).canFade, false, "engine 2 writes its own ending");
+  assert.equal(
+    exportChoices(local, stemsAudio(2)).canFade,
+    false,
+    "engine 2 writes its own ending",
+  );
   assert.equal(exportChoices(local, stemsAudio(1)).canFade, true);
-  assert.equal(exportChoices(localProject("p", {}, { loop: true }), stemsAudio(1)).canFade, false);
-  assert.equal(exportChoices(cloudProject({ config: { ...DEFAULT_CONFIG, loop: false } }), mixAudio()).canFade, true);
-  assert.equal(exportChoices(localProject("p", {}, { loop: true }), stemsAudio(2)).canRepeat, true);
+  assert.equal(
+    exportChoices(localProject("p", {}, { loop: true }), stemsAudio(1)).canFade,
+    false,
+  );
+  assert.equal(
+    exportChoices(
+      cloudProject({ config: { ...DEFAULT_CONFIG, loop: false } }),
+      mixAudio(),
+    ).canFade,
+    true,
+  );
+  assert.equal(
+    exportChoices(localProject("p", {}, { loop: true }), stemsAudio(2))
+      .canRepeat,
+    true,
+  );
   assert.equal(exportChoices(local, stemsAudio(2)).canRepeat, false);
   assert.equal(exportChoices(cloudProject(), mixAudio()).canRepeat, false);
 
-  const legacy = localProject("old", {}, { engine: 1, loop: false, volumes: VOLUMES });
+  const legacy = localProject(
+    "old",
+    {},
+    { engine: 1, loop: false, volumes: VOLUMES },
+  );
   const audio = stemsAudio(1, 0.3);
-  const faded = samples((await buildExport(legacy, audio, { kind: "mix", fade: true }, deps())).data);
-  const plain = samples((await buildExport(legacy, audio, { kind: "mix" }, deps())).data);
-  assert.equal(header((await buildExport(legacy, audio, { kind: "mix" }, deps())).data).sampleRate, 32000);
+  const faded = samples(
+    (await buildExport(legacy, audio, { kind: "mix", fade: true }, deps()))
+      .data,
+  );
+  const plain = samples(
+    (await buildExport(legacy, audio, { kind: "mix" }, deps())).data,
+  );
+  assert.equal(
+    header((await buildExport(legacy, audio, { kind: "mix" }, deps())).data)
+      .sampleRate,
+    32000,
+  );
   assert.equal(faded[0], 0);
   assert.equal(faded[faded.length - 2], 0);
   const middle = Math.floor(faded.length / 4) * 2;
-  assert.ok(Math.abs(faded[middle] - plain[middle]) <= 2, "untouched in the middle");
+  assert.ok(
+    Math.abs(faded[middle] - plain[middle]) <= 2,
+    "untouched in the middle",
+  );
   assert.ok(Math.abs(plain[0]) > 1000);
   // Ignored where it does not apply.
   const modern = localProject("new", {}, { loop: false, volumes: VOLUMES });
-  const kept = samples((await buildExport(modern, stemsAudio(2), { kind: "mix", fade: true }, deps())).data);
+  const kept = samples(
+    (
+      await buildExport(
+        modern,
+        stemsAudio(2),
+        { kind: "mix", fade: true },
+        deps(),
+      )
+    ).data,
+  );
   assert.ok(Math.abs(kept[0]) > 1000);
   // The decoded cloud buffer itself is never modified by an export.
   const mix = mixAudio(0.3);
-  await buildExport(cloudProject({ config: { ...DEFAULT_CONFIG, loop: false } }), mix, { kind: "mix", fade: true }, deps());
+  await buildExport(
+    cloudProject({ config: { ...DEFAULT_CONFIG, loop: false } }),
+    mix,
+    { kind: "mix", fade: true },
+    deps(),
+  );
   assert.equal(mix.buffer.getChannelData(0)[0], 0.5);
   const tiny = buffer(0.0001, 0.5);
   applyFade(tiny);
@@ -445,27 +658,99 @@ test("the v0.2 fade is offered only for engine-1 and cloud works that do not loo
 test("cloud works: original bytes exactly, no stems, no project JSON", async () => {
   const project = cloudProject({ title: "云端 / 作品" });
   const choices = exportChoices(project, mixAudio());
-  assert.deepEqual(choices.options.map((option) => option.id), ["mix", "original"]);
-  const original = await buildExport(project, mixAudio(), { kind: "original" }, deps());
+  assert.deepEqual(
+    choices.options.map((option) => option.id),
+    ["mix", "original"],
+  );
+  const original = await buildExport(
+    project,
+    mixAudio(),
+    { kind: "original" },
+    deps(),
+  );
   assert.equal(original.format, "mp3");
   assert.deepEqual(new Uint8Array(original.data), MP3_BYTES);
   assert.equal(original.name, "云端 / 作品", "sanitising is saveFile's job");
-  await assert.rejects(buildExport(project, mixAudio(), { kind: "stem", track: "drums" }, deps()), /没有分轨/);
-  await assert.rejects(buildExport(project, mixAudio(), { kind: "project" }, deps()), /不包含音频/);
+  await assert.rejects(
+    buildExport(project, mixAudio(), { kind: "stem", track: "drums" }, deps()),
+    /没有分轨/,
+  );
+  await assert.rejects(
+    buildExport(project, mixAudio(), { kind: "project" }, deps()),
+    /不包含音频/,
+  );
   // Decoding failed: the original file is still there, a WAV is not.
   const undecoded = exportChoices(project, null);
-  assert.deepEqual(undecoded.options.map((option) => option.id), ["original"]);
-  assert.equal((await buildExport(project, null, { kind: "original" }, deps())).data.byteLength, MP3_BYTES.length);
-  await assert.rejects(buildExport(project, null, { kind: "mix" }, deps()), /还没有准备好/);
+  assert.deepEqual(
+    undecoded.options.map((option) => option.id),
+    ["original"],
+  );
+  assert.equal(
+    (await buildExport(project, null, { kind: "original" }, deps())).data
+      .byteLength,
+    MP3_BYTES.length,
+  );
+  await assert.rejects(
+    buildExport(project, null, { kind: "mix" }, deps()),
+    /还没有准备好/,
+  );
   // A Blob with a type this build cannot name does not break the dialog.
-  const odd = cloudProject({ audioBlob: new Blob([MP3_BYTES], { type: "audio/ogg" }) });
+  const OGG_BYTES = new Uint8Array([
+    0x4f, 0x67, 0x67, 0x53, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0,
+  ]);
+  const odd = cloudProject({
+    audioBlob: new Blob([OGG_BYTES], { type: "audio/ogg" }),
+  });
   assert.match(exportChoices(odd, mixAudio()).options[1].detail, /未知格式/);
-  await assert.rejects(buildExport(odd, mixAudio(), { kind: "original" }, deps()), /请改为导出 WAV/);
-  await assert.rejects(buildExport(localProject("p"), stemsAudio(), { kind: "original" }, deps()), /没有可导出的原始音频/);
+  await assert.rejects(
+    buildExport(odd, mixAudio(), { kind: "original" }, deps()),
+    /请改为导出 WAV/,
+  );
+  // …but when it could not be decoded either, those bytes are all there is: they are handed over as they are.
+  const last = await buildExport(odd, null, { kind: "original" }, deps());
+  assert.deepEqual(new Uint8Array(last.data), OGG_BYTES);
+  assert.match(last.name, /未知格式$/);
+  // A wrong or missing type on a known container is recognised by its bytes.
+  const untyped = cloudProject({
+    audioBlob: new Blob([MP3_BYTES], { type: "application/octet-stream" }),
+  });
+  assert.equal(
+    (await buildExport(untyped, null, { kind: "original" }, deps())).format,
+    "mp3",
+  );
+  const magic = (text: string, at = 0) => {
+    const bytes = new Uint8Array(16);
+    for (let i = 0; i < text.length; i++) bytes[at + i] = text.charCodeAt(i);
+    return bytes.buffer;
+  };
+  assert.equal(sniffAudioFormat(magic("fLaC")), "flac");
+  assert.equal(sniffAudioFormat(magic("ftypM4A ", 4)), "m4a");
+  assert.equal(
+    sniffAudioFormat(
+      new Uint8Array([
+        0x52, 0x49, 0x46, 0x46, 1, 0, 0, 0, 0x57, 0x41, 0x56, 0x45,
+      ]).buffer,
+    ),
+    "wav",
+  );
+  assert.equal(
+    sniffAudioFormat(new Uint8Array([0xff, 0xfb, 0x90, 0]).buffer),
+    "mp3",
+  );
+  assert.equal(sniffAudioFormat(OGG_BYTES.buffer), null);
+  assert.equal(sniffAudioFormat(new ArrayBuffer(0)), null);
+  await assert.rejects(
+    buildExport(localProject("p"), stemsAudio(), { kind: "original" }, deps()),
+    /没有可导出的原始音频/,
+  );
 });
 
 test("local works: options in order, and the project JSON can be imported again", async () => {
-  const project = localProject("p1", { chat: [{ id: "u1", role: "user", text: "夏日", at: "2026-10-01T08:00:00.000Z" }] });
+  const project = localProject("p1", {
+    chat: [
+      { id: "u1", role: "user", text: "夏日", at: "2026-10-01T08:00:00.000Z" },
+    ],
+  });
   const choices = exportChoices(project, stemsAudio());
   assert.deepEqual(
     choices.options.map((option) => option.id),
@@ -473,16 +758,30 @@ test("local works: options in order, and the project JSON can be imported again"
   );
   assert.deepEqual(exportChoices(null, null).options, []);
   const files: SavedFile[] = [];
-  const result = await exportWork(project, stemsAudio(), { kind: "project" }, deps(files));
+  const result = await exportWork(
+    project,
+    stemsAudio(),
+    { kind: "project" },
+    deps(files),
+  );
   assert.deepEqual(result, { saved: true, path: "C:\\out", name: "夏日小事" });
   assert.equal(files[0].format, "json");
   const text = new TextDecoder().decode(files[0].data);
-  const parsed = JSON.parse(text) as { schemaVersion: number; audioBlob?: unknown };
+  const parsed = JSON.parse(text) as {
+    schemaVersion: number;
+    audioBlob?: unknown;
+  };
   assert.equal(parsed.schemaVersion, 2);
   assert.equal(parsed.audioBlob, undefined);
   const back = importProject(text);
   assert.deepEqual(back.config, project.config);
   assert.equal(back.chat?.length, 1);
   assert.notEqual(back.id, project.id);
-  assert.equal(exportName(localProject("p", { revision: 2 }), { kind: "stem", track: "bass" }), "夏日小事 v2-贝斯");
+  assert.equal(
+    exportName(localProject("p", { revision: 2 }), {
+      kind: "stem",
+      track: "bass",
+    }),
+    "夏日小事 v2-贝斯",
+  );
 });

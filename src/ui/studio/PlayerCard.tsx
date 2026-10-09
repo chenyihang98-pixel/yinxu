@@ -1,7 +1,9 @@
 /**
  * The committed work: cover, editable title, what it is, save state,
  * favourite, export — then its time axis and the transport. Everything
- * here reads `project.config`, never the inspector draft.
+ * here reads `project.config`, never the inspector draft; the tempo and
+ * length it states are the audio's own, with the settings as a footnote
+ * when a loop was fitted to whole bars.
  */
 import { memo, useEffect, useRef, useState } from "react";
 import {
@@ -34,24 +36,41 @@ import { Badge } from "../primitives/Controls";
 import { Transport } from "./Transport";
 import { ChordStrip, SectionBands, WaveformCanvas } from "./Waveform";
 
-function SaveIndicator(props: { state: SaveState }) {
+function SaveIndicator(props: {
+  state: SaveState;
+  /** offer 重试保存 here (the unsaved-result banner has its own) */
+  retry: boolean;
+  onRetry(): void;
+}) {
   const { state } = props;
   return (
-    <span
-      className="save-state"
-      data-testid="save-state"
-      data-state={state}
-      role="status"
-    >
-      {state === "saving" ? (
-        <LoaderCircle className="spin" size={13} aria-hidden />
-      ) : state === "failed" ? (
-        <TriangleAlert size={13} aria-hidden />
-      ) : (
-        <Check size={13} aria-hidden />
+    <>
+      <span
+        className="save-state"
+        data-testid="save-state"
+        data-state={state}
+        role="status"
+      >
+        {state === "saving" ? (
+          <LoaderCircle className="spin" size={13} aria-hidden />
+        ) : state === "failed" ? (
+          <TriangleAlert size={13} aria-hidden />
+        ) : (
+          <Check size={13} aria-hidden />
+        )}
+        {saveStateLabel(state)}
+      </span>
+      {state === "failed" && props.retry && (
+        // A failed save can always be tried again, by hand, right here.
+        <LinkButton
+          className="save-retry"
+          data-testid="save-retry"
+          onClick={props.onRetry}
+        >
+          重试保存
+        </LinkButton>
       )}
-      {saveStateLabel(state)}
-    </span>
+    </>
   );
 }
 
@@ -101,6 +120,8 @@ export interface PlayerCardProps {
   audio: LoadedAudio | null;
   audioError: string | null;
   saveState: SaveState;
+  /** the work is in the library (a failed save then concerns a later change) */
+  stored: boolean;
   lastLoad: LoadEvent | null;
   /** the work this one was derived from, when it is still in the library */
   parent: Project | undefined;
@@ -160,10 +181,11 @@ export const PlayerCard = memo(function PlayerCard(props: PlayerCardProps) {
   }, [lastLoad?.seq, lastLoad?.reason]);
 
   const arrangement = audio?.kind === "stems" ? audio.arrangement : undefined;
-  const notice = fitNotice(
-    project,
-    audio ? { bpm: arrangement?.bpm, duration: audio.duration } : null,
-  );
+  // What the loaded audio says about itself; the stored work otherwise.
+  const actual = audio
+    ? { bpm: arrangement?.bpm, duration: audio.duration }
+    : null;
+  const notice = fitNotice(project, actual);
   const total = audio?.duration ?? 0;
   const legacy = project.provider === "local" && project.config.engine === 1;
 
@@ -187,7 +209,9 @@ export const PlayerCard = memo(function PlayerCard(props: PlayerCardProps) {
         <div className="player-id">
           <TitleInput project={project} actions={actions} />
           <p className="player-meta" data-testid="work-meta">
-            <span className="player-meta-text">{metaLine(project)}</span>
+            <span className="player-meta-text">
+              {metaLine(project, actual)}
+            </span>
             <Badge
               tone={legacy ? "warn" : "neutral"}
               testId="engine-badge"
@@ -196,7 +220,7 @@ export const PlayerCard = memo(function PlayerCard(props: PlayerCardProps) {
                   ? "由 v0.2 的旧版引擎生成；再次生成会改用新版引擎"
                   : project.provider === "local"
                     ? "在这台设备上作曲与合成，不联网"
-                    : "由云端服务生成的混合音轨"
+                    : "云端生成的混合音轨，按当时的描述生成"
               }
             >
               {engineBadge(project)}
@@ -204,8 +228,17 @@ export const PlayerCard = memo(function PlayerCard(props: PlayerCardProps) {
             <Badge tone="accent" testId="work-version">
               v{project.revision}
             </Badge>
-            <SaveIndicator state={saveState} />
+            <SaveIndicator
+              state={saveState}
+              retry={props.stored}
+              onRetry={() => void actions.retrySave()}
+            />
           </p>
+          {notice && (
+            <p className="player-notice" data-testid="fit-notice">
+              {notice}
+            </p>
+          )}
           {parent && (
             <LinkButton
               className="player-parent"
@@ -246,7 +279,11 @@ export const PlayerCard = memo(function PlayerCard(props: PlayerCardProps) {
       </header>
 
       {props.audioError && (
-        <p className="notice notice-danger" role="alert" data-testid="audio-error">
+        <p
+          className="notice notice-danger"
+          role="alert"
+          data-testid="audio-error"
+        >
           <TriangleAlert size={16} aria-hidden />
           <span>{props.audioError}</span>
         </p>
@@ -276,14 +313,13 @@ export const PlayerCard = memo(function PlayerCard(props: PlayerCardProps) {
               />
             )}
           </div>
-          <Transport player={player} playRef={play} />
+          <Transport
+            player={player}
+            loopWork={project.config.loop}
+            onLoop={actions.setLoopAudition}
+            playRef={play}
+          />
         </>
-      )}
-
-      {notice && (
-        <p className="player-notice" data-testid="fit-notice">
-          {notice}
-        </p>
       )}
     </section>
   );

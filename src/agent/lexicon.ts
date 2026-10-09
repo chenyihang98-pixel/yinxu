@@ -20,6 +20,18 @@ export type Cat = "genre" | "scene" | "emotion" | "era" | "usage" | "game";
 export type Dim = "energy" | "complexity" | "reverb" | "tempo";
 /** Things a level word ("大一点", "less", "静音") can be attached to. */
 export type Target = TrackName | Dim;
+/**
+ * A number with its unit, as written. What it means — a total, a change, a
+ * point in time — is decided by the clause it stands in (rules.ts).
+ *  bpm: beats per minute   s: seconds   %: percent   x: a factor ("一半", "翻倍")
+ *  n: a bare number ("速度 96", "把鼓调到 80", "复杂度 0.3")
+ */
+export interface Quantity {
+  unit: "bpm" | "s" | "%" | "x" | "n";
+  value: number;
+  /** written as a clock time ("0:45") */
+  clock?: boolean;
+}
 export type Weights = Partial<Record<StyleId, number>>;
 
 export interface ArrHint {
@@ -49,17 +61,25 @@ export interface Lex {
   target?: Target;
   /** negation cue: "hard" excludes, "too" is a comparative ("不要太…") */
   neg?: "hard" | "too";
+  /** the bare "不": a cue only when the negated word follows at once ("不悲伤") */
+  bare?: boolean;
   dim?: Dim;
   dir?: 1 | -1;
   /** complaint words ("太吵", "单调"): the direction never inverts */
   fixed?: boolean;
   /** tempo words: position inside the style's BPM range, 0..1 */
   pos?: number;
+  /** a genre with a tempo of its own (Drum & Bass) */
+  tempo?: number;
   op?: "up" | "down" | "mute" | "unmute" | "add" | "only";
   side?: "pre" | "post" | "both";
   mod?: "too" | "more" | "slight" | "lot" | "very" | "somewhat";
   loop?: boolean;
-  seed?: boolean;
+  /**
+   * "melody": an explicit request for other notes ("换个旋律"); "again": another
+   * go at the piece ("再来一个"), a new melody only when nothing else is asked.
+   */
+  seed?: "melody" | "again";
   arr?: ArrHint;
   /** "换成 / 改成 / switch to" */
   change?: boolean;
@@ -77,7 +97,29 @@ export interface Lex {
   noDrums?: boolean;
   /** "长一点 / 短一点" */
   length?: 1 | -1;
-  percent?: number;
+  qty?: Quantity;
+  /** semitones to move the key by ("升一个调", "降半音") */
+  shift?: number;
+  /** "关系小调 / relative major" */
+  relative?: "major" | "minor";
+  /** "音调 / 调子 / pitch": 高 / 低 next to it move the key, not a fader */
+  pitch?: boolean;
+  /** the clause says what the music is for ("这是给…配的", "用在…里") */
+  ctx?: boolean;
+  /** resemblance ("像", "sounds like") */
+  like?: boolean;
+  /** a wish ("想要", "让它") */
+  want?: boolean;
+  /** "别的 / 其他乐器": anything but the thing named before */
+  other?: boolean;
+  /** "不好听 / 不喜欢": displeasure without a direction */
+  dislike?: boolean;
+  /** "保持 / 不变 / 别动": leave the thing named beside it alone */
+  keep?: boolean;
+  /** "这种感觉 / 这样": refers back to what was just described */
+  that?: boolean;
+  /** "恢复默认 / 全部恢复" */
+  reset?: "all" | "volumes";
   tag?: string;
   unsupported?: string;
 }
@@ -173,7 +215,9 @@ style("usage", "鬼畜", { cute: 2, chiptune: 1.5, dance: 1.5, bright: 1 }, { a:
 style("emotion", "活泼|lively", { bright: 2.2, cute: 2 }, { v: 0.8, a: 0.6, mode: "major" });
 style("emotion", "甜|甜美|甜蜜|sweet", { romantic: 2, cute: 1.5 }, { v: 0.8 });
 style("scene", "童话|fairy tale|fairytale", { dreamy: 2, cute: 2 }, { v: 0.6 });
-style("genre", "氛围|氛围感|氛围音乐|环境音|ambient|atmosphere|atmospheric|drone|soundscape", { ambient: 3.5, dreamy: 0.8, tension: 0.4 }, { a: -0.7 });
+style("genre", "氛围音乐|环境音|环境音乐|ambient|drone|soundscape", { ambient: 3.5, dreamy: 0.8, tension: 0.4 }, { a: -0.7 });
+// "有氛围感的咖啡店 vlog": a mood, not the ambient genre
+style("emotion", "氛围|氛围感|atmosphere|atmospheric", { ambient: 1.4, dreamy: 0.8, chill: 0.8, cinematic: 0.6 }, { a: -0.3 });
 style("usage", "冥想|打坐|正念|meditation|meditate|meditative|mindfulness|助眠|睡眠|睡前|入睡|哄睡|催眠|安眠|晚安|sleep|sleeping|bedtime|lullaby|摇篮曲|瑜伽|yoga|spa|按摩|白噪|白噪音|white noise|深呼吸|放空|发呆", { ambient: 4.5, dreamy: 0.8 }, { v: 0.1, a: -0.9, noDrums: true });
 style("emotion", "梦幻|空灵|梦境|梦|星空|星河|银河|仙境|云端|漂浮|失重|月光|极光|深海|海底|水下|dream|dreamy|dreams|ethereal|galaxy|stars|starry|floating|underwater", { dreamy: 3.5, ambient: 1.2 }, { v: 0.3, a: -0.5 });
 style("scene", "奇幻|魔法|精灵|fantasy|magic|magical|fairy", { dreamy: 2.2, cinematic: 1.2, epic: 1 });
@@ -272,40 +316,81 @@ add("手风琴|accordion", { cat: "genre", w: { acoustic: 1.5, festive: 0.8 }, u
 add("人声|歌声|唱歌|演唱|歌词|哼唱|合唱|女声|男声|童声|吟唱|vocal|vocals|voice|singing|lyrics|choir|humming|chant|歌手", { unsupported: "只制作纯音乐，不包含人声和歌词" });
 add("3/4拍|3/4|6/8拍|6/8|3拍子|三拍子|三拍", { unsupported: "暂不支持三拍子，按 4/4 拍编写" });
 
+style("genre", "流行|流行乐|流行音乐|pop|pop music|k pop|kpop|j pop|jpop", { bright: 2.2, dance: 1.2, corporate: 0.8 }, { v: 0.5, a: 0.3 });
+style("emotion", "抒情|lyrical|ballad|慢歌", { sad: 1.6, romantic: 1.6, cinematic: 0.8 }, { a: -0.4 });
+style("emotion", "情歌|love song", { romantic: 3, sad: 0.8 }, { v: 0.4, a: -0.3 });
+style("emotion", "幼稚|孩子气|childish", { cute: 2.5 }, { v: 0.5, a: 0.3 });
+style("usage", "电梯音乐|elevator music|muzak", { jazz: 2.5, chill: 2 }, { a: -0.3 });
+style("emotion", "躺平|摆烂|松弛感|citywalk|city walk|brunch", { chill: 2.6, acoustic: 0.8 }, { v: 0.3, a: -0.5 });
+style("usage", "魔性|洗脑|上头", { cute: 1.6, dance: 1.6, chiptune: 0.8 }, { a: 0.6 });
+style("genre", "drum and bass|drum & bass|drum n bass|drumz n bass|dnb|d&b|鼓打贝斯|jungle", { dance: 4, battle: 1.5 }, { a: 0.9, tempo: 170, arr: { drums: "breakbeat" } });
+style("genre", "强力和弦|power chord|power chords", { rock: 2.5 }, { a: 0.5 });
+style("genre", "808|采样|采样感|sample|sampled|sampling", { hiphop: 3 });
+style("usage", "思绪|心流|沉浸|flow state|in the flow|deep work", { focus: 2.5, ambient: 0.5 }, { a: -0.4 });
+style("emotion", "不协和|低沉|脉冲|收紧|dissonant|dissonance|pulsing", { tension: 2.2, cinematic: 0.4 }, { v: -0.4, mode: "minor" });
+style("usage", "现代|前进感|有前进感|现代感|modern|forward looking", { corporate: 2.4, retro: 0.3 }, { v: 0.4, a: 0.2 });
+add("刷子鼓|鼓刷|刷鼓|brushes|brushed drums|brush drums", { cat: "genre", w: { jazz: 2 }, arr: { drums: "swing" } });
+add("三个版本|两个版本|几个版本|多个版本|各一版|各来一版|several versions|three versions|two versions", { unsupported: "一次只生成一个版本，想要别的版本可以接着说" });
+add("撤销|撤销上一步|还原|回到上一版|上一版|上一个版本|换回去|改回去|原来的乐器|原来的音色|之前的乐器|原来那个|之前那个|刚才那个|undo|revert|go back", { unsupported: "我不能撤销上一步；之前的每个版本都保存在「我的作品」里，可以直接打开" });
+
 /* ---------- mixer targets ---------- */
 add("鼓点|鼓组|鼓声|鼓|架子鼓|打击乐|drums|drum|percussion|drumbeat", { target: "drums" });
 add("低音|贝斯|贝司|低频|bass|bassline|sub bass", { target: "bass" });
 add("主旋律|旋律|主奏|主音|melody|lead|topline", { target: "melody" });
 add("和弦|和声|伴奏|chords|chord|harmony|accompaniment|comping", { target: "chords" });
 add("混响|残响|回声|空间|reverb|echo", { target: "reverb" });
-add("速度|节奏|拍速|tempo|pace", { target: "tempo" });
-add("力度|能量|强度|动态|energy|intensity|dynamics", { target: "energy" });
-add("复杂度|音符|编曲|配器|complexity|notes|arrangement", { target: "complexity" });
+add("速度|节奏|拍速|节拍|速率|bpm|tempo|pace", { target: "tempo" });
+// the inspector's own labels come first: "旋律丰富度" is not the melody fader
+add("情绪能量|力度|能量|强度|动态|情绪|energy|intensity|dynamics", { target: "energy" });
+add("旋律丰富度|丰富度|丰富程度|复杂度|复杂程度|音符|编曲|配器|complexity|notes|arrangement", { target: "complexity" });
+add("空间混响|混响量|reverb amount", { target: "reverb" });
+add("音调|调子|音高|调门|pitch", { pitch: true });
 
 /* ---------- negation, change and list words ---------- */
 add("不要|不用|不想要|不需要|不能有|不要有|不要用|别要|别用|别带|别加|别有|别|没有|没|无|去掉|去除|移除|删掉|删除|拿掉|取消|不带|不含|不加|免|避免|关闭|关掉|关了|停掉|no|without|not|don't|dont|do not|remove|drop|exclude|avoid|kill|turn off|disable|don't use|dont use|do not use|never use|not using|no more|不使用|不采用|别使用", { neg: "hard" });
-add("不要太|别太|不能太|不用太|不要那么|别那么|不要这么|别这么|不要过于|not too|not so|less of", { neg: "too" });
+add("不是|并非|并不是|而非|而不是|不算|不能是|别是|千万别是|千万别|千万不要|拒绝|讨厌|不喜欢|不想听|不希望|除了|不要像|别像|不像是|别搞得跟|别搞得像|别弄得跟|别弄得像|别整得跟|别做得像|不要搞得像|不要弄得像|isn't|isnt|aren't|arent|is not|are not|anything but|non|nothing|except|don't want|dont want|do not want|don't like|dont like|do not like|i hate|hate", { neg: "hard" });
+add("代替|替换掉|取代|instead of|in place of|rather than", { neg: "hard" });
+add("不", { neg: "hard", bare: true });
+add("不要太|别太|不能太|不用太|不要那么|别那么|不要这么|别这么|不要过于|not too|not so|less of|不那么|没那么|没有那么|不太|不怎么|不是很|不是那么|不是特别|别过于|not that|not as|not very", { neg: "too" });
 add("静音|mute|muted|off", { op: "mute", side: "both" });
-add("换成|改成|改为|换为|变成|做成|切换到|切到|换到|改用|换个|来个|来一个|来首|来一首|来段|来一段|change to|switch to|make it|turn it into|convert to|变为|转成", { change: true });
+add("换成|改成|改为|换为|变成|做成|切换到|切换成|切到|切成|换到|改用|换个|换一个|换一种|换种|来个|来一个|来首|来一首|来段|来一段|change to|switch to|make it|turn it into|convert to|变为|转成|转为|换回|改回|变回|弄成|整成|replace with|swap to|swap for", { change: true });
 add("风格|曲风|风|style|genre|vibe|vibes|感觉|味道|味|范儿|调调|feel|feeling", { suffix: true });
-add("元素|色彩|flavor|flavour|touch of|hint of", { flavour: true });
+add("元素|色彩|flavor|flavour|touch of|hint of|一丝|些许|一抹|略带|稍带|夹杂", { flavour: true });
+/* ---------- what a clause is: context, resemblance, wish ---------- */
+add("这是给|是给|给我家|给我的|用在|用于|用来|放在|拿来|配的|用的|听的|看的|适合|适用于|适于|视频是|是讲|讲的是|是关于|客户说|老板说|朋友说|同事说|领导说|甲方说|导演说|this is for|it's for|its for|it is for|used for|used in|for my|for a|for the|suitable for|good for|my client says|my boss says", { ctx: true });
+add("像|像是|好像|类似|类似于|听起来像|听着像|听上去像|sounds like|sound like|like a|like an|似的|一样|那样", { like: true });
+add("想要|我要|希望|让它|让这首|让音乐|i want|i'd like|i would like|make it sound", { want: true });
+add("别的乐器|其他乐器|其它乐器|别的|其他|其它|别的音色|another instrument|something else|other instrument", { other: true });
+add("不好听|难听|不喜欢这个|不满意|不行|不对劲|不太行|don't like it|dont like it|sounds bad", { dislike: true });
+add("保持|保持不变|不变|别动|不要动|别改|不要改|留着|keep|unchanged|as is|stay the same", { keep: true });
+add("这种感觉|那种感觉|这种风格|这种味道|这个感觉|这个味道|这种|那种|这样|那样的|这样的|like that|like this", { that: true });
+add("恢复默认|恢复风格默认|按风格来|全部恢复|恢复全部|都恢复|全都恢复|reset|reset all|restore all|restore everything", { reset: "all" });
+add("恢复默认音量|音量恢复默认|默认音量|reset volumes|reset the mix", { reset: "volumes" });
 add("和|与|跟|及|以及|还有|、|and|&|or|plus", { link: true });
 add("但|但是|不过|而是|只是|然后|同时|并且|but|however|though|then|用|使用|采用|use|using|with|instead", { brk: true });
 
 /* ---------- level words ---------- */
-add("大|响|强|多|高|猛|足|突出|明显|靠前|louder|boost|boosted|higher|stronger|up", { op: "up", side: "post" });
-add("小|弱|少|低|淡|靠后|quieter|softer|lower|down", { op: "down", side: "post" });
-add("提高|增加|加强|加重|加大|提升|调高|调大|拉高|拉大|强调|放大|more|raise|increase|turn up|bring up|crank up|加强一下", { op: "up", side: "both" });
+add("大|响|强|多|高|猛|足|突出|明显|靠前|往前|往前放|往前靠|louder|boost|boosted|higher|stronger|up|upfront|forward", { op: "up", side: "post" });
+add("小|弱|少|低|淡|靠后|往后|往后放|往后靠|quieter|softer|lower|down|further back", { op: "down", side: "post" });
+// "低频太多了", "鼓太少": said of a part, the direction is fixed
+add("太多|太多了|过多|too much|too many", { op: "down", side: "both", fixed: true });
+add("太少|太少了|过少|too little|too few", { op: "up", side: "both", fixed: true });
+add("提高|增加|加强|加重|加大|提升|调高|调大|拉高|拉大|强调|放大|升高|升|more|raise|increase|turn up|bring up|crank up|加强一下", { op: "up", side: "both" });
 add("more|increase|raise", { op: "up", side: "pre" });
-add("降低|减少|减弱|减小|压低|调低|调小|拉低|收一下|收一点|削弱|less|reduce|turn down|bring down|tone down|小声", { op: "down", side: "both" });
+add("降低|减少|减弱|减小|压低|调低|调小|拉低|收一下|收一点|削弱|降|减|less|reduce|turn down|bring down|tone down|小声|decrease|minus", { op: "down", side: "both" });
 add("less|reduce", { op: "down", side: "pre" });
 add("突出|boost|louder", { op: "up", side: "both" });
 add("quieter|softer|lower", { op: "down", side: "both" });
 add("quieter|softer|calmer", { dim: "energy", dir: -1 });
 add("louder", { dim: "energy", dir: 1 });
-add("少一点|少点|少一些|少来点|少放点", { op: "down", side: "pre" });
-add("恢复|打开|开启|加回|加回来|加上|加入|带上|要有|保留|unmute|enable|bring back|turn on|restore|回来|on", { op: "unmute", side: "both" });
-add("加|加点|加一点|加些|加一些|来点|来一点|多点|多一点|多来点|多加点|加点儿|add|add some|add a bit of|some more", { op: "add", side: "pre", flavour: true });
+add("少来点|少放点", { op: "down", side: "pre" });
+add("少一点|少点|少一些|少些", { op: "down", side: "both" });
+// "不够燃", "旋律不够突出": more of it, please
+add("不够|还不够|不太够|还是不够|not enough", { mod: "more" });
+add("恢复|打开|开启|加回|加回来|加上|加入|带上|要有|保留|unmute|enable|bring back|turn on|restore|回来|on|加回去|放回来|add back", { op: "unmute", side: "both" });
+add("加|加点|加一点|加些|加一些|来点|来一点|多来点|多加点|加点儿|add|add some|add a bit of|some more", { op: "add", side: "pre", flavour: true });
+// "多一点鼓" and "情绪能量多一点"
+add("多点|多一点|多一些|多些", { op: "add", side: "both", flavour: true });
 add("带点|带一点|有点|一点点的|稍带|a touch of|a bit of|a little", { flavour: true });
 add("只要|只留|只保留|只剩|只听|只有|仅保留|只用|solo|only|just", { op: "only", side: "both", solo: true });
 add("纯|独奏|清弹", { solo: true });
@@ -321,7 +406,7 @@ add("很多|得多|多了|许多|大幅|明显地|非常多|a lot|much|way|far|s
 add("很|非常|特别|超|超级|极|极其|十分|相当|very|really|super|extremely", { mod: "very" });
 
 /* ---------- tempo, energy, complexity, reverb adjectives ---------- */
-add("慢|slow|slower|放慢|慢下来|slow down|缓", { dim: "tempo", dir: -1 });
+add("慢|slow|slower|放慢|慢下来|slow down|缓|降速|减速", { dim: "tempo", dir: -1 });
 add("快|fast|faster|加快|加速|提速|speed up|quicker|quick", { dim: "tempo", dir: 1 });
 add("要快|快的|快一些的|要慢|慢的", {});
 add("要快|快的", { dim: "tempo", dir: 1 });
@@ -330,15 +415,15 @@ add("很慢|非常慢|特别慢|极慢|超慢|慢板|adagio|largo|very slow", { 
 add("舒缓|缓慢|慢速|慢节奏|慢歌|徐缓|悠扬|slow tempo|downtempo", { dim: "tempo", dir: -1, pos: 0.2, a: -0.5 });
 add("中速|中等速度|中板|moderato|mid tempo|midtempo|moderate", { dim: "tempo", dir: 1, pos: 0.5 });
 add("轻快|明快|allegretto|brisk", { dim: "tempo", dir: 1, pos: 0.68, w: { bright: 1.6, acoustic: 0.6, cute: 0.6 }, cat: "emotion", v: 0.6, a: 0.4 });
-add("快节奏|快速|节奏快|高速|uptempo|up tempo|allegro|fast paced", { dim: "tempo", dir: 1, pos: 0.85, a: 0.6 });
+add("快节奏|快速|节奏快|高速|快板|uptempo|up tempo|allegro|fast paced", { dim: "tempo", dir: 1, pos: 0.85, a: 0.6 });
 add("飞快|极快|超快|很快|非常快|特别快|急速|疾速|presto|very fast", { dim: "tempo", dir: 1, pos: 1, a: 0.8 });
-add("有活力|活力|更强|强烈|有力量|有力|劲爆|带感|炸|嗨|热烈|澎湃|激烈|有冲击力|energetic|powerful|intense|punchy|harder|heavier|driving|hype|aggressive|有劲|带劲|力量|力量感|冲击力|张力|重", { dim: "energy", dir: 1, a: 0.6 });
+add("有活力|活力|更强|强烈|有力量|有力|劲爆|带感|炸|嗨|热烈|澎湃|激烈|有冲击力|energetic|powerful|intense|punchy|harder|heavier|driving|hype|aggressive|有劲|带劲|力量|力量感|冲击力|张力|重|爆发|爆发力|抢戏|抢镜|喧宾夺主|distracting", { dim: "energy", dir: 1, a: 0.6 });
 add("燃|燃向|很燃|超燃|高燃|热血|激昂", { dim: "energy", dir: 1 });
 add("轻|克制|内敛|低调|收敛|淡淡|subtle|restrained|understated|laid back", { dim: "energy", dir: -1 });
 add("吵|太吵|嘈杂|刺耳|闹|太闹|太炸|noisy|harsh|too loud|太响", { dim: "energy", dir: -1, fixed: true });
 add("闷|太闷|没劲|没精神|无力|太软|lifeless|weak|too soft", { dim: "energy", dir: 1, fixed: true });
-add("简单|简洁|简约|稀疏|干净|清爽|留白|simple|simpler|sparse|sparser|cleaner|less busy|less complex", { dim: "complexity", dir: -1 });
-add("丰富|复杂|密集|层次|有层次|层次感|饱满|华丽|花哨|细节|变化|起伏|跌宕|rich|richer|complex|busier|layered|more layers|more notes|intricate|更多音符", { dim: "complexity", dir: 1 });
+add("简单|简洁|简约|稀疏|稀|疏|干净|清爽|留白|simple|simpler|sparse|sparser|cleaner|less busy|less complex", { dim: "complexity", dir: -1 });
+add("丰富|复杂|密集|层次|有层次|层次感|饱满|华丽|花哨|细节|变化|起伏|跌宕|rich|richer|complex|busier|layered|more layers|more notes|intricate|更多音符|密|紧凑|dense|denser", { dim: "complexity", dir: 1 });
 add("单调|太单调|无聊|太无聊|平淡|太平淡|乏味|枯燥|太重复|重复感|boring|monotonous|dull|repetitive|too flat", { dim: "complexity", dir: 1, fixed: true });
 add("乱|太乱|杂乱|太满|太花|太杂|messy|cluttered|too busy", { dim: "complexity", dir: -1, fixed: true });
 add("空间感|空旷|宽广|大厅感|教堂|hall|cathedral|spacious|roomy|wet|wetter|湿|更多混响|增加混响", { dim: "reverb", dir: 1 });
@@ -351,13 +436,21 @@ add("亮", { mode: "major", dim: "energy", dir: 1 });
 add("暗|darker", { mode: "minor", dim: "energy", dir: -1 });
 add("大调|major key|in major", { mode: "major" });
 add("小调|minor key|in minor", { mode: "minor" });
-add("长|longer|加长|延长", { length: 1 });
-add("短|shorter|缩短", { length: -1 });
+add("长|longer|long|加长|延长|拉长|extend|lengthen", { length: 1 });
+add("短|shorter|short|缩短|shorten|剪短|压缩", { length: -1 });
+add("关系小调|平行小调|relative minor", { relative: "minor" });
+add("关系大调|平行大调|relative major", { relative: "major" });
+/* ---------- amounts written as words ---------- */
+add("一半|减半|砍半|对半|half|halve", { qty: { unit: "x", value: 0.5 } });
+add("一倍|翻倍|加倍|翻一倍|两倍|double|twice", { qty: { unit: "x", value: 2 } });
+add("拉满|开到最大|调到最大|最大|到头|maxed|max|maximum", { qty: { unit: "%", value: 100 } });
 
 /* ---------- loop, new take, arrangement ---------- */
 add("循环|无缝循环|无缝|可循环|循环播放|游戏循环|首尾相接|loop|loops|loopable|looping|looped|seamless", { loop: true });
-add("不循环|非循环|完整结尾|有结尾|有个结尾|带结尾|完整的结尾|自然结尾|结尾渐弱|渐弱结尾|淡出|渐出|收尾|完整版|有始有终|non loop|one shot|fade out|with an ending|proper ending", { loop: false });
-add("换一版|换个版本|换一个版本|换个旋律|换一个旋律|换旋律|新旋律|新的旋律|重新编曲|重新生成|重新来|重来|再来一个|再来一首|再来一版|再来一遍|再做一个|再做一版|另一个版本|另一版|换一首|不一样的旋律|another take|another version|another one|new melody|variation|variant|reroll|re roll|regenerate|try again|different melody|one more", { seed: true });
+add("不循环|非循环|完整结尾|有结尾|有个结尾|带结尾|完整的结尾|自然结尾|结尾渐弱|渐弱结尾|淡出|渐出|渐弱|收尾|完整版|有始有终|要有结尾|要有个结尾|要结尾|需要结尾|需要一个结尾|需要有结尾|有明确的结尾|明确的结尾|加个结尾|加一个结尾|结尾要自然|自然的结尾|自然收尾|要收住|收住|non loop|one shot|fade out|with an ending|with an outro|needs an ending|proper ending|a real ending", { loop: false });
+// another go at the piece: a new melody only when the message asks for nothing else
+add("换一版|换个版本|换一个版本|重新来|重来|再来一个|再来一首|再来一版|再来一遍|再做一个|再做一版|另一个版本|另一版|换一首|another take|another version|another one|one more take|one more version|try again|once more", { seed: "again" });
+add("换个旋律|换一个旋律|换旋律|换一版旋律|换一版新旋律|新旋律|新的旋律|旋律换一个|旋律换掉|旋律重写|重写旋律|重新编曲|重新生成|不一样的旋律|另一个旋律|不同的旋律|new melody|different melody|another melody|reroll|re roll|regenerate|rewrite the melody", { seed: "melody" });
 add("铺底|长音铺底|弦乐铺底|氛围铺底|垫音|铺垫|pad|pads", { arr: { pad: true } });
 add("琶音|分解和弦|arp|arps|arpeggio|arpeggios", { arr: { arp: true } });
 add("副旋律|对位|对旋律|第二旋律|counter melody|countermelody|counterpoint", { arr: { counter: true } });
@@ -374,10 +467,10 @@ add("持续低音|pedal bass|pedal tone", { arr: { bass: "pedal" } });
 add("切分贝斯|syncopated bass", { arr: { bass: "syncopated" } });
 add("高八度|升八度|高一个八度|octave up|higher octave|高音区", { arr: { register: "high" } });
 add("低八度|降八度|低一个八度|octave down|lower octave|低音区", { arr: { register: "low" } });
-add("前奏|间奏|尾奏|结尾|副歌|高潮|主歌|开头|中段|桥段|intro|outro|chorus|verse|bridge|drop", { section: true });
+add("前奏|间奏|尾奏|结尾|副歌|高潮|主歌|开头|中段|桥段|前半段|后半段|前半|后半|中间部分|intro|outro|chorus|verse|bridge|drop", { section: true });
 
 /* ---------- words that only stop a shorter word from matching inside them ---------- */
-add("特别|区别|别致|无限|无人|无敌|无所谓|免费|没想到|没关系|有没有|鼓励|鼓掌|一鼓作气|畅快|爽快|痛快|凉快|快活|快感|快递|快餐|快手|快门|尽快|赶快|慢慢|慢生活|傲慢|年轻|轻盈|减轻|轻奢|沉重|厚重|重要|重复|重新|尊重|庄重|隆重|稳重|重逢|注重|重点|盛大|伟大|强大|大海|大片|大家|大约|大概|最大|巨大|大学|大作|高大上|远大|小孩|小朋友|小众|小夜曲|小品|小日子|小确幸|小红书|小视频|短小|短视频|短片|长镜头|长大|成长|漂亮|响亮|高兴|高山|高级感|低谷|多彩|多么|少女|少年感|淡雅|暗恋|干杯|湿润|点击|点赞|一些人|有些|风景|风吹|风雨|微风|晚风|春风|台风|味觉|空气|空中|天空|时空|节奏感|音乐节|电子邮件|产品经理|月亮|天亮|点亮|照亮|闪亮|时长|长度|长短|长久|漫长|长夜|长安|潮汐|浪潮|热潮|a minor detail|in a minute|no problem|not sure|for a|on the|on a|up to|调整|大调整|小调整|微调", {});
+add("特别|区别|别致|无限|无人|无敌|无所谓|免费|没想到|没关系|有没有|鼓励|鼓掌|一鼓作气|畅快|爽快|痛快|凉快|快活|快感|快递|快餐|快手|快门|尽快|赶快|慢慢|慢生活|傲慢|年轻|轻盈|减轻|轻奢|沉重|厚重|重要|重复|重新|尊重|庄重|隆重|稳重|重逢|注重|重点|盛大|伟大|强大|大海|大片|大家|大约|大概|最大|巨大|大学|大作|高大上|远大|小孩|小朋友|小众|小夜曲|小品|小日子|小确幸|小红书|小视频|短小|短视频|短片|长镜头|长大|成长|漂亮|响亮|高兴|高山|高级感|低谷|多彩|多么|少女|少年感|淡雅|暗恋|干杯|湿润|点击|点赞|一些人|有些|风景|风吹|风雨|微风|晚风|春风|台风|味觉|空气|空中|天空|时空|节奏感|音乐节|电子邮件|产品经理|月亮|天亮|点亮|照亮|闪亮|时长|长度|长短|长久|漫长|长夜|长安|潮汐|浪潮|热潮|a minor detail|in a minute|no problem|not sure|for a|on the|on a|up to|调整|大调整|小调整|微调|one more thing|不错|不过|不如|不同|不仅|不但|不管|不断|不止|不然|不久|不知道|不确定|不一定|不一样|不可以|不可能|不小心|不好意思|不客气|不得不|不停|不见|不了|不到|不超过|不少于|不低于|不高于|不会|不能|不突兀|不知不觉|不可思议|图像|影像|想象|想像|头像|偶像|肖像|录像|画像|雕像|好听|升级版|降临|降落|下降|减肥|减压|加油|加班|满足|圆满|充满|满满|大小|多少|高低|强弱|快慢|半音|全音|要不要|好不好|行不行|能不能|可不可以|是不是|对不对|差不多|了不起|来不及|忍不住|用不着|说不定|要不然|只不过|不得了|不好说", {});
 
 export const STYLE_COORDS: Record<StyleId, [number, number]> = {
   bright: [0.8, 0.5],
@@ -499,14 +592,14 @@ export function normalizeText(input: string): string {
     .trim()
     .replace(
       new RegExp(
-        `${CN_NUM}(?=\\s*(?:分钟|分半|分\\s*[\\d零〇一二两三四五六七八九十]+\\s*秒|秒|年代|小节|个半分钟))`,
+        `${CN_NUM}(?=\\s*(?:分钟|分半|分\\s*[\\d零〇一二两三四五六七八九十]+\\s*秒|秒|年代|小节|个半分钟|个?\\s*bpm|个半音|个全音))`,
         "g",
       ),
       (m) => String(parseChineseNumber(m)),
     )
     .replace(
       new RegExp(
-        `((?:速度|节拍|拍速|bpm|tempo|每分钟)\\s*(?:设?为|调?到|改成?|是|=|:)?\\s*)(${CN_NUM})`,
+        `((?:速度|节拍|拍速|bpm|tempo|每分钟|百分之)\\s*(?:设?为|调?到|降到|升到|提到|改成?|是|=|:)?\\s*)(${CN_NUM})`,
         "gi",
       ),
       (_m, head: string, num: string) => head + parseChineseNumber(num),
@@ -555,6 +648,25 @@ interface Span {
 
 /** A key signature written as a key: "C大调", "升F小调", "降B大调", "F# minor", "key of D". */
 function findKey(text: string): (Span & { key: string }) | undefined {
+  // "bB大调", "#F小调": the accidental written in front of a capital letter
+  const front = /(?<![A-Za-z#])([b#])([A-G])\s*(大调|小调|调(?!性))/.exec(text);
+  if (front)
+    return {
+      start: front.index,
+      end: front.index + front[0].length,
+      key: keyName(
+        pitchClass(front[2], front[1]),
+        front[3] === "小调" ? "minor" : "major",
+      ),
+    };
+  // "Am 调", "F#m 调": a chord-style name for a minor key
+  const chord = /(?<![A-Za-z#])([A-G])([#b])?m\s*调(?!性)/.exec(text);
+  if (chord)
+    return {
+      start: chord.index,
+      end: chord.index + chord[0].length,
+      key: keyName(pitchClass(chord[1], chord[2]), "minor"),
+    };
   const cn = /(?<![A-Za-z])(升|降)?\s*([A-Ga-g])\s*([#b])?\s*(大调|小调)/.exec(
     text,
   );
@@ -630,8 +742,12 @@ export interface Analysis {
   /** lower-case copy of `text` with every parsed number blanked out */
   lower: string;
   tokens: Token[];
+  /**
+   * The first tempo and the first length the text names, as written. Whether
+   * each is a new total, a change ("快 10 bpm") or a point in time ("第 20 秒")
+   * is decided by the clause it stands in; the caller also clamps.
+   */
   bpm?: number;
-  /** seconds as written; the caller clamps */
   duration?: number;
   key?: string;
 }
@@ -730,69 +846,135 @@ export function analyse(input: string): Analysis {
     if (isEra) era(decade, span);
   }
 
-  const bpm =
-    /(\d{2,3})\s*(?:bpm\b|拍\/分|拍每分钟)/.exec(lower) ??
-    /(?:bpm|速度|节拍|拍速|tempo|每分钟)\s*(?:设?为|调?到|改成?|是|在|=|:)?\s*(\d{2,3})(?![\d%])(?!\s*(?:秒|分|s\b|%))(?:\s*拍)?/.exec(
-      lower,
-    );
-  if (bpm) {
-    result.bpm = Number(bpm[1]);
-    blank({ start: bpm.index, end: bpm.index + bpm[0].length });
-  }
-
-  const durations: [RegExp, (m: RegExpExecArray) => number][] = [
-    [/半分钟|half a minute/, () => 30],
-    [/(\d+)\s*分钟?\s*(\d{1,2})\s*秒/, (m) => Number(m[1]) * 60 + Number(m[2])],
-    [/(\d+)\s*(?:分半钟?|个半分钟)/, (m) => Number(m[1]) * 60 + 30],
-    [
-      /(\d+)\s*(?:minutes?|mins?)\s*(?:and\s*)?(\d{1,2})\s*(?:seconds?|secs?|s)\b/,
-      (m) => Number(m[1]) * 60 + Number(m[2]),
-    ],
-    [/(\d+(?:\.\d+)?)\s*(?:分钟|minutes?\b|mins?\b)/, (m) => Number(m[1]) * 60],
-    [/\b(one|two)\s*minutes?\b/, (m) => (m[1] === "one" ? 60 : 120)],
-    [/(\d+(?:\.\d+)?)\s*(?:秒钟?|seconds?\b|secs?\b)/, (m) => Number(m[1])],
-    [/(?<![\d.:a-z])(\d{1,3})\s*s\b/, (m) => Number(m[1])],
-  ];
-  for (const [pattern, seconds] of durations) {
-    const m = pattern.exec(lower);
-    if (!m) continue;
-    const value = seconds(m);
-    blank({ start: m.index, end: m.index + m[0].length });
-    // "下一秒" and friends are not a length request
-    if (value >= 5) {
-      result.duration = value;
-      break;
+  const amount = (span: Span, qty: Quantity) => {
+    extra.push({ ...span, text: lower.slice(span.start, span.end), lex: { qty } });
+    blank(span);
+  };
+  const each = (
+    pattern: RegExp,
+    read: (m: RegExpExecArray) => Quantity | undefined,
+  ) => {
+    // matches are taken from the text as it is before this pattern blanks any
+    for (const m of [...lower.matchAll(pattern)] as RegExpExecArray[]) {
+      const qty = read(m);
+      if (qty) amount({ start: m.index, end: m.index + m[0].length }, qty);
     }
-  }
-  if (result.duration === undefined) {
-    const clock = /(?<![\d:])(\d{1,2}):([0-5]\d)(?![\d:])/.exec(lower);
-    if (
-      clock &&
-      !/(?:凌晨|早上|上午|中午|下午|晚上|夜里|点|at)\s*$/.test(
-        lower.slice(0, clock.index),
-      ) &&
-      !/^\s*(?:am|pm|点)/.test(lower.slice(clock.index + clock[0].length))
-    ) {
-      result.duration = Number(clock[1]) * 60 + Number(clock[2]);
-      blank({ start: clock.index, end: clock.index + clock[0].length });
-    }
-  }
+  };
 
-  for (const m of [...lower.matchAll(/(\d{1,3})\s*%/g)]) {
+  // moving the key by steps: "升一个调", "降半音", "升高两个半音", "up a semitone"
+  const steps = (count: string | undefined, unit: string) =>
+    (count === undefined || count === "" || count === "a" || count === "one"
+      ? 1
+      : count === "two"
+        ? 2
+        : /^\d+$/.test(count)
+          ? Number(count)
+          : parseChineseNumber(count)) * (/半|semi|half/.test(unit) ? 1 : 2);
+  for (const m of [
+    ...lower.matchAll(
+      /(升高?|调高|提高|降低?|调低)\s*(\d+|[一二两三四五六])?\s*个?\s*(半音|半个调|全音|调|key)(?![性式整])/g,
+    ),
+    ...lower.matchAll(
+      /(高|低)\s*(\d+|[一二两三四五六])\s*个?\s*(半音|半个调|全音|调|key)(?![性式整])/g,
+    ),
+    ...lower.matchAll(
+      /\b(up|down)\s+(?:by\s+)?(a|one|two|\d+)?\s*(semitones?|half steps?|whole steps?|whole tones?)\b/g,
+    ),
+  ] as RegExpExecArray[]) {
     const span = { start: m.index, end: m.index + m[0].length };
-    extra.push({ ...span, text: m[0], lex: { percent: Number(m[1]) } });
+    if (lower.slice(span.start, span.end).includes(BLANK)) continue;
+    const sign = /^(?:升|调高|提高|高|up)/.test(m[1]) ? 1 : -1;
+    extra.push({
+      ...span,
+      text: lower.slice(span.start, span.end),
+      lex: { shift: sign * Math.min(12, steps(m[2], m[3])) },
+    });
     blank(span);
   }
 
-  result.lower = lower;
-  result.tokens = [...tokenize(lower), ...extra].sort(
-    (a, b) => a.start - b.start,
+  // tempo: "120bpm", "快 10 个 bpm", "每分钟 96 拍", "120 拍", "bpm=95", "BPM128"
+  const tempo = (m: RegExpExecArray): Quantity => ({
+    unit: "bpm",
+    value: Number(m[1]),
+  });
+  each(/(?<![\d./])(\d{1,3})\s*(?:个\s*)?(?:bpm\b|拍\/分|拍每分钟)/g, tempo);
+  each(/每分钟\s*(\d{2,3})\s*拍?/g, tempo);
+  each(/(?<![\d./])(\d{2,3})\s*拍(?![子底\/])/g, tempo);
+  each(/bpm\s*[:=]?\s*(\d{2,3})(?![\d%])/g, tempo);
+  // "速度 96", "节拍 140", "tempo 88": the word stays a word, the number is a tempo
+  for (const m of [
+    ...lower.matchAll(
+      /(?:速度|节拍|拍速|tempo|每分钟)\s*(?:设?为|调?到|改成?|是|在|=|:)?\s*(\d{2,3})(?![\d%.])(?!\s*(?:秒|分|s|%))(?:\s*拍)?/g,
+    ),
+  ] as RegExpExecArray[]) {
+    const start = m.index + m[0].indexOf(m[1]);
+    amount(
+      { start, end: m.index + m[0].length },
+      { unit: "bpm", value: Number(m[1]) },
+    );
+  }
+
+  // lengths and points in time
+  const seconds = (value: number): Quantity => ({ unit: "s", value });
+  each(/半分钟|half a minute/g, () => seconds(30));
+  each(/(\d+)\s*分钟?\s*(\d{1,2})\s*秒/g, (m) =>
+    seconds(Number(m[1]) * 60 + Number(m[2])),
   );
+  each(/(\d+)\s*(?:分半钟?|个半分钟)/g, (m) => seconds(Number(m[1]) * 60 + 30));
+  each(
+    /(\d+)\s*(?:minutes?|mins?)\s*(?:and\s*)?(\d{1,2})\s*(?:seconds?|secs?|s)\b/g,
+    (m) => seconds(Number(m[1]) * 60 + Number(m[2])),
+  );
+  each(/(\d+(?:\.\d+)?)\s*(?:分钟|minutes?\b|mins?\b)/g, (m) =>
+    seconds(Number(m[1]) * 60),
+  );
+  each(/\b(one|two)\s*minutes?\b/g, (m) => seconds(m[1] === "one" ? 60 : 120));
+  each(/(\d+(?:\.\d+)?)\s*(?:秒钟?|seconds?\b|secs?\b)/g, (m) =>
+    seconds(Number(m[1])),
+  );
+  each(/(?<![\d.:a-z])(\d{1,3})\s*s\b/g, (m) => seconds(Number(m[1])));
+  each(/(?<![\d:])(\d{1,2}):([0-5]\d)(?![\d:])/g, (m) => {
+    // "凌晨 3:00" is a time of day
+    const before = lower.slice(0, m.index);
+    const after = lower.slice(m.index + m[0].length);
+    if (
+      /(?:凌晨|早上|上午|中午|下午|晚上|夜里|点|at)\s*$/.test(before) ||
+      /^\s*(?:am|pm|点)/.test(after)
+    )
+      return undefined;
+    return { unit: "s", value: Number(m[1]) * 60 + Number(m[2]), clock: true };
+  });
+
+  each(/(\d{1,3})\s*%/g, (m) => ({ unit: "%", value: Number(m[1]) }));
+  each(/百分之\s*(\d{1,3})/g, (m) => ({ unit: "%", value: Number(m[1]) }));
+
+  const words = tokenize(lower);
+  // bare numbers, wherever no dictionary word ("8 bit", "3/4") claimed them
+  const taken = new Uint8Array(lower.length);
+  for (const word of words) taken.fill(1, word.start, word.end);
+  for (const m of [
+    ...lower.matchAll(/(?<![\d.:/a-z#])(\d{1,3}(?:\.\d+)?)(?![\d:/a-z%])/g),
+  ] as RegExpExecArray[]) {
+    if (taken[m.index] || taken[m.index + m[0].length - 1]) continue;
+    amount(
+      { start: m.index, end: m.index + m[0].length },
+      { unit: "n", value: Number(m[1]) },
+    );
+  }
+
+  result.lower = lower;
+  result.tokens = [...words, ...extra].sort((a, b) => a.start - b.start);
+  result.bpm = result.tokens.find(({ lex }) => lex.qty?.unit === "bpm")?.lex.qty
+    ?.value;
+  // "下一秒" and friends are not a length
+  result.duration = result.tokens.find(
+    ({ lex }) => lex.qty?.unit === "s" && lex.qty.value >= 5,
+  )?.lex.qty?.value;
   return result;
 }
 
 const STOPWORDS =
-  /\b(?:the|a|an|to|it|its|is|be|of|please|bit|little|volume|level|track|part|some|in|my|this|that|sound|for|me|them)\b/g;
+  /\b(?:the|a|an|to|it|its|is|be|of|please|bit|little|volume|level|track|part|some|in|my|this|that|sound|for|me|them|by|at|any|want|need|like|just|i|we|you|can|could|would|have|get|give)\b/g;
 
 /**
  * The text between two positions when it is short enough to belong to one

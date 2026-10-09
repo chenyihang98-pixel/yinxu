@@ -1,4 +1,4 @@
-'use strict';
+"use strict";
 
 /**
  * The renderer's Content-Security-Policy. This string must stay literally

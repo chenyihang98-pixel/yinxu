@@ -72,6 +72,8 @@
 .work-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  /* a card that grows (the delete question) does not stretch its row */
+  align-items: start;
   gap: var(--s-4);
 }
 
@@ -212,15 +214,28 @@
 }
 
 .work-version {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 62%;
+  flex: none;
 }
 
+/* "源自 v2": gives way to the date only when a renamed parent makes it long */
+.work-origin {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* the work that is open in 创作: a label on its cover */
 .work-now {
-  flex: none;
-  color: var(--accent-hi);
+  position: absolute;
+  top: var(--s-2);
+  left: var(--s-2);
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--t-12);
   font-weight: 600;
+  line-height: 18px;
+  pointer-events: none;
 }
 
 .work-date {
@@ -292,6 +307,14 @@
     right: 6px;
     bottom: 6px;
     padding: 0 5px;
+  }
+
+  /* above the play button of the small cover, not on it */
+  .work-now {
+    top: 3px;
+    left: 3px;
+    padding: 0 6px;
+    line-height: 17px;
   }
 
   .work-body {
@@ -420,4 +443,10 @@
     flex-basis: 100%;
     max-width: none;
   }
+}
+
+.damaged-audio {
+  margin-top: 2px;
+  color: var(--warn);
+  font-size: var(--t-12);
 }

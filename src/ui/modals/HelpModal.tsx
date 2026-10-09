@@ -10,6 +10,11 @@ import {
   PenLine,
   ShieldCheck,
 } from "lucide-react";
+import {
+  DESCRIPTION_EXAMPLES,
+  PARAMETER_EXAMPLE,
+  REFINE_EXAMPLES,
+} from "../../state/content";
 import { useApp } from "../../state/context";
 import { Modal } from "../primitives/Modal";
 
@@ -63,9 +68,10 @@ export function HelpModal() {
             写下场景、情绪和想要的乐器就够了，其余交给制作人。也可以直接说参数。
           </p>
           <ul className="help-examples">
-            <li>雨夜咖啡馆，慵懒的钢琴和轻轻的鼓点</li>
-            <li>国风游戏里的江南小镇，古筝和竹笛，可以循环</li>
-            <li>90 BPM，D 小调，一分钟，完整结尾</li>
+            {DESCRIPTION_EXAMPLES.slice(0, 2).map((example) => (
+              <li key={example.text}>{example.text}</li>
+            ))}
+            <li>{PARAMETER_EXAMPLE.text}</li>
           </ul>
         </Section>
 
@@ -74,22 +80,15 @@ export function HelpModal() {
           title="制作人听得懂什么"
         >
           <dl className="help-list">
-            <div>
-              <dt>速度与情绪</dt>
-              <dd>慢一点、更有活力、安静一点、紧张一些</dd>
-            </div>
-            <div>
-              <dt>乐器与分轨</dt>
-              <dd>换成古筝、不要鼓、贝斯轻一点、加点弦乐铺底</dd>
-            </div>
-            <div>
-              <dt>风格与结构</dt>
-              <dd>改成爵士风格、改成完整结尾、时长改成 60 秒</dd>
-            </div>
-            <div>
-              <dt>旋律</dt>
-              <dd>换一版旋律（其余不变）</dd>
-            </div>
+            {REFINE_EXAMPLES.map((group) => (
+              <div key={group.topic}>
+                <dt>{group.topic}</dt>
+                <dd>
+                  {group.phrases.join("、")}
+                  {group.topic === "旋律" ? "（其余不变）" : ""}
+                </dd>
+              </div>
+            ))}
           </dl>
           <p className="muted">
             每次调整都会生成一个新版本，之前的版本仍在「我的作品」里。混音推子是即时的，不会产生新版本。
@@ -113,7 +112,7 @@ export function HelpModal() {
           </dl>
         </Section>
 
-        <Section icon={<Cloud size={16} />} title="本地作曲与云端 AI 音乐">
+        <Section icon={<Cloud size={16} />} title="本地作曲与云端生成">
           <dl className="help-list">
             <div>
               <dt>本地作曲</dt>
@@ -122,11 +121,11 @@ export function HelpModal() {
               </dd>
             </div>
             <div>
-              <dt>云端 AI 音乐</dt>
+              <dt>云端生成</dt>
               <dd>
                 {platform.isDesktop
-                  ? "由你配置的服务商生成一条混合音轨，按服务商计费，不能分轨调整。取消等待后，已提交的生成仍可能计费。"
-                  : "只在桌面版中提供：由服务商生成一条混合音轨，按服务商计费。"}
+                  ? "由你配置的 AI 音乐服务生成一条混合音轨，按服务商计费，不能分轨调整。每一次修改（发送、应用调整、重新生成）都是一次新的付费请求，重新生成整首音乐，不保留原旋律；发送前会先询问。取消等待后，已提交的生成仍可能计费。"
+                  : "只在桌面版中提供：由 AI 音乐服务生成一条混合音轨，按服务商计费。"}
               </dd>
             </div>
           </dl>
@@ -138,13 +137,20 @@ export function HelpModal() {
             <Key keys={["←"]}>后退 5 秒</Key>
             <Key keys={["→"]}>前进 5 秒</Key>
             <Key keys={["L"]}>循环试听</Key>
-            <Key keys={["Ctrl", "Enter"]}>发送</Key>
+            <Key keys={["Enter"]}>发送修改</Key>
+            <Key keys={["Shift", "Enter"]}>换行</Key>
+            <Key keys={["Ctrl", "Enter"]}>生成 / 发送</Key>
             {/* Browsers keep Ctrl+N for themselves: desktop only. */}
             {platform.isDesktop && <Key keys={["Ctrl", "N"]}>新建创作</Key>}
             <Key keys={["Ctrl", "E"]}>导出</Key>
             <Key keys={["Esc"]}>关闭弹窗</Key>
           </dl>
-          <p className="muted">在输入框里打字时，空格、方向键和 L 不会触发快捷键。</p>
+          <p className="muted">
+            Enter 和 Shift+Enter
+            用在「告诉制作人怎么改」的输入框里；写新作品的描述时 Enter
+            是换行，用 Ctrl+Enter 生成。在输入框里打字时，空格、方向键和 L
+            不会触发快捷键。
+          </p>
         </Section>
 
         <Section icon={<ShieldCheck size={16} />} title="隐私">
@@ -153,7 +159,7 @@ export function HelpModal() {
             {platform.isDesktop ? "这台电脑上" : "这个浏览器里"}
             ，不会上传。
             {platform.isDesktop
-              ? "只有在你选择云端引擎或大模型制作人时，描述文字才会发送给你配置的服务商。"
+              ? "只有在你选择云端生成或制作人大模型时，描述文字才会发送给你配置的服务商。"
               : "清除网站数据会删除作品，重要的请先导出。"}
           </p>
         </Section>

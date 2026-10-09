@@ -46,7 +46,11 @@ export function Button(props: ButtonProps) {
       {...rest}
     >
       {busy ? (
-        <LoaderCircle className="spin" size={size === "lg" ? 16 : 14} aria-hidden />
+        <LoaderCircle
+          className="spin"
+          size={size === "lg" ? 16 : 14}
+          aria-hidden
+        />
       ) : (
         icon
       )}

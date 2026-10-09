@@ -140,8 +140,7 @@ export const airpad: Voice = {
       const incB = inc * (1 + detune);
       for (let k = 2; k <= top; k++) {
         gainA[k] =
-          base[k] *
-          (1 + BREATHE * sinTurns(lfoPhase[k] + lfoRate[k] * from));
+          base[k] * (1 + BREATHE * sinTurns(lfoPhase[k] + lfoRate[k] * from));
         gainB[k] =
           base[k] *
           (1 +

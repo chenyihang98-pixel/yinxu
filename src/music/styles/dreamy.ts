@@ -164,7 +164,8 @@ export const dreamy: StyleDef = {
     pad: { gain: 0.4, reverb: 0.45, chorus: 0.25, width: 0.9, lowCut: 110 },
     comp: { gain: 0.42, reverb: 0.4, chorus: 0.3 },
     bass: { gain: 0.6, drive: 0.3 },
-    kit: { gain: 1.05, reverb: 0.3 },
+    // (the soft kit only plays far above the style's own energy, where the tune climbs: it must not sink under it)
+    kit: { gain: 1.12, reverb: 0.3 },
   },
   space: {
     size: 0.88,

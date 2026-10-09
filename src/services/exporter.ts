@@ -12,7 +12,7 @@ import { saveFile } from "../platform";
 import type { FileFormat } from "../platform";
 import { originalFormat, originalFormatLabel } from "../providers";
 import { exportProject } from "../storage";
-import type { Project, TrackName } from "../types";
+import type { AudioFormat, Project, TrackName } from "../types";
 import type { ExportRequest, LoadedAudio } from "../state/types";
 
 export const STEM_LABELS: Record<TrackName, string> = {
@@ -54,10 +54,7 @@ export interface ExportDeps {
 const defaults: ExportDeps = { mixStems, encodeWav, saveFile, exportProject };
 
 export type ExportOptionId =
-  | "mix"
-  | `stem-${TrackName}`
-  | "original"
-  | "project";
+  "mix" | `stem-${TrackName}` | "original" | "project";
 
 export interface ExportOption {
   /** data-testid: export-option-<id> */
@@ -117,14 +114,35 @@ export function exportChoices(
       id: "project",
       request: { kind: "project" },
       title: "工程文件 JSON",
-      detail: "保存编曲参数、种子和对话，可重新导入继续调整",
+      detail: "保存编曲设置、旋律和对话，可重新导入继续调整",
     });
   return {
     options,
     canRepeat: !!audio && audio.kind === "stems" && loop,
-    canFade:
-      !!audio && !loop && (audio.kind === "mix" || audio.engine === 1),
+    canFade: !!audio && !loop && (audio.kind === "mix" || audio.engine === 1),
   };
+}
+
+/**
+ * The container of an audio file by its first bytes, for a Blob whose MIME
+ * type is missing or unknown: paid audio is still saved under a name that
+ * opens. null when the bytes are none of the four formats.
+ */
+export function sniffAudioFormat(data: ArrayBuffer): AudioFormat | null {
+  const bytes = new Uint8Array(data, 0, Math.min(12, data.byteLength));
+  const ascii = (from: number, text: string) =>
+    bytes.length >= from + text.length &&
+    [...text].every(
+      (char, index) => bytes[from + index] === char.charCodeAt(0),
+    );
+  if (ascii(0, "RIFF") && ascii(8, "WAVE")) return "wav";
+  if (ascii(0, "fLaC")) return "flac";
+  if (ascii(4, "ftyp")) return "m4a";
+  // ID3 tag, or an MPEG audio frame sync
+  if (ascii(0, "ID3")) return "mp3";
+  if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)
+    return "mp3";
+  return null;
 }
 
 /** File name without extension: title, version (from v2 on) and what it is. */
@@ -232,11 +250,15 @@ export async function buildExport(
     case "original": {
       const blob = project.audioBlob;
       if (!blob) throw new Error("这首作品没有可导出的原始音频。");
-      const format = originalFormat(blob.type);
-      if (!format)
-        throw new Error("无法识别原始音频的格式，请改为导出 WAV。");
       // Exact bytes: no fade, no re-encoding.
-      return { name, data: await blob.arrayBuffer(), format };
+      const data = await blob.arrayBuffer();
+      const format = originalFormat(blob.type) ?? sniffAudioFormat(data);
+      if (format) return { name, data, format };
+      // Not a container this build can name. With decoded audio a WAV is the
+      // better file; without it these bytes are all there is, and they are
+      // handed over as they are rather than withheld.
+      if (audio) throw new Error("无法识别原始音频的格式，请改为导出 WAV。");
+      return { name: `${name}-未知格式`, data, format: "mp3" };
     }
     case "stem": {
       if (audio?.kind !== "stems")

@@ -39,7 +39,10 @@ interface Spec {
   /** spectral envelope applied to partials and noise */
   shape(hz: number): number;
   /** place the partials: put(hz, amplitude, phase in turns) */
-  fill(put: (hz: number, amp: number, phase: number) => void, random: Random): void;
+  fill(
+    put: (hz: number, amp: number, phase: number) => void,
+    random: Random,
+  ): void;
 }
 
 const highpass = (hz: number, corner: number, order: number) =>
@@ -148,13 +151,18 @@ function build(spec: Spec, sr: number): Alloy {
   }, random);
   if (spec.noise > 0) {
     const from = Math.max(2, Math.ceil(60 / binHz));
-    const to = Math.min(half - 2, Math.floor(Math.min(21500, sr * 0.47) / binHz));
+    const to = Math.min(
+      half - 2,
+      Math.floor(Math.min(21500, sr * 0.47) / binHz),
+    );
     let floor = 0;
     for (let bin = from; bin < to; bin++) {
       const a = spec.shape(bin * binHz);
       floor += a * a;
     }
-    const gain = Math.sqrt((spec.noise * Math.max(power, 1e-9)) / Math.max(floor, 1e-12));
+    const gain = Math.sqrt(
+      (spec.noise * Math.max(power, 1e-9)) / Math.max(floor, 1e-12),
+    );
     for (let bin = from; bin < to; bin++) {
       const a = gain * spec.shape(bin * binHz);
       const phase = TAU * random();
@@ -173,7 +181,8 @@ function build(spec: Spec, sr: number): Alloy {
       const octaves = Math.log2((bin * binHz) / f1);
       const c1 = smoothstep(octaves / 0.7 + 0.5);
       const c2 = smoothstep(Math.log2((bin * binHz) / f2) / 0.7 + 0.5);
-      const weight = index === 0 ? 1 - c1 : index === 1 ? c1 * (1 - c2) : c1 * c2;
+      const weight =
+        index === 0 ? 1 - c1 : index === 1 ? c1 * (1 - c2) : c1 * c2;
       if (weight === 0) continue;
       xr[bin] = re[bin] * weight;
       xi[bin] = im[bin] * weight;
@@ -193,7 +202,13 @@ function build(spec: Spec, sr: number): Alloy {
     for (let i = 0; i < size; i++) sum += table[i] * table[i];
     return Math.sqrt(sum / size);
   };
-  return { low, mid, high, mask: size - 1, rms: [rms(low), rms(mid), rms(high)] };
+  return {
+    low,
+    mid,
+    high,
+    mask: size - 1,
+    rms: [rms(low), rms(mid), rms(high)],
+  };
 }
 
 const cache = new Map<number, Partial<Record<AlloyId, Alloy>>>();

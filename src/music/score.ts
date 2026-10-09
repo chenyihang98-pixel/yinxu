@@ -159,14 +159,7 @@ export interface PartMix {
 }
 
 export type PartRole =
-  | "lead"
-  | "counter"
-  | "arp"
-  | "comp"
-  | "pad"
-  | "bass"
-  | "kit"
-  | "perc";
+  "lead" | "counter" | "arp" | "comp" | "pad" | "bass" | "kit" | "perc";
 
 export interface NotePart {
   kind: "notes";
@@ -236,12 +229,7 @@ export interface SpaceSettings {
 }
 
 export type MasterCharacter =
-  | "clean"
-  | "warm"
-  | "lofi"
-  | "wide"
-  | "punchy"
-  | "bitcrush";
+  "clean" | "warm" | "lofi" | "wide" | "punchy" | "bitcrush";
 
 export interface MasterSettings {
   /** integrated loudness target for the default mix, LUFS (e.g. -16) */

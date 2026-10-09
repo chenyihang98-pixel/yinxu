@@ -6,12 +6,7 @@
 import type { MusicConfig, TrackName } from "../types";
 
 export type LegacyMood =
-  | "bright"
-  | "chill"
-  | "cinematic"
-  | "dreamy"
-  | "focus"
-  | "retro";
+  "bright" | "chill" | "cinematic" | "dreamy" | "focus" | "retro";
 export type LegacyInstrument = "piano" | "guitar" | "synth" | "bell";
 export const LEGACY_MOODS: readonly LegacyMood[] = [
   "bright",

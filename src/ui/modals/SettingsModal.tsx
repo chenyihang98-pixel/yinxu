@@ -13,6 +13,7 @@ import {
   HardDrive,
   Info,
   KeyRound,
+  Lock,
   Monitor,
   Settings,
   ShieldCheck,
@@ -22,6 +23,7 @@ import { LLM_PRESETS, llmPreset } from "../../agent/llm-presets";
 import { INSTRUMENT_LIST, KEYS, STYLES } from "../../music/catalog";
 import { CLOUD_PROVIDERS } from "../../providers";
 import type { CloudProviderInfo } from "../../providers";
+import { MODEL_NAME_SHAPES, modelNameHint } from "../../state/content";
 import { useApp } from "../../state/context";
 import { formatBytes } from "../../state/format";
 import { joinText } from "../../state/logic";
@@ -47,7 +49,8 @@ function statusOf(status: ProviderStatus): {
   text: string;
   tone: "ok" | "warn" | "neutral";
 } {
-  if (status.damaged) return { text: "凭据无法读取 · 请重新保存", tone: "warn" };
+  if (status.damaged)
+    return { text: "凭据无法读取 · 请重新保存", tone: "warn" };
   if (status.configured) return { text: "凭据已保存", tone: "ok" };
   return { text: "尚未配置", tone: "neutral" };
 }
@@ -155,7 +158,8 @@ function ProviderForm(props: { info: CloudProviderInfo }) {
         <p className="notice notice-warn">
           <TriangleAlert size={16} aria-hidden />
           <span>
-            已保存的凭据无法读取（可能是换了 Windows 账户或系统）。请重新保存，或移除它。
+            已保存的凭据无法读取（可能是换了 Windows
+            账户或系统）。请重新保存，或移除它。
           </span>
         </p>
       )}
@@ -165,7 +169,9 @@ function ProviderForm(props: { info: CloudProviderInfo }) {
             {secret(
               "accessKeyId",
               "Access Key ID",
-              kept ? "已加密保存 · 替换时重新填写" : "填写火山引擎 Access Key ID",
+              kept
+                ? "已加密保存 · 替换时重新填写"
+                : "填写火山引擎 Access Key ID",
             )}
             {secret(
               "secretAccessKey",
@@ -183,8 +189,8 @@ function ProviderForm(props: { info: CloudProviderInfo }) {
                 disabled={locked}
                 onChange={(event) => set("billingMode", event.target.value)}
               >
-                <option value="postpaid">按调用量后付费（GenBGMForTime）</option>
-                <option value="prepaid">按首套餐预付费（GenBGM）</option>
+                <option value="postpaid">按调用量后付费</option>
+                <option value="prepaid">按套餐预付费</option>
               </Select>
             </Field>
           </>
@@ -198,7 +204,10 @@ function ProviderForm(props: { info: CloudProviderInfo }) {
                 : joinText("粘贴", info.name, "的 API Key"),
             )}
             {info.id === "aliyun" && (
-              <Field label="Workspace ID · 北京地域" htmlFor={`${ids}-workspace`}>
+              <Field
+                label="Workspace ID · 北京地域"
+                htmlFor={`${ids}-workspace`}
+              >
                 <input
                   id={`${ids}-workspace`}
                   className="input"
@@ -266,7 +275,9 @@ function ProviderForm(props: { info: CloudProviderInfo }) {
             variant="danger"
             data-testid={`provider-${info.id}-remove`}
             disabled={locked}
-            onClick={() => void run(() => actions.removeProvider(info.id), false)}
+            onClick={() =>
+              void run(() => actions.removeProvider(info.id), false)
+            }
           >
             移除凭据
           </Button>
@@ -318,7 +329,7 @@ function MusicTab() {
   }, [ui.settingsProvider]);
   if (settings.status === "unavailable")
     return (
-      <DesktopOnly what="云端 AI 音乐服务">
+      <DesktopOnly what="云端生成">
         接入腾讯云、火山引擎、阿里云或 ElevenLabs
         的音乐模型需要在本机加密保存密钥，并由桌面应用直接连接服务商。
       </DesktopOnly>
@@ -331,7 +342,7 @@ function MusicTab() {
         <KeyRound size={16} aria-hidden />
         <span>
           密钥只保存在这台电脑上，由 Windows
-          加密，保存后不会回显；保存不会发起计费请求。使用云端引擎生成时，你的描述会发送给所选服务商并按其价格计费，输出是混合音轨。
+          加密，保存后不会回显；保存不会发起计费请求。选择云端生成时，你的描述会发送给所选服务商并按其价格计费，输出是混合音轨。
         </span>
       </p>
       {settings.status === "error" && settings.error && (
@@ -386,7 +397,7 @@ function LlmTab() {
   }, [llm.configured, llm.preset, llm.baseUrl, llm.model]);
   if (settings.status === "unavailable")
     return (
-      <DesktopOnly what="大模型制作人">
+      <DesktopOnly what="制作人大模型">
         接入你自己的大模型（Claude、DeepSeek、通义千问、本机 Ollama
         等）后，制作人能听懂更自由的说法。密钥需要在本机加密保存，并由桌面应用直接连接服务商。
       </DesktopOnly>
@@ -403,11 +414,26 @@ function LlmTab() {
   const editableUrl = preset.id === "custom" || preset.kind === "ollama";
   const chosenModel = model || preset.models[0] || "";
   const url = baseUrl || preset.baseUrl || "";
-  const ready =
-    !!chosenModel.trim() &&
-    (!needsKey || !!apiKey.trim()) &&
-    (preset.kind !== "openai" || !!url.trim());
+  // What is still missing, by its label on the form: said next to the save
+  // button, so a disabled button always comes with its reason.
+  const missing = [
+    ...(chosenModel.trim() ? [] : ["模型"]),
+    ...(!needsKey || apiKey.trim() ? [] : ["API Key"]),
+    ...(preset.kind !== "openai" || url.trim() ? [] : ["接口地址"]),
+  ];
+  const ready = missing.length === 0;
   const locked = working || studio.busy;
+  const rekey = llm.configured && llm.preset === preset.id;
+  const reason = studio.busy
+    ? "正在生成或打开作品，完成后才能保存设置。"
+    : !ready
+      ? `还需要填写：${missing.join("、")}${
+          rekey && missing.includes("API Key")
+            ? "（密钥不会回显，修改设置时要重新填写）"
+            : ""
+        }`
+      : "";
+  const shape = MODEL_NAME_SHAPES[preset.id];
   const run = async (task: () => Promise<ActionResult>) => {
     setWorking(true);
     setError("");
@@ -428,11 +454,11 @@ function LlmTab() {
     <div className="settings-pane" data-testid="llm-form">
       <p className="notice notice-accent">
         <KeyRound size={16} aria-hidden />
-        <span>
-          你的描述文字会发送给所选服务商；密钥由 Windows 加密保存，不会回显。
+        <span data-testid="llm-notice">
           {preset.kind === "ollama"
-            ? "本机 Ollama 的请求只发往这台电脑。"
-            : "模型不可用时，制作人会自动改用离线规则。"}
+            ? "本机 Ollama：你的描述文字只发给这台电脑上的 Ollama，不经过网络，也不需要密钥。"
+            : "你的描述文字会发送给所选服务商；密钥由 Windows 加密保存，不会回显。"}
+          模型不可用时，制作人会自动改用离线规则。
         </span>
       </p>
       <p className="llm-status" data-testid="llm-status">
@@ -456,7 +482,30 @@ function LlmTab() {
             ))}
           </Select>
         </Field>
-        <Field label="模型" htmlFor={`${ids}-model`}>
+        <Field
+          label="模型"
+          htmlFor={`${ids}-model`}
+          hint={
+            preset.models.length > 0 ? undefined : (
+              <span data-testid="llm-model-hint">
+                {modelNameHint(preset)}
+                {preset.keyUrl && (
+                  <>
+                    {" "}
+                    <LinkButton
+                      className="field-link"
+                      data-testid="llm-console-link"
+                      onClick={() => actions.openLink(preset.keyUrl ?? "")}
+                    >
+                      打开服务商控制台
+                      <ExternalLink size={12} aria-hidden />
+                    </LinkButton>
+                  </>
+                )}
+              </span>
+            )
+          }
+        >
           {preset.models.length > 0 ? (
             <Select
               block
@@ -479,8 +528,10 @@ function LlmTab() {
               autoComplete="off"
               spellCheck={false}
               data-testid="llm-model"
+              aria-required="true"
               value={model}
-              placeholder={preset.modelPlaceholder}
+              // An example of the format, worded as one: not a value.
+              placeholder={shape ? `形如 ${shape}` : "模型名称"}
               disabled={locked}
               onChange={(event) => setModel(event.target.value)}
             />
@@ -511,11 +562,10 @@ function LlmTab() {
               autoComplete="off"
               spellCheck={false}
               data-testid="llm-key"
+              aria-required="true"
               value={apiKey}
               placeholder={
-                llm.configured && llm.preset === preset.id
-                  ? "已加密保存 · 修改设置时需要重新填写"
-                  : preset.keyHint
+                rekey ? "已加密保存 · 修改设置时需要重新填写" : preset.keyHint
               }
               disabled={locked}
               onChange={(event) => setApiKey(event.target.value)}
@@ -528,21 +578,29 @@ function LlmTab() {
             htmlFor={`${ids}-url`}
             className="form-wide"
             hint={
-              editableUrl ? undefined : "由所选服务商决定；需要改动时请选择「自定义」。"
+              editableUrl
+                ? undefined
+                : "由所选服务商决定，不能在这里修改；要用别的地址，请把服务商换成「自定义 OpenAI 兼容接口」。"
             }
           >
-            <input
-              id={`${ids}-url`}
-              className="input"
-              autoComplete="off"
-              spellCheck={false}
-              data-testid="llm-base-url"
-              value={url}
-              placeholder="https://…/v1"
-              readOnly={!editableUrl}
-              disabled={locked}
-              onChange={(event) => setBaseUrl(event.target.value)}
-            />
+            <span
+              className="input-wrap"
+              data-locked={!editableUrl || undefined}
+            >
+              <input
+                id={`${ids}-url`}
+                className="input"
+                autoComplete="off"
+                spellCheck={false}
+                data-testid="llm-base-url"
+                value={url}
+                placeholder="形如 https://example.com/v1"
+                readOnly={!editableUrl}
+                disabled={locked}
+                onChange={(event) => setBaseUrl(event.target.value)}
+              />
+              {!editableUrl && <Lock size={13} aria-hidden />}
+            </span>
           </Field>
         )}
       </div>
@@ -553,6 +611,7 @@ function LlmTab() {
           variant="primary"
           data-testid="llm-save"
           busy={working}
+          aria-describedby={reason ? `${ids}-reason` : undefined}
           disabled={!ready || locked}
           onClick={() =>
             void run(() =>
@@ -579,6 +638,15 @@ function LlmTab() {
           >
             移除
           </Button>
+        )}
+        {reason && (
+          <p
+            id={`${ids}-reason`}
+            className="form-reason"
+            data-testid="llm-save-reason"
+          >
+            {reason}
+          </p>
         )}
       </div>
     </div>

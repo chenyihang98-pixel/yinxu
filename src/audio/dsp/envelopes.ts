@@ -96,8 +96,7 @@ export class Adsr {
 
   /** Note-off: start the release from the current level. */
   release(): void {
-    if (this.stage !== IDLE && this.stage !== DONE)
-      this.stage = RELEASE;
+    if (this.stage !== IDLE && this.stage !== DONE) this.stage = RELEASE;
   }
 
   /** True once the release has reached zero. */
@@ -292,8 +291,7 @@ export function fadeIn(
   fadeFrames: number,
 ): void {
   const n = Math.min(Math.floor(fadeFrames), frames);
-  for (let i = 0; i < n; i++)
-    buf[i] *= 0.5 - 0.5 * Math.cos((Math.PI * i) / n);
+  for (let i = 0; i < n; i++) buf[i] *= 0.5 - 0.5 * Math.cos((Math.PI * i) / n);
 }
 
 /** Raised-cosine fade-out so buf[frames - 1] is exactly 0 (in place). */

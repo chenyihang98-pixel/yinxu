@@ -52,7 +52,10 @@ function startOf(h: Hit, tables: Alloy): number {
     let top = 0;
     for (let i = 0; i < count; i++) {
       const j = (a + i) & mask;
-      const v = tables.low[j] * gain[0] + tables.mid[j] * gain[1] + tables.high[j] * gain[2];
+      const v =
+        tables.low[j] * gain[0] +
+        tables.mid[j] * gain[1] +
+        tables.high[j] * gain[2];
       if (v > top) top = v;
       else if (-v > top) top = -v;
     }
@@ -354,8 +357,11 @@ function swell(h: Hit, p: Swell): void {
     const width = p.width;
     let power = 0;
     for (let band = 0; band < 3; band++) {
-      const table = band === 0 ? tables.low : band === 1 ? tables.mid : tables.high;
-      const g = p.gains[band] * (band === 2 ? bright : band === 0 ? byVel(h, 1.3, 0.925) : 1);
+      const table =
+        band === 0 ? tables.low : band === 1 ? tables.mid : tables.high;
+      const g =
+        p.gains[band] *
+        (band === 2 ? bright : band === 0 ? byVel(h, 1.3, 0.925) : 1);
       power += g * g * tables.rms[band] * tables.rms[band];
       const t60 = p.t60[band];
       const up = Math.exp(LN_60DB / (t60 * sr));
@@ -381,7 +387,8 @@ function swell(h: Hit, p: Swell): void {
       for (let i = 0; i < rising; i++) {
         const x = i / top;
         const depth = p.roll * (1 - x * x);
-        const ripple = 1 - depth * (0.5 + 0.5 * Math.cos(2 * Math.PI * step * i));
+        const ripple =
+          1 - depth * (0.5 + 0.5 * Math.cos(2 * Math.PI * step * i));
         mid[i] *= ripple;
         side[i] *= ripple;
       }
@@ -489,7 +496,8 @@ function gong(h: Hit, p: Gong): void {
     const a = (h.dice.uniform() * (mask + 1)) | 0;
     const b = a + (mask >> 1) + ((h.dice.uniform() * 4096) | 0);
     for (let band = 0; band < 3; band++) {
-      const table = band === 0 ? tables.low : band === 1 ? tables.mid : tables.high;
+      const table =
+        band === 0 ? tables.low : band === 1 ? tables.mid : tables.high;
       const t60 = p.washT60[band] * stretch;
       const k = fall(t60, sr);
       const kd = Math.exp(-1 / (p.washBloom[band] * sr));
@@ -521,12 +529,7 @@ function gong(h: Hit, p: Gong): void {
 /* ------------------------------------------------------------------ */
 
 export type CymbalKind =
-  | "hatClosed"
-  | "hatOpen"
-  | "ride"
-  | "crash"
-  | "cymbalSwell"
-  | "gong";
+  "hatClosed" | "hatOpen" | "ride" | "crash" | "cymbalSwell" | "gong";
 
 export const CYMBALS: Engine<CymbalKind> = {
   length(kind, kit) {

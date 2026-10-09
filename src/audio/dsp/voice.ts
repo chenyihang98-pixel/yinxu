@@ -1,10 +1,10 @@
 /**
  * Helpers every voice needs: the level convention of the Voice contract,
- * the velocity law, the shape of NoteEvent.bend, reusable scratch buffers
- * and the "temporary alias" marker used while the bank is being filled in.
+ * the velocity law, the shape of NoteEvent.bend and reusable scratch buffers
+ * (the one piece of module state here: see trimScratch).
  */
-import type { VoiceId } from "../../music/score";
-import type { Voice, VoiceNote } from "../voices/types";
+import type { VoiceNote } from "../voices/types";
+import { freeBuffer } from "./memory";
 
 /** Linear RMS of -18 dBFS: the level of a 1 s note at REFERENCE_VELOCITY over its loudest 400 ms. */
 export const REFERENCE_RMS = 0.12589254117941673;
@@ -54,7 +54,16 @@ export function noteOffFrame(
   return Math.max(1, Math.min(hold, latest));
 }
 
-const pool: Float32Array[] = [];
+const pool: (Float32Array | undefined)[] = [];
+let poolBytes = 0;
+
+/**
+ * Longest slot, in samples, that stays allocated between renders (5.5 s at
+ * 48 kHz, 1 MB): ordinary notes reuse their slots from render to render,
+ * while what a drone of two minutes needed (29 MB per slot) is given back by
+ * trimScratch() as soon as the render is over.
+ */
+export const SCRATCH_KEEP = 1 << 18;
 
 /**
  * Reusable ZEROED work buffer of at least `frames` samples (it may be
@@ -65,10 +74,45 @@ const pool: Float32Array[] = [];
 export function scratch(slot: number, frames: number): Float32Array {
   let buffer = pool[slot];
   if (!buffer || buffer.length < frames) {
-    buffer = new Float32Array(Math.ceil(frames * 1.25) + 1024);
+    // ordinary notes get room to grow (up to what is kept), so a slot settles
+    // after a few of them; a long drone gets what it asks for and no more
+    const size =
+      (frames > SCRATCH_KEEP
+        ? frames
+        : Math.min(SCRATCH_KEEP, Math.ceil(frames * 1.25))) + 1024;
+    if (buffer) {
+      poolBytes -= buffer.byteLength;
+      // a long one that is outgrown goes back at once, like the rest (trimScratch)
+      if (buffer.length > SCRATCH_KEEP + 1024) freeBuffer(buffer);
+    }
+    buffer = new Float32Array(size);
+    poolBytes += buffer.byteLength;
     pool[slot] = buffer;
   } else buffer.fill(0, 0, frames);
   return buffer;
+}
+
+/** Bytes the scratch slots hold right now. */
+export function scratchBytes(): number {
+  return poolBytes;
+}
+
+/**
+ * Give back every scratch slot longer than SCRATCH_KEEP, at once (see
+ * freeBuffer). Returns the bytes released. Only between notes: whoever still
+ * holds such a slot is left with an empty array.
+ */
+export function trimScratch(): number {
+  let released = 0;
+  for (let slot = 0; slot < pool.length; slot++) {
+    const buffer = pool[slot];
+    if (!buffer || buffer.length <= SCRATCH_KEEP + 1024) continue;
+    released += buffer.byteLength;
+    freeBuffer(buffer);
+    pool[slot] = undefined;
+  }
+  poolBytes -= released;
+  return released;
 }
 
 /** ADD a mono buffer into a stereo pair with separate gains. */
@@ -85,35 +129,4 @@ export function addMono(
     left[i] += v * gainLeft;
     right[i] += v * gainRight;
   }
-}
-
-/** A voice that only forwards to another one until its real implementation lands. */
-export interface AliasVoice extends Voice {
-  /** id of the voice that actually renders */
-  aliasOf: VoiceId;
-}
-
-/**
- * TEMPORARY stand-in: `id` renders through `target`, optionally transposed
- * by `transpose` semitones. voices/index.ts lists these in ALIASED_VOICES.
- */
-export function aliasVoice(
-  id: VoiceId,
-  target: Voice,
-  transpose = 0,
-): AliasVoice {
-  const shift = (note: VoiceNote): VoiceNote =>
-    transpose === 0 ? note : { ...note, midi: note.midi + transpose };
-  return {
-    id,
-    aliasOf: target.id,
-    tail: (note) => target.tail(shift(note)),
-    render: (left, right, frames, note, ctx) =>
-      target.render(left, right, frames, shift(note), ctx),
-  };
-}
-
-/** True for voices created by aliasVoice(). */
-export function isAliasVoice(voice: Voice): voice is AliasVoice {
-  return typeof (voice as Partial<AliasVoice>).aliasOf === "string";
 }

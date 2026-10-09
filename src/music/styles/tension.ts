@@ -24,6 +24,9 @@ export const tension: StyleDef = {
               ["II", "vii", "vi", "II/I"],
             ],
           },
+          // (the style's bVI and bII cadences carry the natural fourth)
+          cadence: [["vii", "II/I"], ["vi", "II"]],
+          turnaround: ["II/I", "vii"],
         },
         {
           // chromatic mediants and the rising augmented line of spy films
@@ -80,6 +83,12 @@ export const tension: StyleDef = {
             ],
             build: [["iv", "iv", "bII", "bII"]],
           },
+          // the mode's own endings: the Neapolitan falls onto the tonic, and
+          // the rub in the last chord is the lowered second itself (the style's
+          // "iadd9" would bring back the natural second the mode has given up)
+          cadence: [["bII"], ["bvii", "bII"], ["iv", "bII"]],
+          turnaround: ["bII", "bvii"],
+          final: "iaddb9",
         },
       ],
     },

@@ -2,7 +2,7 @@
 import type { Platform } from "../platform";
 import { changedFields } from "./logic";
 import { activeBrain, brainOptions, engineOptions } from "./options";
-import { suggestionsFor } from "./plan";
+import { applyHint, paidNotice, suggestionsFor, variationLabel } from "./plan";
 import type { SettingsState, StudioState, StudioView } from "./types";
 
 type Capabilities = Pick<Platform, "canUseCloud" | "canUseLlm">;
@@ -15,6 +15,16 @@ export function canApplyDraft(studio: StudioState): boolean {
     changedFields(studio.draft, project.config).length > 0 ||
     project.config.engine === 1
   );
+}
+
+/**
+ * The loaded work exists only in this window: it never reached the library
+ * and the attempt to store it failed.
+ */
+export function isUnsaved(
+  studio: Pick<StudioState, "project" | "stored" | "saveState">,
+): boolean {
+  return !!studio.project && !studio.stored && studio.saveState === "failed";
 }
 
 export function studioView(
@@ -33,5 +43,9 @@ export function studioView(
     brains,
     activeBrain: activeBrain(studio.brain, brains),
     suggestions: suggestionsFor(studio.project),
+    unsaved: isUnsaved(studio),
+    paid: paidNotice(studio.provider, !!studio.project),
+    applyHint: applyHint(studio.project, studio.provider, studio.draft),
+    variationLabel: variationLabel(studio.provider),
   };
 }

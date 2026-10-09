@@ -453,13 +453,19 @@ export function checkClicks(
   }
   const problems: string[] = [];
   if (startLevel > limits.startLevel)
-    problems.push(`starts at ${startLevel.toFixed(4)} (limit ${limits.startLevel})`);
+    problems.push(
+      `starts at ${startLevel.toFixed(4)} (limit ${limits.startLevel})`,
+    );
   if (startJump > limits.startJump && startJump > laterJump * 1.25)
-    problems.push(`steps ${startJump.toFixed(3)} within the first 64 samples (limit ${limits.startJump})`);
+    problems.push(
+      `steps ${startJump.toFixed(3)} within the first 64 samples (limit ${limits.startJump})`,
+    );
   if (endLevel > limits.endLevel)
     problems.push(`ends at ${endLevel.toFixed(5)} (limit ${limits.endLevel})`);
   if (maxJump > limits.maxJump)
-    problems.push(`steps ${maxJump.toFixed(3)} between two samples (limit ${limits.maxJump})`);
+    problems.push(
+      `steps ${maxJump.toFixed(3)} between two samples (limit ${limits.maxJump})`,
+    );
   if (limits.releaseJumpRatio > 0 && releaseJumpRatio > limits.releaseJumpRatio)
     problems.push(
       `note-off step is ${releaseJumpRatio.toFixed(2)}x the steps before it (limit ${limits.releaseJumpRatio})`,
@@ -792,7 +798,9 @@ export function checkVoiceContract(
       if (fractional) {
         const cents = centsError(fractional, middle + 0.37);
         if (!(Math.abs(cents) <= centsTolerance))
-          fail(`fractional midi ${middle + 0.37}: ${cents.toFixed(1)} cents off`);
+          fail(
+            `fractional midi ${middle + 0.37}: ${cents.toFixed(1)} cents off`,
+          );
       }
     }
     for (const bend of [2, -2]) {

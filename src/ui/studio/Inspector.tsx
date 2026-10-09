@@ -1,12 +1,20 @@
 /**
  * 声音微调: a draft of the nine parameters. Nothing here is heard until
- * 应用调整 turns the draft into a new version (same seed, same melodic
- * material); 换一版旋律 keeps the settings and changes the seed.
+ * 应用调整 turns the draft into a new version; 换一版旋律 keeps the settings
+ * and changes the seed. What either does to the tune, and whether it costs
+ * money, depends on the selected engine — the state layer words that
+ * (`applyHint`, `variationLabel`, `paid`), this panel only shows it.
+ *
+ * The buttons live in a footer that stays on screen: at the bottom of the
+ * inspector column on wide windows, and — while edits are pending — at the
+ * bottom of the page when the panel is a card. An edit can always be applied
+ * or taken back without hunting for the button.
  */
 import { memo, useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ChevronDown,
+  CircleDollarSign,
   Dices,
   ListMusic,
   RotateCcw,
@@ -22,9 +30,15 @@ import {
   parseKey,
 } from "../../music/catalog";
 import type { InstrumentId, StyleId } from "../../music/catalog";
+import { FIELD_LABELS } from "../../state/content";
 import { percent } from "../../state/format";
 import { DURATION_CHOICES } from "../../state/plan";
-import type { AppActions, Draft, DraftField } from "../../state/types";
+import type {
+  AppActions,
+  Draft,
+  DraftField,
+  PaidNotice,
+} from "../../state/types";
 import { useRenderCount } from "../hooks/useRenderCount";
 import { Button, LinkButton, classes } from "../primitives/Button";
 import { Segmented, Select, Slider } from "../primitives/Controls";
@@ -90,15 +104,17 @@ function BpmNumber(props: { value: number; onValue(value: number): void }) {
 
 function Row(props: {
   field: DraftField;
-  label: string;
   /** current value, shown at the right of the label */
   value?: ReactNode;
   changed: boolean;
   controlId?: string;
+  /** what the audio will really be when it differs from the field (loops) */
+  fit?: string;
   onReset(field: DraftField): void;
   children: ReactNode;
 }) {
-  const { field, label, changed } = props;
+  const { field, changed } = props;
+  const label = FIELD_LABELS[field];
   return (
     <div className="insp-row" data-changed={changed || undefined}>
       <div className="insp-label">
@@ -131,6 +147,11 @@ function Row(props: {
         )}
       </div>
       {props.children}
+      {props.fit && (
+        <p className="insp-fit" data-testid={`inspector-fit-${field}`}>
+          {props.fit}
+        </p>
+      )}
     </div>
   );
 }
@@ -144,6 +165,14 @@ export interface InspectorProps {
   legacy: boolean;
   /** the committed work is a cloud mix */
   cloud: boolean;
+  /** the selected engine is a cloud service: both buttons are paid requests */
+  paid: PaidNotice | null;
+  /** what 应用调整 does to the tune and the library, ready to show */
+  applyHint: string;
+  /** label of the 换一版旋律 button for the selected engine */
+  variationLabel: string;
+  /** the tempo / length the draft will really get from the local engine */
+  fit: { bpm?: string; duration?: string };
   notes: readonly string[];
   /** the panel is a collapsible card (below 1100 px) */
   collapsible: boolean;
@@ -165,19 +194,17 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
     if (match) actions.setDraft("key", match);
   };
   const count = changedFields.length;
-  const durations = [...new Set<number>([...DURATION_CHOICES, draft.duration])].sort(
-    (a, b) => a - b,
-  );
+  const durations = [
+    ...new Set<number>([...DURATION_CHOICES, draft.duration]),
+  ].sort((a, b) => a - b);
 
   const amount = (
     field: "energy" | "complexity" | "reverb",
-    label: string,
     low: string,
     high: string,
   ) => (
     <Row
       field={field}
-      label={label}
       value={percent(draft[field])}
       changed={changed(field)}
       controlId={id(field)}
@@ -207,18 +234,24 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
           </span>
         </p>
       )}
-      {props.cloud && (
-        <p className="notice" data-testid="cloud-note">
-          <WandSparkles size={16} aria-hidden />
-          <span>
-            这是云端生成的作品。应用调整会按新的参数向当前选择的引擎重新生成，云端引擎可能计费。
-          </span>
+      {props.paid ? (
+        <p className="notice notice-warn" data-testid="cloud-note">
+          <CircleDollarSign size={16} aria-hidden />
+          <span>{props.paid.text}</span>
         </p>
+      ) : (
+        props.cloud && (
+          <p className="notice" data-testid="cloud-note">
+            <WandSparkles size={16} aria-hidden />
+            <span>
+              这是云端生成的作品。现在选的是「本地作曲」：应用调整会在本机按这些参数重新写一首，不计费。
+            </span>
+          </p>
+        )
       )}
 
       <Row
         field="mood"
-        label="风格"
         changed={changed("mood")}
         controlId={id("mood")}
         onReset={reset}
@@ -242,9 +275,9 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
 
       <Row
         field="bpm"
-        label="速度"
         changed={changed("bpm")}
         controlId={id("bpm")}
+        fit={props.fit.bpm}
         onReset={reset}
       >
         <div className="insp-bpm">
@@ -269,7 +302,6 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
 
       <Row
         field="instrument"
-        label="主奏乐器"
         changed={changed("instrument")}
         controlId={id("instrument")}
         onReset={reset}
@@ -293,7 +325,6 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
 
       <Row
         field="key"
-        label="调性"
         value={keyLabel(draft.key)}
         changed={changed("key")}
         controlId={id("key")}
@@ -327,15 +358,15 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
         </div>
       </Row>
 
-      {amount("energy", "情绪能量", "舒缓", "激昂")}
-      {amount("complexity", "旋律丰富度", "简洁", "华丽")}
-      {amount("reverb", "空间混响", "贴近", "空旷")}
+      {amount("energy", "舒缓", "激昂")}
+      {amount("complexity", "简洁", "华丽")}
+      {amount("reverb", "贴近", "空旷")}
 
       <Row
         field="duration"
-        label="时长"
         changed={changed("duration")}
         controlId={id("duration")}
+        fit={props.fit.duration}
         onReset={reset}
       >
         <Select
@@ -355,7 +386,7 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
         </Select>
       </Row>
 
-      <Row field="loop" label="结构" changed={changed("loop")} onReset={reset}>
+      <Row field="loop" changed={changed("loop")} onReset={reset}>
         <Segmented
           block
           label="结构"
@@ -373,45 +404,6 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
         />
       </Row>
 
-      <div className="insp-actions">
-        <Button
-          variant="primary"
-          block
-          data-testid="apply-draft"
-          icon={<WandSparkles size={15} aria-hidden />}
-          disabled={!props.canApply || busy}
-          onClick={() => void actions.applyDraft()}
-        >
-          {count === 0 && props.canApply
-            ? "用新版引擎重做"
-            : `应用调整（${count} 项）`}
-        </Button>
-        <div className="insp-actions-row">
-          <Button
-            block
-            data-testid="new-melody"
-            icon={<Dices size={15} aria-hidden />}
-            data-tip="保持这些设置，换一组新的旋律"
-            disabled={busy}
-            onClick={() => void actions.variation()}
-          >
-            换一版旋律
-          </Button>
-          <Button
-            variant="ghost"
-            data-testid="reset-draft"
-            icon={<RotateCcw size={14} aria-hidden />}
-            disabled={count === 0}
-            onClick={() => actions.resetDraft()}
-          >
-            全部还原
-          </Button>
-        </div>
-        <p className="insp-hint">
-          应用调整保留旋律素材并生成新版本，之前的版本仍在作品库中。
-        </p>
-      </div>
-
       {props.notes.length > 0 && (
         <section className="insp-notes" aria-labelledby={id("notes")}>
           <h3 id={id("notes")}>
@@ -425,6 +417,73 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
           </ul>
         </section>
       )}
+    </div>
+  );
+
+  // Reachable wherever the panel is scrolled to: what is pending, the way to
+  // apply it and the way to take it back.
+  const pending = changedFields.map((field) => FIELD_LABELS[field]);
+  const footer = (
+    <div
+      className="insp-actions"
+      data-testid="inspector-actions"
+      data-pending={count > 0 || undefined}
+    >
+      <div className="insp-apply">
+        {count > 0 && (
+          <p className="insp-pending" data-testid="pending-summary">
+            <strong>{count} 项待应用</strong>
+            <span className="ellipsis" data-tip={pending.join("、")}>
+              {pending.join("、")}
+            </span>
+          </p>
+        )}
+        <div className="insp-actions-row">
+          <Button
+            variant="primary"
+            block
+            data-testid="apply-draft"
+            icon={<WandSparkles size={15} aria-hidden />}
+            disabled={!props.canApply || busy}
+            onClick={() => void actions.applyDraft()}
+          >
+            {count === 0 && props.canApply
+              ? "用新版引擎重做"
+              : `应用调整（${count} 项）`}
+          </Button>
+          <Button
+            variant="ghost"
+            data-testid="reset-draft"
+            icon={<RotateCcw size={14} aria-hidden />}
+            disabled={count === 0}
+            onClick={() => actions.resetDraft()}
+          >
+            全部还原
+          </Button>
+        </div>
+        {(count > 0 || props.canApply) && (
+          <p className="insp-hint" data-testid="apply-hint">
+            {props.applyHint}
+          </p>
+        )}
+      </div>
+      <Button
+        block
+        className="insp-variation"
+        data-testid="new-melody"
+        icon={<Dices size={15} aria-hidden />}
+        data-tip={
+          props.paid
+            ? "按当前作品的设置让云端重新生成一首，按服务商计费"
+            : count > 0
+              ? `保持当前作品的设置，换一组新的旋律；这 ${count} 项修改不会用上，会留在新版本上等待应用`
+              : "保持当前作品的设置，换一组新的旋律"
+        }
+        disabled={busy}
+        onClick={() => void actions.variation()}
+      >
+        {props.variationLabel}
+      </Button>
     </div>
   );
 
@@ -467,7 +526,12 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
           </>
         )}
       </div>
-      {(!collapsible || open) && body}
+      {(!collapsible || open) && (
+        <>
+          {body}
+          {footer}
+        </>
+      )}
     </aside>
   );
 });

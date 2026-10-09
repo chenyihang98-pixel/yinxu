@@ -571,9 +571,43 @@ button.badge:disabled {
   box-shadow: 0 0 0 1px var(--accent);
 }
 
-.input:disabled,
-.input:read-only {
+.input:disabled {
   color: var(--muted);
+}
+
+/*
+ * A value the app filled in that cannot be changed here: it reads as a fact,
+ * not as a field waiting for input — no well, a dashed edge and a lock.
+ */
+.input[readonly] {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text-soft);
+  cursor: default;
+}
+
+.input[readonly]:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.input-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.input-wrap[data-locked] .input {
+  padding-right: 30px;
+}
+
+.input-wrap > svg {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: var(--muted);
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 
 .input:disabled {
@@ -754,7 +788,11 @@ button.badge:disabled {
   position: absolute;
   inset: 0;
   z-index: -1;
-  background: linear-gradient(180deg, rgba(16, 17, 19, 0.05), rgba(16, 17, 19, 0.42));
+  background: linear-gradient(
+    180deg,
+    rgba(16, 17, 19, 0.05),
+    rgba(16, 17, 19, 0.42)
+  );
 }
 
 /* ---------- tooltip ---------- */

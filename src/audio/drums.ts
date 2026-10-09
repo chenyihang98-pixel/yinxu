@@ -212,7 +212,10 @@ function engine(h: Hit, kind: DrumKind, kit: DrumKitId): void {
 const LENGTHS = new Float64Array(DRUM_KITS.length * KINDS);
 for (const kit of DRUM_KITS)
   for (const kind of DRUM_KINDS)
-    LENGTHS[KIT_INDEX[kit] * KINDS + KIND_INDEX[kind]] = naturalLength(kind, kit);
+    LENGTHS[KIT_INDEX[kit] * KINDS + KIND_INDEX[kind]] = naturalLength(
+      kind,
+      kit,
+    );
 
 const EMPTY = new Float32Array(0);
 const hit: Hit = {
@@ -289,7 +292,9 @@ function colour(h: Hit): void {
     for (let k = 0; k < taps; k++) {
       tapDelay[k] = Math.round(REFLECTIONS[k][0] * sr);
       tapMid[k] = REFLECTIONS[k][1] * h.room * (h.wide ? 0.75 : 1);
-      tapSide[k] = h.wide ? REFLECTIONS[k][1] * REFLECTIONS[k][2] * h.room * 0.6 : 0;
+      tapSide[k] = h.wide
+        ? REFLECTIONS[k][1] * REFLECTIONS[k][2] * h.room * 0.6
+        : 0;
     }
     const far = tapDelay[taps - 1];
     // until the last reflection has arrived, one tap at a time …

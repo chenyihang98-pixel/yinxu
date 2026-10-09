@@ -181,7 +181,9 @@ export const rock: StyleDef = {
   swing: 0,
   humanize: { timing: 8, velocity: 0.09 },
   // verses pull back to palm-muted chugs and closed hats, so the chorus has somewhere to go
-  form: { loop: "AB", intro: 0.8, outro: 0.8, tail: 2.5, energy: { verse: [0.74, 0.02] } },
+  // (0.66: a busy verse solo over a sparser chorus hook must still leave the chorus the loudest
+  // section by a clear margin — at 0.74 one of the review seeds had them 0.2 LU apart)
+  form: { loop: "AB", intro: 0.8, outro: 0.8, tail: 2.5, energy: { verse: [0.66, 0.02] } },
   mix: {
     lead: { gain: 0.64, reverb: 0.22, delay: 0.12, drive: 0.25 },
     // one guitar part: an ensemble chorus spreads it left and right the way a double-tracked take would sit

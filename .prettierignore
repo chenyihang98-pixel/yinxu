@@ -1,0 +1,23 @@
+# build output, packages and generated material
+dist*
+release
+node_modules
+.scratch
+demos
+examples
+test-results
+*.tsbuildinfo
+package-lock.json
+
+# documents are written by hand
+*.md
+
+# the shared catalogue is a data file with its own layout (one style per block)
+electron/shared/music-catalog.json
+
+# tables laid out by hand so that their rows line up: the producer's
+# dictionary and the step grids of the style definitions
+src/agent/lexicon.ts
+src/music/styles/*.ts
+!src/music/styles/index.ts
+!src/music/styles/types.ts

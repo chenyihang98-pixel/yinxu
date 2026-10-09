@@ -32,8 +32,7 @@ function Elapsed(props: { since: number }) {
 
 function JobBar(props: { job: Job; onCancel(): void }) {
   const { job } = props;
-  const percent =
-    job.progress === null ? null : Math.round(job.progress * 100);
+  const percent = job.progress === null ? null : Math.round(job.progress * 100);
   return (
     <div
       className="jobbar"

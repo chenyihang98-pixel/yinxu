@@ -34,22 +34,55 @@ export interface TimeMap {
  * 0.5 + swing / 4 of the pair, so 0.66 is a triplet feel. The warp is
  * continuous, so note lengths stretch with it and nothing overlaps.
  *
- * Rubato lets the tempo breathe inside every four-bar phrase (two bars when a
- * loop is not a multiple of four): it lingers at the phrase edges and moves on
- * in the middle, up to ±7 % at rubato 1. Every part shares the same clock, the
- * phrase boundaries stay exactly on the bar grid, and a piece that ends
- * settles back onto the grid for its final chord.
+ * Rubato lets the tempo breathe inside every phrase: it lingers at the phrase
+ * edges and moves on in the middle, up to ±7 % at rubato 1. The phrases are
+ * the tune's own: four bars counted from the start of each section (`spans`;
+ * the last phrase of a section may be shorter, and breathes over its own
+ * length). Every part shares the same clock, every phrase boundary stays
+ * exactly on the bar grid, and a piece that ends settles back onto the grid
+ * for its final chord.
  */
-export function makeTimeMap(timing: Timing, swing: number, grid: 8 | 16, rubato = 0): TimeMap {
+export function makeTimeMap(
+  timing: Timing,
+  swing: number,
+  grid: 8 | 16,
+  rubato = 0,
+  /** where the phrases lie: the bars each section plays (default: one section from bar 0) */
+  spans: readonly { startBar: number; bars: number }[] = [
+    { startBar: 0, bars: timing.bars },
+  ],
+): TimeMap {
   const pair = grid === 8 ? 1 : 0.5;
   const point = 0.5 + clamp(swing, 0, 0.66) / 4;
-  const period = (timing.loop && timing.bars % 4 !== 0 ? 2 : 4) * timing.beatsPerBar;
-  const depth = (clamp(rubato, 0, 1) * 0.07 * period) / (2 * Math.PI);
-  const settle = timing.finalBar * timing.beatsPerBar;
+  const amount = clamp(rubato, 0, 1) * 0.07;
+  const beatsPerBar = timing.beatsPerBar;
+  const settle = timing.finalBar * beatsPerBar;
+  // phrase start (beats) and length (beats), by bar
+  const phraseOf: [start: number, length: number][] = [];
+  if (amount > 0)
+    for (const span of spans)
+      for (let first = 0; first < span.bars; first += 4) {
+        const bars = Math.min(4, span.bars - first);
+        // a phrase of one bar has no middle to move on through
+        const length = bars >= 2 ? bars * beatsPerBar : 0;
+        for (let b = 0; b < bars; b++)
+          phraseOf[span.startBar + first + b] = [
+            (span.startBar + first) * beatsPerBar,
+            length,
+          ];
+      }
   const breathe = (beat: number) => {
-    if (depth <= 0) return 0;
-    const fade = timing.loop ? 1 : clamp((settle - beat) / timing.beatsPerBar, 0, 1);
-    return depth * fade * Math.sin((2 * Math.PI * beat) / period);
+    if (amount <= 0) return 0;
+    const phrase = phraseOf[Math.floor(beat / beatsPerBar + 1e-9)];
+    if (!phrase || phrase[1] <= 0) return 0;
+    const [start, length] = phrase;
+    const fade = timing.loop ? 1 : clamp((settle - beat) / beatsPerBar, 0, 1);
+    // slow at both ends, fastest in the middle; zero at the phrase boundaries themselves
+    return (
+      ((amount * length) / (2 * Math.PI)) *
+      fade *
+      Math.sin((2 * Math.PI * (beat - start)) / length)
+    );
   };
   return {
     seconds(beat) {
@@ -58,7 +91,9 @@ export function makeTimeMap(timing: Timing, swing: number, grid: 8 | 16, rubato 
         const base = Math.floor(beat / pair) * pair;
         const x = (beat - base) / pair;
         warped =
-          base + (x < 0.5 ? x * 2 * point : point + (x - 0.5) * 2 * (1 - point)) * pair;
+          base +
+          (x < 0.5 ? x * 2 * point : point + (x - 0.5) * 2 * (1 - point)) *
+            pair;
       }
       return (warped + breathe(beat)) * timing.beatSeconds;
     },
@@ -83,6 +118,7 @@ export const SWELL_LEAD_SECONDS = CYMBAL_SWELL_SECONDS;
 type Feel = Exclude<DrumFeel, "auto" | "none">;
 
 /** Built-in grooves for config.arrangement.drums. */
+// prettier-ignore
 const FEEL_GROOVES: Record<Feel, Tier<Groove[]>> = {
   light: {
     low: [{ kick: "o...............", rim: "........o.......", shaker: "..g...g...g...g." }],
@@ -235,11 +271,20 @@ export function resolveDrums(
       def: style,
     };
   if (!style) return null;
-  return { kit: style.kit, from: style.from, mute, grooves: style.grooves, def: style };
+  return {
+    kit: style.kit,
+    from: style.from,
+    mute,
+    grooves: style.grooves,
+    def: style,
+  };
 }
 
 /** Feels that imply swung time when the style itself is straight. */
-export const SWUNG_FEELS: Partial<Record<DrumFeel, number>> = { swing: 0.6, shuffle: 0.64 };
+export const SWUNG_FEELS: Partial<Record<DrumFeel, number>> = {
+  swing: 0.6,
+  shuffle: 0.64,
+};
 
 interface BarHit {
   step: number;
@@ -273,8 +318,13 @@ function pickGroove(
   lifted: boolean,
 ): Groove {
   const order: (keyof Tier<Groove[]>)[] =
-    tier === "low" ? ["low", "mid", "high"] : tier === "mid" ? ["mid", "low", "high"] : ["high", "mid", "low"];
-  for (const name of order) if (tiers[name]?.length) return pickRanked(tiers[name], lifted, rng);
+    tier === "low"
+      ? ["low", "mid", "high"]
+      : tier === "mid"
+        ? ["mid", "low", "high"]
+        : ["high", "mid", "low"];
+  for (const name of order)
+    if (tiers[name]?.length) return pickRanked(tiers[name], lifted, rng);
   return {};
 }
 
@@ -282,6 +332,8 @@ export interface DrumResult {
   hits: BeatHit[];
   /** sixteenth steps on which the kick (or the lowest drum) plays, per bar */
   kickSteps: Map<number, number[]>;
+  /** true when the last bar of a loop carries a fill (or a build's roll) back into bar 1 */
+  loopFill: boolean;
 }
 
 export function composeDrums(ctx: Ctx, setup: DrumSetup): DrumResult {
@@ -293,24 +345,48 @@ export function composeDrums(ctx: Ctx, setup: DrumSetup): DrumResult {
   const complexity = config.complexity;
   const hits: BeatHit[] = [];
   const kickSteps = new Map<number, number[]>();
+  let loopFill = false;
   const emit = (beat: number, kind: DrumKind, vel: number) => {
     const mapped = kind in remap ? remap[kind] : kind;
     if (!mapped) return;
     const lag = def?.lag?.[kind];
-    hits.push({ beat, kind: mapped, vel: clamp(vel, 0.04, 1), late: lag ? lag / 1000 : undefined });
+    hits.push({
+      beat,
+      kind: mapped,
+      vel: clamp(vel, 0.04, 1),
+      late: lag ? lag / 1000 : undefined,
+    });
   };
-  const plays = (section: SectionPlan | undefined) => !!section && ctx.plays.kit[section.index];
+  const plays = (section: SectionPlan | undefined) =>
+    !!section && ctx.plays.kit[section.index];
 
   for (const section of sections) {
     const next = section.next >= 0 ? sections[section.next] : undefined;
     const active = plays(section);
     const boundaryBeat = (section.startBar + section.playBars) * beatsPerBar;
 
-    // riser into a section that lifts the energy
-    if (def?.swell && next && plays(next) && next.energy > section.energy + 0.06 && !section.ending) {
+    // riser into a section that lifts the energy. The swell takes
+    // SWELL_LEAD_SECONDS to reach its peak, whatever the tempo, so it starts
+    // that long before the downbeat it leads into — in the section before
+    // this one when this one is shorter than the swell. With no music to
+    // start in (the very top of a piece that ends) there is no riser: one
+    // begun late would crest after the downbeat.
+    if (
+      def?.swell &&
+      next &&
+      plays(next) &&
+      next.energy > section.energy + 0.06 &&
+      !section.ending
+    ) {
       const lead = SWELL_LEAD_SECONDS / timing.beatSeconds;
-      const beat = boundaryBeat - Math.min(lead, section.playBars * beatsPerBar);
-      emit(beat, "cymbalSwell", 0.5 + 0.35 * next.energy);
+      const beat = boundaryBeat - lead;
+      if (beat >= 0) emit(beat, "cymbalSwell", 0.5 + 0.35 * next.energy);
+      else if (timing.loop)
+        emit(
+          beat + timing.bars * beatsPerBar,
+          "cymbalSwell",
+          0.5 + 0.35 * next.energy,
+        );
     }
     if (!active) continue;
 
@@ -334,8 +410,14 @@ export function composeDrums(ctx: Ctx, setup: DrumSetup): DrumResult {
       );
       let barHits = grooveBar(groove, b);
       const has = (kind: DrumKind, step: number) =>
-        barHits.some((hit) => hit.kind === kind && hit.step === step && !hit.shift);
-      const lowDrum: DrumKind = groove.kick ? "kick" : groove.taiko ? "taiko" : "kick";
+        barHits.some(
+          (hit) => hit.kind === kind && hit.step === step && !hit.shift,
+        );
+      const lowDrum: DrumKind = groove.kick
+        ? "kick"
+        : groove.taiko
+          ? "taiko"
+          : "kick";
       const hasLow = !!groove.kick || !!groove.taiko;
       if (hasLow) lastLow = lowDrum;
       else if (groove.tomLow) lastLow = "tomLow";
@@ -343,7 +425,8 @@ export function composeDrums(ctx: Ctx, setup: DrumSetup): DrumResult {
       // ghost notes around the backbeat
       if (groove.snare && tier !== "low")
         for (const step of ghostSteps)
-          if (!has("snare", step)) barHits.push({ step, kind: "snare", vel: 0.2 });
+          if (!has("snare", step))
+            barHits.push({ step, kind: "snare", vel: 0.2 });
 
       // every fourth bar breathes: a pushed kick or an open hat
       const lastOfSection = b === section.playBars - 1;
@@ -351,9 +434,12 @@ export function composeDrums(ctx: Ctx, setup: DrumSetup): DrumResult {
         if (variation === 0 && hasLow && !has(lowDrum, 14))
           barHits.push({ step: 14, kind: lowDrum, vel: 0.6 });
         else if (variation === 1 && groove.hatClosed) {
-          barHits = barHits.filter((hit) => !(hit.kind === "hatClosed" && hit.step === 14));
+          barHits = barHits.filter(
+            (hit) => !(hit.kind === "hatClosed" && hit.step === 14),
+          );
           barHits.push({ step: 14, kind: "hatOpen", vel: 0.5 });
-        } else if (hasLow && !has(lowDrum, 11)) barHits.push({ step: 11, kind: lowDrum, vel: 0.5 });
+        } else if (hasLow && !has(lowDrum, 11))
+          barHits.push({ step: 11, kind: lowDrum, vel: 0.5 });
       }
 
       // a build: the backbeat gives way to a roll that doubles its speed and grows
@@ -361,16 +447,26 @@ export function composeDrums(ctx: Ctx, setup: DrumSetup): DrumResult {
       if (rolling) {
         const roll = def!.buildRoll!;
         barHits = barHits.filter(
-          (hit) => hit.kind !== "snare" && hit.kind !== "clap" && hit.kind !== "rim" && hit.kind !== roll,
+          (hit) =>
+            hit.kind !== "snare" &&
+            hit.kind !== "clap" &&
+            hit.kind !== "rim" &&
+            hit.kind !== roll,
         );
         for (let step = 0; step < 16; step++) {
           const progress = (b + step / 16) / section.playBars;
           const rate = progress < 0.5 ? 4 : progress < 0.75 ? 2 : 1;
-          if (step % rate === 0) barHits.push({ step, kind: roll, vel: 0.36 + 0.56 * progress });
+          if (step % rate === 0)
+            barHits.push({ step, kind: roll, vel: 0.36 + 0.56 * progress });
         }
         // the low drum drops out under the last two beats so the arrival lands harder
-        if (lastOfSection)
-          barHits = barHits.filter((hit) => !(hit.kind === lowDrum && hit.step >= 8));
+        if (lastOfSection) {
+          barHits = barHits.filter(
+            (hit) => !(hit.kind === lowDrum && hit.step >= 8),
+          );
+          if (timing.loop && section.index === sections.length - 1)
+            loopFill = true;
+        }
       }
 
       // fill into the next section (or back to the top of the loop)
@@ -379,32 +475,52 @@ export function composeDrums(ctx: Ctx, setup: DrumSetup): DrumResult {
       if (leadsOn && fillEnergy >= 0.22 && !rolling) {
         const size = fillEnergy < 0.5 ? "light" : "full";
         const options = fills[size].length ? fills[size] : DEFAULT_FILLS[size];
-        const fill = rng.fork(`fill:${section.type}:${section.occurrence % 2}`).pick(options);
+        const fill = rng
+          .fork(`fill:${section.type}:${section.occurrence % 2}`)
+          .pick(options);
         let fillHits = grooveBar(fill, 0);
-        if (timing.bpm > 150) fillHits = fillHits.filter((hit) => hit.step % 2 === 0 || hit.step >= 14);
+        if (timing.bpm > 150)
+          fillHits = fillHits.filter(
+            (hit) => hit.step % 2 === 0 || hit.step >= 14,
+          );
         if (fillHits.length) {
+          if (timing.loop && section.index === sections.length - 1)
+            loopFill = true;
           const start = Math.min(...fillHits.map((hit) => hit.step));
-          const fillHasLow = fillHits.some((hit) => FILL_SURVIVORS.has(hit.kind));
+          const fillHasLow = fillHits.some((hit) =>
+            FILL_SURVIVORS.has(hit.kind),
+          );
           barHits = barHits.filter(
-            (hit) => hit.step < start || (FILL_SURVIVORS.has(hit.kind) && !fillHasLow),
+            (hit) =>
+              hit.step < start || (FILL_SURVIVORS.has(hit.kind) && !fillHasLow),
           );
           for (const hit of fillHits)
             barHits.push({
               ...hit,
-              vel: hit.vel * (0.72 + 0.28 * fillEnergy) + (0.1 * (hit.step - start)) / Math.max(1, 16 - start),
+              vel:
+                hit.vel * (0.72 + 0.28 * fillEnergy) +
+                (0.1 * (hit.step - start)) / Math.max(1, 16 - start),
             });
         }
       }
 
       // an open hat silences the closed hat on the same step
-      const openSteps = new Set(barHits.filter((hit) => hit.kind === "hatOpen").map((hit) => hit.step));
-      barHits = barHits.filter((hit) => !(hit.kind === "hatClosed" && openSteps.has(hit.step)));
+      const openSteps = new Set(
+        barHits.filter((hit) => hit.kind === "hatOpen").map((hit) => hit.step),
+      );
+      barHits = barHits.filter(
+        (hit) => !(hit.kind === "hatClosed" && openSteps.has(hit.step)),
+      );
 
       kickSteps.set(
         bar,
-        [...new Set(barHits.filter((hit) => hit.kind === lowDrum && !hit.shift).map((hit) => hit.step))].sort(
-          (a, b2) => a - b2,
-        ),
+        [
+          ...new Set(
+            barHits
+              .filter((hit) => hit.kind === lowDrum && !hit.shift)
+              .map((hit) => hit.step),
+          ),
+        ].sort((a, b2) => a - b2),
       );
       const level = 0.66 + 0.34 * energy;
       for (const hit of barHits)
@@ -419,7 +535,8 @@ export function composeDrums(ctx: Ctx, setup: DrumSetup): DrumResult {
     const firstOfPiece = section.index === 0 && !timing.loop;
     if (section.energy >= (firstOfPiece ? 0.75 : 0.42)) {
       const beat = section.startBar * beatsPerBar;
-      if (def?.crash !== null) emit(beat, def?.crash ?? "crash", 0.5 + 0.4 * section.energy);
+      if (def?.crash !== null)
+        emit(beat, def?.crash ?? "crash", 0.5 + 0.4 * section.energy);
       if (def?.impact) emit(beat, def.impact, 0.6 + 0.35 * section.energy);
     }
 
@@ -432,10 +549,14 @@ export function composeDrums(ctx: Ctx, setup: DrumSetup): DrumResult {
       if (def?.impact) emit(beat, def.impact, 0.5 + 0.3 * section.energy);
     }
   }
-  return { hits, kickSteps };
+  return { hits, kickSteps, loopFill };
 }
 
-export function composePerc(ctx: Ctx, def: PercDef, remap: DrumsDef["remap"]): BeatHit[] {
+export function composePerc(
+  ctx: Ctx,
+  def: PercDef,
+  remap: DrumsDef["remap"],
+): BeatHit[] {
   const { timing, sections, rng } = ctx;
   const hits: BeatHit[] = [];
   const grooves = def.byLead?.[ctx.config.instrument] ?? def.grooves;
@@ -505,33 +626,53 @@ export function composeBass(
     return note;
   };
   const add = (beat: number, len: number, midi: number, vel: number) => {
-    const note: BeatNote = { beat, len: Math.max(0.1, len), midi: fit(midi), vel: clamp(vel, 0.1, 1) };
+    const note: BeatNote = {
+      beat,
+      len: Math.max(0.1, len),
+      midi: fit(midi),
+      vel: clamp(vel, 0.1, 1),
+    };
     const last = notes[notes.length - 1];
     // a held note that would be struck again at the very moment it ends (a
     // drone under a new section, the tonic under the final chord) is tied
     // instead: see the pedal figure below for what the re-strike sounds like
-    if (last && last.midi === note.midi && last.len >= 2 && Math.abs(last.beat + last.len - beat) < 0.05) {
+    if (
+      last &&
+      last.midi === note.midi &&
+      last.len >= 2 &&
+      Math.abs(last.beat + last.len - beat) < 0.05
+    ) {
       last.len = beat + note.len - last.beat;
       previous = note.midi;
       return;
     }
-    if (def.slide && last && last.midi !== note.midi && Math.abs(last.midi - note.midi) <= 12) {
+    if (
+      def.slide &&
+      last &&
+      last.midi !== note.midi &&
+      Math.abs(last.midi - note.midi) <= 12
+    ) {
       const dice = rng.fork(`slide:${Math.round(beat * 4) % 64}`);
       if (dice.chance(def.slide)) note.bend = last.midi - note.midi;
     }
     notes.push(note);
     previous = note.midi;
   };
-  const fifthInterval = (chord: Chord) => chord.intervals.find((t) => t === 6 || t === 7 || t === 8) ?? 7;
+  const fifthInterval = (chord: Chord) =>
+    chord.intervals.find((t) => t === 6 || t === 7 || t === 8) ?? 7;
   /**
    * Semitones from the chord's BASS note up to its fifth / third. Over an
    * inversion the bass is not the root, so the distance is measured from the
    * note actually played (C/E: the fifth G lies a minor third above E).
    */
-  const above = (chord: Chord, interval: number) => mod(chord.root + interval - chord.bass, 12);
+  const above = (chord: Chord, interval: number) =>
+    mod(chord.root + interval - chord.bass, 12);
   const fifthOf = (chord: Chord) => above(chord, fifthInterval(chord)) || 12;
   const thirdOf = (chord: Chord) =>
-    above(chord, chord.intervals.find((t) => t === 3 || t === 4) ?? fifthInterval(chord)) || 12;
+    above(
+      chord,
+      chord.intervals.find((t) => t === 3 || t === 4) ?? fifthInterval(chord),
+    ) || 12;
 
   /** approach note one eighth (or one beat) before the next root */
   // a five-note tune has no leading tones: under it the bass approaches by
@@ -549,7 +690,8 @@ export function composeBass(
           }
     } else {
       options.push(target - 1, target + 1);
-      for (const step of [-2, 2]) if (key.parent[mod(target + step, 12)]) options.push(target + step);
+      for (const step of [-2, 2])
+        if (key.parent[mod(target + step, 12)]) options.push(target + step);
     }
     const fifth = target + 7 > high + 5 ? target - 5 : target + 7;
     // (over an inversion the fifth above the bass note may be foreign to chord and scale alike)
@@ -580,23 +722,42 @@ export function composeBass(
       const approachChance = def.approach * (0.35 + 0.65 * complexity);
 
       // chord segments inside this bar
-      const segments: { beat: number; beats: number; chord: Chord; nextChord: Chord }[] = [];
-      for (let beat = barBeat; beat < barBeat + beatsPerBar; ) {
+      const segments: {
+        beat: number;
+        beats: number;
+        chord: Chord;
+        nextChord: Chord;
+      }[] = [];
+      for (let beat = barBeat; beat < barBeat + beatsPerBar;) {
         const slot = harmony.at(beat);
         const end = Math.min(slot.beat + slot.beats, barBeat + beatsPerBar);
-        const following = end >= slot.beat + slot.beats ? harmony.after(slot) : slot;
-        segments.push({ beat, beats: end - beat, chord: slot.chord, nextChord: following.chord });
+        const following =
+          end >= slot.beat + slot.beats ? harmony.after(slot) : slot;
+        segments.push({
+          beat,
+          beats: end - beat,
+          chord: slot.chord,
+          nextChord: following.chord,
+        });
         beat = end;
       }
 
       const written = feelOverride ? undefined : def.riffs?.[tierOf(energy)];
       if (written && written.length) {
-        const text = pickRanked(written, isLifted(section.type), rng.fork(`riff:${section.type}:${tierOf(energy)}`))
+        const text = pickRanked(
+          written,
+          isLifted(section.type),
+          rng.fork(`riff:${section.type}:${tierOf(energy)}`),
+        )
           .replace(/[\s|]/g, "")
           .padEnd(16, ".")
           .slice(0, 16);
         // a chord change inside the bar restates the new root
-        const changes = new Set(segments.slice(1).map((segment) => Math.round((segment.beat - barBeat) * 4)));
+        const changes = new Set(
+          segments
+            .slice(1)
+            .map((segment) => Math.round((segment.beat - barBeat) * 4)),
+        );
         const roots = new Map<number, number>();
         let ringing = false;
         for (let step = 0; step < 16; step++) {
@@ -610,7 +771,12 @@ export function composeBass(
             symbol = "1";
           } else if (changes.has(step)) symbol = "1";
           // faster than a bass can speak: the off-sixteenths are left out
-          if (step % 2 === 1 && timing.beatSeconds / 4 < 0.078 && !changes.has(step)) continue;
+          if (
+            step % 2 === 1 &&
+            timing.beatSeconds / 4 < 0.078 &&
+            !changes.has(step)
+          )
+            continue;
           let end = step + 1;
           while (end < 16 && text[end] === "." && !changes.has(end)) end++;
           const beat = barBeat + step / 4;
@@ -628,17 +794,28 @@ export function composeBass(
             // the fifth above, or the one below when that would leave the register
             midi = root + fifthOf(chord);
             if (midi > high + 1) midi -= 12;
-          }
-          else if (symbol === "3") midi = root + thirdOf(chord);
+          } else if (symbol === "3") midi = root + thirdOf(chord);
           else if (symbol === "7")
             midi =
               root -
               12 +
-              (above(chord, chord.intervals.find((t) => t === 9 || t === 10 || t === 11) ?? 10) || 12);
+              (above(
+                chord,
+                chord.intervals.find((t) => t === 9 || t === 10 || t === 11) ??
+                  10,
+              ) || 12);
           else if (symbol === "a")
-            midi = next.bass !== chord.bass ? approach(place(next.bass, root), root, dice) : root + fifthOf(chord);
+            midi =
+              next.bass !== chord.bass
+                ? approach(place(next.bass, root), root, dice)
+                : root + fifthOf(chord);
           const accent = step % 8 === 0 ? 1 : step % 4 === 0 ? 0.92 : 0.82;
-          add(beat, ((end - step) / 4) * gate, midi, loud * accent * (symbol === "8" ? 0.92 : 1));
+          add(
+            beat,
+            ((end - step) / 4) * gate,
+            midi,
+            loud * accent * (symbol === "8" ? 0.92 : 1),
+          );
           // figures are anchored on the root, not on wherever the last note went
           previous = root;
           ringing = true;
@@ -655,13 +832,22 @@ export function composeBass(
           // one ends meets it at an arbitrary phase — a 20 dB hole of 40 ms
           // in the drone every time (seen in spectrograms of ambient pieces).
           const held = notes[notes.length - 1];
-          if (held && Math.abs(held.beat + held.len - barBeat) < 0.05 && held.midi === tonic)
+          if (
+            held &&
+            Math.abs(held.beat + held.len - barBeat) < 0.05 &&
+            held.midi === tonic
+          )
             held.len += beatsPerBar;
           else add(barBeat, beatsPerBar, tonic, loud * 0.9);
         } else {
           const rate = tier === "mid" ? 4 : 2;
           for (let step = 0; step < 16; step += rate)
-            add(barBeat + step / 4, (rate / 4) * gate, tonic, step % 8 === 0 ? loud : loud * 0.8);
+            add(
+              barBeat + step / 4,
+              (rate / 4) * gate,
+              tonic,
+              step % 8 === 0 ? loud : loud * 0.8,
+            );
         }
         continue;
       }
@@ -673,7 +859,8 @@ export function composeBass(
         const target = place(nextChord.bass, root);
         const end = segment.beat + segment.beats;
         const lastSegment = segment === segments[segments.length - 1];
-        const wantsApproach = changes && lastSegment && dice.chance(approachChance);
+        const wantsApproach =
+          changes && lastSegment && dice.chance(approachChance);
 
         if (feel === "walking") {
           const quarters = Math.max(1, Math.round(segment.beats));
@@ -684,7 +871,12 @@ export function composeBass(
             [root, third, fifth, third],
             [root, second, third, fifth],
             [root, fifth, third, second],
-            [root, fifth - 12, third - 12, root - (key.parent[mod(root - 2, 12)] ? 2 : 1)],
+            [
+              root,
+              fifth - 12,
+              third - 12,
+              root - (key.parent[mod(root - 2, 12)] ? 2 : 1),
+            ],
           ];
           const line = dice.pick(lines);
           for (let q = 0; q < quarters; q++) {
@@ -695,7 +887,12 @@ export function composeBass(
               lastQuarter && changes
                 ? approach(place(nextChord.bass, previous), previous, dice)
                 : line[Math.min(q, line.length - 1)];
-            add(beat, Math.min(1, end - beat) * gate, midi, q === 0 ? loud : loud * 0.86);
+            add(
+              beat,
+              Math.min(1, end - beat) * gate,
+              midi,
+              q === 0 ? loud : loud * 0.86,
+            );
           }
           continue;
         }
@@ -706,19 +903,48 @@ export function composeBass(
           const played = kickSteps.get(bar);
           const kicks = played && played.length ? played : [0, 6, 10];
           // every kick gets a note, unless they come faster than a bass can speak
-          const spacing = Math.max(1, Math.ceil(0.1 / (timing.beatSeconds / 4)));
-          const steps = [...new Set([offset, ...kicks.filter((step) => step >= offset && step < limit)])]
+          const spacing = Math.max(
+            1,
+            Math.ceil(0.1 / (timing.beatSeconds / 4)),
+          );
+          const steps = [
+            ...new Set([
+              offset,
+              ...kicks.filter((step) => step >= offset && step < limit),
+            ]),
+          ]
             .sort((a, b2) => a - b2)
             .filter((step, i, all) => i === 0 || step - all[i - 1] >= spacing);
           steps.forEach((step, i) => {
-            const nextStep = steps[i + 1] ?? limit;
             if (wantsApproach && step >= limit - 2 && i > 0) return;
+            // the note before an approach tone ends where the approach begins
+            const nextStep = Math.min(
+              steps[i + 1] ?? limit,
+              wantsApproach ? limit - 2 : limit,
+            );
+            if (nextStep <= step) return;
             const length = Math.min(nextStep - step, 4) / 4;
             const colour = i === 0 ? 0 : dice.next();
-            const midi = colour > 0.85 ? root + 12 : colour > 0.72 ? root + fifthOf(chord) : root;
-            add(barBeat + step / 4, length * gate * 0.9, midi, i === 0 ? loud : loud * 0.84);
+            const midi =
+              colour > 0.85
+                ? root + 12
+                : colour > 0.72
+                  ? root + fifthOf(chord)
+                  : root;
+            add(
+              barBeat + step / 4,
+              length * gate * 0.9,
+              midi,
+              i === 0 ? loud : loud * 0.84,
+            );
           });
-          if (wantsApproach) add(end - 0.5, 0.5 * gate, approach(target, root, dice), loud * 0.78);
+          if (wantsApproach)
+            add(
+              end - 0.5,
+              0.5 * gate,
+              approach(target, root, dice),
+              loud * 0.78,
+            );
           continue;
         }
 
@@ -726,29 +952,65 @@ export function composeBass(
           const rate = tier === "low" ? 1 : 0.5;
           const count = Math.max(1, Math.round(segment.beats / rate));
           const fifth = root + fifthOf(chord);
-          const order = feel === "octave" ? [root, root + 12] : [root, fifth, root + 12, fifth];
+          const order =
+            feel === "octave"
+              ? [root, root + 12]
+              : [root, fifth, root + 12, fifth];
           for (let i = 0; i < count; i++) {
             const beat = segment.beat + i * rate;
             const lastNote = i === count - 1 && count > 1;
-            const midi = lastNote && wantsApproach ? approach(target, previous, dice) : order[i % order.length];
-            add(beat, rate * gate * (feel === "octave" ? 0.8 : 0.92), midi, i % 2 === 0 ? loud : loud * 0.8);
+            const midi =
+              lastNote && wantsApproach
+                ? approach(target, previous, dice)
+                : order[i % order.length];
+            add(
+              beat,
+              rate * gate * (feel === "octave" ? 0.8 : 0.92),
+              midi,
+              i % 2 === 0 ? loud : loud * 0.8,
+            );
           }
           continue;
         }
 
         // "root": long notes that tighten into a pulse as the energy rises
         if (tier === "low" || segment.beats < 2) {
-          const length = wantsApproach && segment.beats >= 2 ? segment.beats - 0.5 : segment.beats;
+          const length =
+            wantsApproach && segment.beats >= 2
+              ? segment.beats - 0.5
+              : segment.beats;
           add(segment.beat, length * gate, root, loud * 0.92);
           if (wantsApproach && segment.beats >= 2)
-            add(end - 0.5, 0.5 * gate, approach(target, root, dice), loud * 0.74);
+            add(
+              end - 0.5,
+              0.5 * gate,
+              approach(target, root, dice),
+              loud * 0.74,
+            );
         } else if (tier === "mid") {
           if (segment.beats >= 4) {
             add(segment.beat, 1.5 * gate, root, loud);
             add(segment.beat + 1.5, 0.5 * gate, root, loud * 0.72);
-            add(segment.beat + 2, (wantsApproach ? 1.5 : 2) * gate, root, loud * 0.9);
-          } else add(segment.beat, (wantsApproach ? segment.beats - 0.5 : segment.beats) * gate, root, loud);
-          if (wantsApproach) add(end - 0.5, 0.5 * gate, approach(target, root, dice), loud * 0.74);
+            add(
+              segment.beat + 2,
+              (wantsApproach ? 1.5 : 2) * gate,
+              root,
+              loud * 0.9,
+            );
+          } else
+            add(
+              segment.beat,
+              (wantsApproach ? segment.beats - 0.5 : segment.beats) * gate,
+              root,
+              loud,
+            );
+          if (wantsApproach)
+            add(
+              end - 0.5,
+              0.5 * gate,
+              approach(target, root, dice),
+              loud * 0.74,
+            );
         } else {
           const count = Math.round(segment.beats * 2);
           const pop = dice.int(2, 7);
@@ -756,8 +1018,14 @@ export function composeBass(
             const lastNote = i === count - 1;
             let midi = root;
             if (lastNote && wantsApproach) midi = approach(target, root, dice);
-            else if (i === pop && count >= 8 && dice.chance(0.5)) midi = root + 12;
-            add(segment.beat + i * 0.5, 0.5 * gate * 0.88, midi, i % 2 === 0 ? loud : loud * 0.78);
+            else if (i === pop && count >= 8 && dice.chance(0.5))
+              midi = root + 12;
+            add(
+              segment.beat + i * 0.5,
+              0.5 * gate * 0.88,
+              midi,
+              i % 2 === 0 ? loud : loud * 0.78,
+            );
           }
         }
       }
@@ -765,9 +1033,38 @@ export function composeBass(
   }
 
   const ending = sections[sections.length - 1];
-  if (!timing.loop && ctx.plays.bass[ending.index] && (feelOverride ?? "root") !== "none") {
+  if (
+    !timing.loop &&
+    ctx.plays.bass[ending.index] &&
+    (feelOverride ?? "root") !== "none"
+  ) {
     const beat = timing.finalBar * beatsPerBar;
-    add(beat, timing.endBeat - beat, place(harmony.at(beat).chord.bass), 0.7 + 0.2 * ending.energy);
+    add(
+      beat,
+      timing.endBeat - beat,
+      place(harmony.at(beat).chord.bass),
+      0.7 + 0.2 * ending.energy,
+    );
   }
-  return notes;
+  return monophonic(notes);
+}
+
+/**
+ * A bass is one voice: a new note ends the note before it. (The synthesizer
+ * sums every note it is given, so two sub notes a tone apart would beat
+ * against each other for as long as they overlap.)
+ */
+function monophonic(notes: BeatNote[]): BeatNote[] {
+  const ordered = notes.slice().sort((a, b) => a.beat - b.beat);
+  const kept: BeatNote[] = [];
+  for (const note of ordered) {
+    const last = kept[kept.length - 1];
+    if (last && last.beat + last.len > note.beat - 1e-9) {
+      // struck together: the earlier entry stands
+      if (note.beat - last.beat < 0.05) continue;
+      last.len = (note.beat - last.beat) * (last.midi === note.midi ? 1 : 0.96);
+    }
+    kept.push(note);
+  }
+  return kept;
 }

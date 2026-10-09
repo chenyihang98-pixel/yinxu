@@ -183,7 +183,8 @@ function play(h: Hit, l: Layer, flavour: Flavour, accent: boolean): void {
   let phase = l.src === "tri" ? 7 / 32 : 0;
   // the two things a console can do for a harder hit besides volume: a
   // thinner (brighter) pulse, and more of the noise burst on a triangle drum
-  const duty = l.src === "pulse" && vel < 0.55 ? Math.min(0.5, l.duty * 2) : l.duty;
+  const duty =
+    l.src === "pulse" && vel < 0.55 ? Math.min(0.5, l.duty * 2) : l.duty;
   const gain = accent ? l.gain * byVel(h, 0.4, 1.15) : l.gain;
   const high = 2 * (1 - duty);
   const low = -2 * duty;

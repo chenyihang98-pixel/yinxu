@@ -36,12 +36,7 @@ export { Chorus, chorusGains } from "./fx/chorus";
 export type { ChorusOptions } from "./fx/chorus";
 export { PingPongDelay } from "./fx/delay";
 export type { DelayOptions } from "./fx/delay";
-export {
-  Reverb,
-  dampingCorner,
-  dampingRatio,
-  sizeScale,
-} from "./fx/reverb";
+export { Reverb, dampingCorner, dampingRatio, sizeScale } from "./fx/reverb";
 export type { ReverbOptions, ReverbSettings } from "./fx/reverb";
 export {
   DUCK_DEPTH,
@@ -76,9 +71,7 @@ export function cutFilter(
       ),
     );
   if (highCutHz > 1 && highCutHz < sampleRate * 0.45)
-    sections.push(
-      new Biquad().setLowpass(highCutHz, Math.SQRT1_2, sampleRate),
-    );
+    sections.push(new Biquad().setLowpass(highCutHz, Math.SQRT1_2, sampleRate));
   return sections.length ? new BiquadCascade(sections) : null;
 }
 

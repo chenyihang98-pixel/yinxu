@@ -109,10 +109,8 @@ export class KarplusString {
   private retune(): void {
     const omega = (TAU * this.hz) / this.sampleRate;
     const lossDelay =
-      Math.atan2(
-        this.pole * Math.sin(omega),
-        1 - this.pole * Math.cos(omega),
-      ) / omega;
+      Math.atan2(this.pole * Math.sin(omega), 1 - this.pole * Math.cos(omega)) /
+      omega;
     const dispersionDelay =
       this.dispCount * allpassPhaseDelay(this.dispCoef, omega);
     const rest = this.sampleRate / this.hz - lossDelay - dispersionDelay;

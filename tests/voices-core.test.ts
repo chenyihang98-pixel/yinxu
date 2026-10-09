@@ -1,7 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import {
   DRUM_KINDS,
   DRUM_KITS,
@@ -11,7 +9,6 @@ import {
 import type { VoiceId } from "../src/music/score";
 import type { Voice } from "../src/audio/voices/types";
 import {
-  ALIASED_VOICES,
   DUPLICATE_VOICES,
   MISSING_VOICES,
   VOICES,
@@ -52,7 +49,6 @@ import {
   TAU,
   bendOffset,
   createRng,
-  isAliasVoice,
   midiToHz,
   noteOffFrame,
   scratch,
@@ -60,7 +56,12 @@ import {
 } from "../src/audio/dsp";
 
 const EXEMPLARS: VoiceId[] = ["piano", "guitar", "pad", "subBass"];
-const near = (actual: number, expected: number, tolerance: number, what: string) =>
+const near = (
+  actual: number,
+  expected: number,
+  tolerance: number,
+  what: string,
+) =>
   assert.ok(
     Math.abs(actual - expected) <= tolerance,
     `${what}: got ${actual}, expected ${expected} ±${tolerance}`,
@@ -92,13 +93,16 @@ function referenceVoice(
     render(left, right, frames, note, ctx) {
       const sr = flaw.ignoreSampleRate ? 48000 : ctx.sampleRate;
       const env = scratch(14, frames);
-      new Adsr(sr, { attack: 0.004, decay: 0.1, sustain: 1, release: 0.07 }).render(
-        env,
-        frames,
-        noteOffFrame(note, frames, sr),
-      );
+      new Adsr(sr, {
+        attack: 0.004,
+        decay: 0.1,
+        sustain: 1,
+        release: 0.07,
+      }).render(env, frames, noteOffFrame(note, frames, sr));
       const bright = flaw.plainVelocity ? 0.2 : 0.5 * note.vel;
-      const rms = Math.sqrt(0.5 * (1 + bright * bright + 0.25 * bright * bright));
+      const rms = Math.sqrt(
+        0.5 * (1 + bright * bright + 0.25 * bright * bright),
+      );
       const gain =
         ((REFERENCE_RMS * velocityGain(note.vel)) / rms) *
         Math.pow(10, (flaw.gainDb ?? 0) / 20);
@@ -108,7 +112,11 @@ function referenceVoice(
       const count = flaw.overrun ? frames + 8 : frames;
       for (let i = 0; i < count; i++) {
         const bend = Math.pow(2, bendOffset(note.bend, i / sr) / 12);
-        const e = flaw.gate ? (i < noteOffFrame(note, frames, sr) ? 1 : 0) : env[i];
+        const e = flaw.gate
+          ? i < noteOffFrame(note, frames, sr)
+            ? 1
+            : 0
+          : env[i];
         let v =
           (Math.cos(TAU * phase - (flaw.gate ? 0 : Math.PI / 2)) +
             bright * Math.sin(2 * TAU * phase) +
@@ -134,7 +142,10 @@ test("measurement harness reads level, pitch, spectrum and clicks correctly", ()
   const voice = referenceVoice();
   const r = renderNote(voice, { midi: 69, vel: 0.8, duration: 1 });
   assert.equal(r.frames, Math.ceil(1.08 * SAMPLE_RATE));
-  assert.equal(r.frames, noteFrames(voice, { midi: 69, vel: 0.8, duration: 1 }));
+  assert.equal(
+    r.frames,
+    noteFrames(voice, { midi: 69, vel: 0.8, duration: 1 }),
+  );
   assert.equal(r.holdFrames, SAMPLE_RATE);
   assert.ok(r.guardIntact && isFiniteAudio(r));
   near(loudestWindowDb(r), -18, 0.05, "loudest 400 ms of a calibrated voice");
@@ -159,18 +170,34 @@ test("measurement harness reads level, pitch, spectrum and clicks correctly", ()
       const hz = midiToHz(midi + cents / 100);
       const signal = Float32Array.from({ length: 30000 }, (_, i) => {
         const p = (hz * i) / SAMPLE_RATE;
-        return Math.sin(TAU * p) + 0.5 * Math.sin(2 * TAU * p + 1) + 0.3 * Math.sin(3 * TAU * p + 2);
+        return (
+          Math.sin(TAU * p) +
+          0.5 * Math.sin(2 * TAU * p + 1) +
+          0.3 * Math.sin(3 * TAU * p + 2)
+        );
       });
       const estimate = estimatePitch(signal, SAMPLE_RATE, midiToHz(midi));
-      near(1200 * Math.log2(estimate / hz), 0, 0.3, `estimate at midi ${midi} ${cents} cents`);
+      near(
+        1200 * Math.log2(estimate / hz),
+        0,
+        0.3,
+        `estimate at midi ${midi} ${cents} cents`,
+      );
     }
   }
   // missing fundamental: harmonics 2..4 still give the right pitch
   const hollow = Float32Array.from({ length: 30000 }, (_, i) => {
     const p = (220 * i) / SAMPLE_RATE;
-    return Math.sin(2 * TAU * p) + Math.sin(3 * TAU * p) + Math.sin(4 * TAU * p);
+    return (
+      Math.sin(2 * TAU * p) + Math.sin(3 * TAU * p) + Math.sin(4 * TAU * p)
+    );
   });
-  near(estimatePitch(hollow, SAMPLE_RATE, 220), 220, 0.1, "missing fundamental");
+  near(
+    estimatePitch(hollow, SAMPLE_RATE, 220),
+    220,
+    0.1,
+    "missing fundamental",
+  );
   assert.ok(monoSum(r).length === r.frames);
 
   // level is the average channel power: one silent channel reads 3 dB lower
@@ -179,7 +206,10 @@ test("measurement harness reads level, pitch, spectrum and clicks correctly", ()
 });
 
 test("the contract check passes a correct voice and names every kind of violation", () => {
-  const good = checkVoiceContract(referenceVoice(), { range: [45, 81], step: 12 });
+  const good = checkVoiceContract(referenceVoice(), {
+    range: [45, 81],
+    step: 12,
+  });
   assert.deepEqual(good.failures, []);
   near(good.levels[0].levelDb, -18, 0.1, "reported level");
   near(good.velocity[0].levelSpanDb, 11.9, 0.3, "reported velocity span");
@@ -187,8 +217,14 @@ test("the contract check passes a correct voice and names every kind of violatio
   assert.ok(good.rows.length === 4 && good.renders > 40 && good.nsPerFrame > 0);
   assert.match(formatReport(good), /synth: ok/);
 
-  const expectFailure = (flaw: Parameters<typeof referenceVoice>[0], pattern: RegExp) => {
-    const report = checkVoiceContract(referenceVoice(flaw), { range: [45, 81], step: 12 });
+  const expectFailure = (
+    flaw: Parameters<typeof referenceVoice>[0],
+    pattern: RegExp,
+  ) => {
+    const report = checkVoiceContract(referenceVoice(flaw), {
+      range: [45, 81],
+      step: 12,
+    });
     assert.ok(
       report.failures.some((failure) => pattern.test(failure)),
       `expected a failure matching ${pattern}, got:\n${report.failures.slice(0, 6).join("\n") || "(none)"}`,
@@ -210,7 +246,11 @@ test("the contract check passes a correct voice and names every kind of violatio
   expectFailure({ ignoreSampleRate: true }, /at 44100 Hz/);
   expectFailure({ nan: true }, /NaN or Infinity/);
   assert.throws(
-    () => assertVoiceContract(referenceVoice({ cents: 30 }), { range: [57, 69], step: 12 }),
+    () =>
+      assertVoiceContract(referenceVoice({ cents: 30 }), {
+        range: [57, 69],
+        step: 12,
+      }),
     /breaks the contract/,
   );
   // Math.random is restored afterwards
@@ -226,7 +266,6 @@ test("the contract check passes a correct voice and names every kind of violatio
 
 for (const id of EXEMPLARS) {
   test(`${id} honours the voice contract over its whole range`, (t) => {
-    assert.ok(!isAliasVoice(VOICES[id]), `${id} must be a real voice`);
     const options = VOICE_CONTRACTS[id];
     assert.ok(options, `${id} needs an entry in VOICE_CONTRACTS`);
     const report = assertVoiceContract(VOICES[id], options);
@@ -234,7 +273,10 @@ for (const id of EXEMPLARS) {
     for (const level of report.levels)
       near(level.levelDb, -18, 1, `${id} level at midi ${level.midi}`);
     for (const row of report.rows)
-      assert.ok(Math.abs(row.cents) < 5, `${id} midi ${row.midi}: ${row.cents} cents`);
+      assert.ok(
+        Math.abs(row.cents) < 5,
+        `${id} midi ${row.midi}: ${row.cents} cents`,
+      );
     assert.ok(report.worstPeak <= 1);
   });
 }
@@ -245,8 +287,14 @@ test("piano: decays like a struck string, damps on release, gentle stereo", () =
   const early = rmsDb(held, 0, 0.1);
   const later = rmsDb(held, 0.9, 1);
   const late = rmsDb(held, 2.4, 2.5);
-  assert.ok(early - later > 3 && early - later < 14, `first second falls ${early - later} dB`);
-  assert.ok(later - late > 2 && later - late < 20, `it keeps decaying: ${later - late} dB`);
+  assert.ok(
+    early - later > 3 && early - later < 14,
+    `first second falls ${early - later} dB`,
+  );
+  assert.ok(
+    later - late > 2 && later - late < 20,
+    `it keeps decaying: ${later - late} dB`,
+  );
   // upper partials die first: the tone gets darker while it rings
   assert.ok(centroidHz(held, 1.5, 0.5) < centroidHz(held, 0, 0.3) * 0.85);
   // the damper: 150 ms after note-off the note is at least 25 dB down
@@ -257,12 +305,24 @@ test("piano: decays like a struck string, damps on release, gentle stereo", () =
   assert.ok(rmsDb(top, 0.15, 0.2) - rmsDb(top, 0.35, 0.4) < 15);
   // stretched partials: the 2nd partial is sharper than 2 x the fundamental
   const high = renderNote(voice, { midi: 84, vel: 0.9, duration: 1 });
-  const second = estimatePitch(monoSum(high), SAMPLE_RATE, 2 * midiToHz(84), 2400, 16000);
-  assert.ok(second / (2 * midiToHz(84)) > 1.0005, `2nd partial ratio ${second / midiToHz(84)}`);
+  const second = estimatePitch(
+    monoSum(high),
+    SAMPLE_RATE,
+    2 * midiToHz(84),
+    2400,
+    16000,
+  );
+  assert.ok(
+    second / (2 * midiToHz(84)) > 1.0005,
+    `2nd partial ratio ${second / midiToHz(84)}`,
+  );
   for (const midi of [36, 48, 60, 72]) {
     const r = renderNote(voice, { midi, vel: 0.8, duration: 1 });
     const correlation = stereoCorrelation(r);
-    assert.ok(correlation > 0.8 && correlation < 0.995, `midi ${midi} correlation ${correlation}`);
+    assert.ok(
+      correlation > 0.8 && correlation < 0.995,
+      `midi ${midi} correlation ${correlation}`,
+    );
   }
   // a harder hit is brighter, not just louder
   const soft = renderNote(voice, { midi: 60, vel: 0.3, duration: 1 });
@@ -280,10 +340,19 @@ test("guitar: plucked decay, damped release, real bends, mild stereo", () => {
   assert.ok(rmsDb(held, 2.8, 2.9) > -60, "a low string still rings after 3 s");
   assert.ok(centroidHz(held, 1.5, 0.5) < centroidHz(held, 0, 0.3) * 0.8);
   const short = renderNote(voice, { midi: 52, vel: 0.8, duration: 0.4 });
-  assert.ok(rmsDb(short, 0.3, 0.4) - rmsDb(short, 0.55, 0.6) > 20, "the finger damps the string");
+  assert.ok(
+    rmsDb(short, 0.3, 0.4) - rmsDb(short, 0.55, 0.6) > 20,
+    "the finger damps the string",
+  );
   // a bend of +2 starts two semitones sharp and lands on the note
   const bent = renderNote(voice, { midi: 57, vel: 0.8, duration: 1, bend: 2 });
-  const start = estimatePitch(monoSum(bent), SAMPLE_RATE, midiToHz(58.6), 96, 1100);
+  const start = estimatePitch(
+    monoSum(bent),
+    SAMPLE_RATE,
+    midiToHz(58.6),
+    96,
+    1100,
+  );
   assert.ok(
     1200 * Math.log2(start / midiToHz(57)) > 110,
     `bend starts ${1200 * Math.log2(start / midiToHz(57))} cents sharp`,
@@ -292,15 +361,26 @@ test("guitar: plucked decay, damped release, real bends, mild stereo", () => {
   for (const midi of [40, 52, 64, 76]) {
     const r = renderNote(voice, { midi, vel: 0.8, duration: 1 });
     const correlation = stereoCorrelation(r);
-    assert.ok(correlation > 0.7 && correlation < 0.99, `midi ${midi} correlation ${correlation}`);
-    assert.ok(20 * Math.log10(peak(r)) - loudestWindowDb(r) < 15.5, `midi ${midi} crest`);
+    assert.ok(
+      correlation > 0.7 && correlation < 0.99,
+      `midi ${midi} correlation ${correlation}`,
+    );
+    assert.ok(
+      20 * Math.log10(peak(r)) - loudestWindowDb(r) < 15.5,
+      `midi ${midi} crest`,
+    );
   }
   // note-to-note variation exists but stays small
   const levels = [1, 2, 3, 4, 5, 6, 7, 8].map((seed) =>
-    loudestWindowDb(renderNote(voice, { midi: 57, vel: 0.8, duration: 1 }, SAMPLE_RATE, seed)),
+    loudestWindowDb(
+      renderNote(voice, { midi: 57, vel: 0.8, duration: 1 }, SAMPLE_RATE, seed),
+    ),
   );
   const spread = Math.max(...levels) - Math.min(...levels);
-  assert.ok(spread > 0.05 && spread < 2.5, `level spread over seeds ${spread} dB`);
+  assert.ok(
+    spread > 0.05 && spread < 2.5,
+    `level spread over seeds ${spread} dB`,
+  );
 });
 
 test("pad: slow swell, steady sustain, wide but mono-safe", () => {
@@ -310,7 +390,10 @@ test("pad: slow swell, steady sustain, wide but mono-safe", () => {
   near(rmsDb(r, 1.5, 3) - rmsDb(r, 0.5, 1.5), 0, 3, "sustain level");
   assert.ok(rmsDb(r, 3.3, 3.4) > -45, "the release is long");
   const correlation = stereoCorrelation(r);
-  assert.ok(correlation > 0.4 && correlation < 0.93, `correlation ${correlation}`);
+  assert.ok(
+    correlation > 0.4 && correlation < 0.93,
+    `correlation ${correlation}`,
+  );
   // mono sum loses little: no phase tricks
   const mono = monoSum(r);
   let monoPower = 0;
@@ -327,11 +410,20 @@ test("pad: slow swell, steady sustain, wide but mono-safe", () => {
   const soft = renderNote(voice, { midi: 60, vel: 0.3, duration: 2 });
   const hard = renderNote(voice, { midi: 60, vel: 1, duration: 2 });
   assert.ok(centroidHz(hard, 0.8, 1) > centroidHz(soft, 0.8, 1) * 1.15);
-  assert.ok(rmsDb(hard, 0.1, 0.2) - rmsDb(hard, 1, 2) > rmsDb(soft, 0.1, 0.2) - rmsDb(soft, 1, 2));
+  assert.ok(
+    rmsDb(hard, 0.1, 0.2) - rmsDb(hard, 1, 2) >
+      rmsDb(soft, 0.1, 0.2) - rmsDb(soft, 1, 2),
+  );
   // different seeds give different phases, the same seed the same sound
-  const other = renderNote(voice, { midi: 60, vel: 0.8, duration: 3 }, SAMPLE_RATE, 2);
+  const other = renderNote(
+    voice,
+    { midi: 60, vel: 0.8, duration: 3 },
+    SAMPLE_RATE,
+    2,
+  );
   let differs = false;
-  for (let i = 30000; i < 30100; i++) if (other.left[i] !== r.left[i]) differs = true;
+  for (let i = 30000; i < 30100; i++)
+    if (other.left[i] !== r.left[i]) differs = true;
   assert.ok(differs);
 });
 
@@ -345,13 +437,19 @@ test("subBass: mono, steady, soft attack, harmonics a small speaker can play", (
     // nothing in the first 2 ms: the attack is a ramp, not a thump
     assert.ok(rmsDb(r, 0, 0.002) < -40);
     const above = bandEnergiesDb(r, [120, 24000])[0];
-    assert.ok(above > -20 && above < -6, `midi ${midi}: energy above 120 Hz ${above} dB`);
+    assert.ok(
+      above > -20 && above < -6,
+      `midi ${midi}: energy above 120 Hz ${above} dB`,
+    );
     assert.ok(20 * Math.log10(peak(r)) - loudestWindowDb(r) < 5);
   }
   // harder = more harmonics
   const soft = renderNote(voice, { midi: 33, vel: 0.3, duration: 1 });
   const hard = renderNote(voice, { midi: 33, vel: 1, duration: 1 });
-  assert.ok(bandEnergiesDb(hard, [120, 24000])[0] > bandEnergiesDb(soft, [120, 24000])[0] + 3);
+  assert.ok(
+    bandEnergiesDb(hard, [120, 24000])[0] >
+      bandEnergiesDb(soft, [120, 24000])[0] + 3,
+  );
   // bend glides in from below and settles
   const bent = renderNote(voice, { midi: 40, vel: 0.8, duration: 1, bend: -3 });
   near(centsError(bent, 40, 0.3, 0.5), 0, 2, "bend lands on pitch");
@@ -361,11 +459,12 @@ test("the voice bank is complete and every id renders clean audio", (t) => {
   assert.deepEqual([...MISSING_VOICES], []);
   assert.deepEqual([...DUPLICATE_VOICES], []);
   assert.deepEqual(Object.keys(VOICES).sort(), [...VOICE_IDS].sort());
-  for (const id of EXEMPLARS) assert.ok(!ALIASED_VOICES.includes(id));
-  t.diagnostic(
-    ALIASED_VOICES.length
-      ? `still temporary aliases (${ALIASED_VOICES.length}): ${ALIASED_VOICES.join(", ")}`
-      : "no temporary aliases left",
+  assert.equal(bankProblem(assembleVoiceBank([VOICES])), "");
+  // every id is its own instrument: no voice stands in for another
+  assert.equal(
+    new Set(VOICE_IDS.map((id) => VOICES[id].render)).size,
+    VOICE_IDS.length,
+    "every id has its own render function",
   );
   for (const id of VOICE_IDS) {
     const voice = VOICES[id];
@@ -392,16 +491,31 @@ test("the voice bank is complete and every id renders clean audio", (t) => {
 
 test("voices and drums survive any buffer length and out-of-range notes", () => {
   const ctx = () => ({ sampleRate: SAMPLE_RATE, random: createRng(3) });
-  const check = (what: string, left: Float32Array, right: Float32Array, frames: number) => {
+  const check = (
+    what: string,
+    left: Float32Array,
+    right: Float32Array,
+    frames: number,
+  ) => {
     let top = 0;
     for (let i = 0; i < frames + 8; i++) {
-      assert.ok(Number.isFinite(left[i]) && Number.isFinite(right[i]), `${what}: not finite`);
-      if (i >= frames) assert.ok(left[i] === 0 && right[i] === 0, `${what}: wrote beyond frames`);
+      assert.ok(
+        Number.isFinite(left[i]) && Number.isFinite(right[i]),
+        `${what}: not finite`,
+      );
+      if (i >= frames)
+        assert.ok(
+          left[i] === 0 && right[i] === 0,
+          `${what}: wrote beyond frames`,
+        );
       top = Math.max(top, Math.abs(left[i]), Math.abs(right[i]));
     }
     assert.ok(top <= 1, `${what}: peak ${top}`);
     assert.ok(Math.abs(left[0]) <= 0.01, `${what}: starts at ${left[0]}`);
-    assert.ok(Math.abs(left[frames - 1]) <= 0.003, `${what}: ends at ${left[frames - 1]}`);
+    assert.ok(
+      Math.abs(left[frames - 1]) <= 0.003,
+      `${what}: ends at ${left[frames - 1]}`,
+    );
   };
   const notes = [
     { midi: 60, vel: 0.8, duration: 1 },
@@ -416,9 +530,17 @@ test("voices and drums survive any buffer length and out-of-range notes", () => 
         const left = new Float32Array(frames + 8);
         const right = new Float32Array(frames + 8);
         VOICES[id].render(left, right, frames, note, ctx());
-        check(`${id} ${frames} frames ${JSON.stringify(note)}`, left, right, frames);
+        check(
+          `${id} ${frames} frames ${JSON.stringify(note)}`,
+          left,
+          right,
+          frames,
+        );
         const tail = VOICES[id].tail(note);
-        assert.ok(Number.isFinite(tail) && tail >= 0 && tail <= 8, `${id}: tail ${tail}`);
+        assert.ok(
+          Number.isFinite(tail) && tail >= 0 && tail <= 8,
+          `${id}: tail ${tail}`,
+        );
       }
   for (const kit of DRUM_KITS)
     for (const kind of DRUM_KINDS)
@@ -427,58 +549,63 @@ test("voices and drums survive any buffer length and out-of-range notes", () => 
           const left = new Float32Array(frames + 8);
           const right = new Float32Array(frames + 8);
           DRUMS.render(left, right, frames, kind, kit, vel, ctx());
-          check(`${kit}/${kind} ${frames} frames vel ${vel}`, left, right, frames);
+          check(
+            `${kit}/${kind} ${frames} frames vel ${vel}`,
+            left,
+            right,
+            frames,
+          );
         }
 });
 
 test("an incomplete bank is reported, and its holes throw when used", () => {
   const partial = assembleVoiceBank([KEYS_VOICES]);
-  assert.ok(partial.missing.includes("guitar") && partial.missing.includes("subBass"));
+  assert.ok(
+    partial.missing.includes("guitar") && partial.missing.includes("subBass"),
+  );
   assert.ok(!partial.missing.includes("piano"));
   assert.match(bankProblem(partial), /missing: \[.*guitar.*\]/);
   const bank = completeBank(partial);
   assert.equal(bank.piano, KEYS_VOICES.piano);
-  assert.throws(() => bank.guitar.tail({ midi: 60, vel: 1, duration: 1 }), /not implemented/);
   assert.throws(
-    () => bank.pad.render(new Float32Array(8), new Float32Array(8), 8, { midi: 60, vel: 1, duration: 0 }, {
-      sampleRate: SAMPLE_RATE,
-      random: () => 0.5,
-    }),
+    () => bank.guitar.tail({ midi: 60, vel: 1, duration: 1 }),
+    /not implemented/,
+  );
+  assert.throws(
+    () =>
+      bank.pad.render(
+        new Float32Array(8),
+        new Float32Array(8),
+        8,
+        { midi: 60, vel: 1, duration: 0 },
+        {
+          sampleRate: SAMPLE_RATE,
+          random: () => 0.5,
+        },
+      ),
     /"pad" is not implemented/,
   );
-  const doubled = assembleVoiceBank([KEYS_VOICES, BASS_VOICES, { piano: BASS_VOICES.subBass }]);
+  const doubled = assembleVoiceBank([
+    KEYS_VOICES,
+    BASS_VOICES,
+    { piano: BASS_VOICES.subBass },
+  ]);
   assert.deepEqual(doubled.duplicates, ["piano"]);
-  assert.ok(doubled.missing.includes("piano"), "a voice filed under the wrong id counts as missing");
-  assert.equal(bankProblem(assembleVoiceBank([VOICES])), "");
-});
-
-test("importing an incomplete bank fails loudly under the test runner", () => {
-  // a child process, because the group module has to be swapped before index.ts loads
-  const child = spawnSync(
-    process.execPath,
-    [
-      "--experimental-test-module-mocks",
-      "--import",
-      "tsx",
-      "--test",
-      fileURLToPath(new URL("./fixtures/incomplete-bank.check.ts", import.meta.url)),
-    ],
-    {
-      encoding: "utf8",
-      cwd: fileURLToPath(new URL("..", import.meta.url)),
-      env: { ...process.env, NODE_TEST_CONTEXT: undefined },
-    },
+  assert.ok(
+    doubled.missing.includes("piano"),
+    "a voice filed under the wrong id counts as missing",
   );
-  const output = child.stdout + child.stderr;
-  assert.equal(child.status, 0, output);
-  assert.match(output, /pass 1/);
+  assert.equal(bankProblem(assembleVoiceBank([VOICES])), "");
 });
 
 test("drums through the voice harness: every kind of every kit is finite, bounded and click-free", () => {
   for (const kit of DRUM_KITS)
     for (const kind of DRUM_KINDS) {
       const length = DRUMS.length(kind, kit);
-      assert.ok(Number.isFinite(length) && length > 0.01 && length < 4, `${kit}/${kind} length ${length}`);
+      assert.ok(
+        Number.isFinite(length) && length > 0.01 && length < 4,
+        `${kit}/${kind} length ${length}`,
+      );
       for (const vel of [0.3, 1])
         for (const sampleRate of [SAMPLE_RATE, 44100]) {
           const what = `${kit}/${kind} vel ${vel} @${sampleRate}`;
@@ -489,7 +616,11 @@ test("drums through the voice harness: every kind of every kit is finite, bounde
           const p = peak(r);
           assert.ok(p <= 1 && p > 0.02, `${what}: peak ${p}`);
           // noise hits step by nature: only "starts at zero, ends at zero, stays in range" applies
-          const clicks = checkClicks(r, { startJump: 2, maxJump: 2, releaseJumpRatio: 0 });
+          const clicks = checkClicks(r, {
+            startJump: 2,
+            maxJump: 2,
+            releaseJumpRatio: 0,
+          });
           assert.ok(clicks.ok, `${what}: ${clicks.problems.join("; ")}`);
           assert.ok(dcOffset(r) < 0.02, `${what}: DC ${dcOffset(r)}`);
         }
@@ -498,16 +629,26 @@ test("drums through the voice harness: every kind of every kit is finite, bounde
       assert.deepEqual(a.left, b.left, `${kit}/${kind}: not deterministic`);
       const added = renderDrum(DRUMS, kind, kit, 0.8, SAMPLE_RATE, 1, 0.25);
       for (let i = 0; i < a.frames; i += 97)
-        near(added.left[i] - 0.25, a.left[i], 1e-5, `${kit}/${kind}: adds into the buffer`);
+        near(
+          added.left[i] - 0.25,
+          a.left[i],
+          1e-5,
+          `${kit}/${kind}: adds into the buffer`,
+        );
       // louder when hit harder
-      assert.ok(peak(renderDrum(DRUMS, kind, kit, 1)) > peak(renderDrum(DRUMS, kind, kit, 0.4)) * 1.5);
+      assert.ok(
+        peak(renderDrum(DRUMS, kind, kit, 1)) >
+          peak(renderDrum(DRUMS, kind, kit, 0.4)) * 1.5,
+      );
     }
   // kick, snare and hat sit where they belong (the kits themselves are covered by tests/drums.test.ts)
   const kick = renderDrum(DRUMS, "kick", "pop", 1);
   const snare = renderDrum(DRUMS, "snare", "pop", 1);
   const hat = renderDrum(DRUMS, "hatClosed", "pop", 1);
   assert.ok(centroidHz(kick, 0, 0.3) < 400);
-  assert.ok(centroidHz(snare, 0, 0.2) > 800 && centroidHz(snare, 0, 0.2) < 6000);
+  assert.ok(
+    centroidHz(snare, 0, 0.2) > 800 && centroidHz(snare, 0, 0.2) < 6000,
+  );
   assert.ok(centroidHz(hat, 0, 0.05) > 6000);
 });
 
@@ -520,7 +661,9 @@ test("render cost: every exemplar is far faster than real time", (t) => {
     for (const midi of [low, Math.round((low + high) / 2), high]) {
       const cost = measureCost(VOICES[id], { midi, vel: 0.8, duration: 1 }, 5);
       worst = Math.max(worst, cost);
-      parts.push(`midi ${midi}: ${cost.toFixed(1)} ns/frame (${(realTime / cost).toFixed(0)}x)`);
+      parts.push(
+        `midi ${midi}: ${cost.toFixed(1)} ns/frame (${(realTime / cost).toFixed(0)}x)`,
+      );
     }
     t.diagnostic(`${id} — ${parts.join(", ")}`);
     // generous bound (30x real time) so a loaded machine cannot make this flaky

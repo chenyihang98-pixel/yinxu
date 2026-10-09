@@ -133,8 +133,9 @@ kbd {
   color: #fff;
 }
 
+/* A placeholder is a hint, never a value: dimmer than anything typed. */
 ::placeholder {
-  color: var(--muted);
+  color: var(--placeholder);
   opacity: 1;
 }
 

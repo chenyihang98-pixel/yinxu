@@ -5,7 +5,7 @@
  *   AppContextValue → StudioView / LibraryView / SettingsView / UiState
  *   AppActions      → every way the UI can change something
  *
- * Rules the types encode (see .scratch/UI-SPEC.md "State rules"):
+ * Rules the types encode:
  *  - committed = `studio.project` (+ `studio.audio`). Title, cover, tags,
  *    mixer values, seed and export read from `project.config`.
  *  - draft = `studio.draft`: only the inspector fields. It cannot hold a
@@ -13,7 +13,12 @@
  *  - `studio.composerText` is just text: typing never changes draft or work.
  *  - solo is playback-only; export never looks at it.
  */
-import type { AgentTurn, BrainKind, LlmSettingsInput, LlmStatus } from "../agent/types";
+import type {
+  AgentTurn,
+  BrainKind,
+  LlmSettingsInput,
+  LlmStatus,
+} from "../agent/types";
 import type { StyleId } from "../music/catalog";
 import type { ArrangementSummary } from "../music/score";
 import type { Platform } from "../platform";
@@ -43,6 +48,40 @@ export interface Toast {
   text: string;
   /** e.g. 撤销. Call `run()`, then `actions.dismissToast(id)`. */
   action?: { label: string; run: () => void };
+  /**
+   * A toast with a key replaces the visible toast that has the same key (the
+   * one undo notice, the one "mix not saved" error) instead of stacking.
+   */
+  key?: string;
+  /** stays until it is closed or the core withdraws it */
+  sticky?: boolean;
+}
+
+/** One answer the user can give to a Dialog. data-testid: dialog-choice-<id> */
+export interface DialogChoice {
+  id: string;
+  label: string;
+  variant?: "primary" | "danger";
+}
+
+/**
+ * A question the core needs answered before it goes on: a paid request, a
+ * failed language model before a paid request, leaving an unsaved result.
+ * Answer with `actions.answerDialog(dialog.id, choice.id, remember)`.
+ * data-testid: dialog-<kind>
+ */
+export interface Dialog {
+  id: number;
+  kind: "paid" | "fallback" | "unsaved";
+  title: string;
+  /** paragraphs */
+  body: string[];
+  /** in display order */
+  choices: DialogChoice[];
+  /** the choice that Escape and the close button give */
+  cancel: string;
+  /** label of an optional checkbox, e.g. 本次会话不再提示 (data-testid dialog-remember) */
+  remember?: string;
 }
 
 export interface UiState {
@@ -57,6 +96,8 @@ export interface UiState {
   settingsProvider: CloudProvider | null;
   /** newest last; the core removes them after 4 s (info) / 8 s (error, undo) */
   toasts: Toast[];
+  /** the question waiting for an answer; the page behind it is inert */
+  dialog: Dialog | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -121,17 +162,21 @@ export type LoadedAudio = StemsAudio | MixAudio;
 
 export type JobKind = "generate" | "open";
 /**
- * planning   the producer is reading the request (rules: instant; LLM: seconds)
- * rendering  the local engine is composing and synthesising (progress 0..1)
- * cloud      waiting for a cloud music service (no progress; may be billed)
- * saving     storing a cloud result before it is decoded
- * decoding   decoding stored or freshly generated cloud audio
- * cancelling the user cancelled; waiting for the work in flight to stop
+ * planning     the producer is reading the request (rules: instant; LLM: seconds)
+ * asking       the job waits for the user's answer to a Dialog (not cancellable)
+ * rendering    the local engine is composing and synthesising (progress 0..1)
+ * cloud        waiting for a cloud music service (no progress; may be billed)
+ * downloading  fetching a finished cloud result again (nothing is submitted)
+ * saving       storing a cloud result before it is decoded
+ * decoding     decoding stored or freshly generated cloud audio
+ * cancelling   the user cancelled; waiting for the work in flight to stop
  */
 export type JobStage =
   | "planning"
+  | "asking"
   | "rendering"
   | "cloud"
+  | "downloading"
   | "saving"
   | "decoding"
   | "cancelling";
@@ -208,6 +253,12 @@ export interface StudioState {
   mutedFrom: Partial<Record<TrackName, number>>;
   job: Job | null;
   saveState: SaveState;
+  /**
+   * The loaded work exists in the library. False for a fresh result until
+   * its first save succeeds — with saveState "failed" it lives only in this
+   * window (see StudioView.unsaved).
+   */
+  stored: boolean;
   /** an export is being prepared or written */
   exporting: boolean;
   lastLoad: LoadEvent | null;
@@ -216,6 +267,8 @@ export interface StudioState {
 export interface EngineOption {
   id: Provider;
   label: string;
+  /** cloud services: shown with the label, e.g. "按服务商计费" */
+  billing?: string;
   /** false: show it disabled with `hint` */
   available: boolean;
   /** why it cannot be chosen: "桌面版可用" / "需先在设置中配置" / "凭据需重新保存" */
@@ -231,6 +284,19 @@ export interface BrainOption {
   available: boolean;
   hint?: string;
   desktopOnly?: boolean;
+}
+
+/**
+ * The next generation is a paid request to a cloud service. Shown wherever a
+ * generation can be started, before it is started.
+ * data-testid: paid-notice
+ */
+export interface PaidNotice {
+  provider: CloudProvider;
+  /** "腾讯云 TokenHub" */
+  name: string;
+  /** ready to show, e.g. "将向…发送一次新的生成请求，按该服务计费；…" */
+  text: string;
 }
 
 /** StudioState plus everything derived from it. */
@@ -249,6 +315,18 @@ export interface StudioView extends StudioState {
   activeBrain: BrainKind;
   /** refinement chips that would change the current work */
   suggestions: string[];
+  /**
+   * The loaded work has never reached the library and its save failed: it
+   * exists only in this window. Show the banner (重试保存 / 导出); leaving
+   * the work asks first.
+   */
+  unsaved: boolean;
+  /** set while the selected engine is a cloud service; null for local */
+  paid: PaidNotice | null;
+  /** one honest line under 应用调整: what it does to the melody and the library */
+  applyHint: string;
+  /** label of the 换一版旋律 button for the selected engine */
+  variationLabel: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -323,7 +401,11 @@ export type ExportRequest =
 export type ActionResult = { ok: true } | { ok: false; message: string };
 
 export interface InspirationChoice {
-  /** description to put into the composer */
+  /**
+   * Description to put into the composer. Style cards leave it empty: they
+   * pin their style and nothing else, so the style's own blurb is never
+   * parsed as if the user had written it.
+   */
   text: string;
   /** style cards pin their style */
   mood?: StyleId;
@@ -366,14 +448,34 @@ export interface AppActions {
   setProvider(provider: Provider): void;
   setBrain(brain: BrainKind): void;
   /**
-   * Send the composer text (or `text`, e.g. a suggestion chip) to the
-   * producer: a new piece in the empty state, a refinement with a work
-   * loaded. Call it from the click or key handler so autoplay is allowed
-   * afterwards. The composer is cleared when the job starts and gets its
-   * text back if the job is cancelled or fails.
+   * Send the composer text to the producer: a new piece in the empty state,
+   * a refinement with a work loaded. Call it from the click or key handler so
+   * autoplay is allowed afterwards. The composer is cleared when the job
+   * starts and gets the user's text back, exactly as typed, if the job is
+   * cancelled or fails.
+   *
+   * With `text` (a ready-made phrase) that phrase is sent instead and the
+   * composer is not touched at all. In the empty state a pinned style alone
+   * is enough: the message is then empty and only the pins are sent.
+   *
+   * A cloud engine means a paid request: the user is asked first (until they
+   * tick 本次会话不再提示 for that service), see `ui.dialog`.
    */
   send(text?: string): Promise<boolean>;
-  /** 新建创作: unload the work and return to the empty state (false while a job runs). */
+  /**
+   * A suggestion chip. Local engine: the phrase is sent at once and the
+   * composer keeps whatever was typed. Cloud engine: nothing is sent — the
+   * phrase is added to the composer, next to the billing notice, for the
+   * user to send. Resolves true when a version was produced.
+   */
+  pickSuggestion(text: string): Promise<boolean>;
+  /** Answer `ui.dialog`. Unknown ids and choices are ignored. */
+  answerDialog(id: number, choice: string, remember?: boolean): void;
+  /**
+   * 新建创作: unload the work and return to the empty state. False while a
+   * job runs, and false when the loaded work is an unsaved result — then the
+   * user is asked and the work is left only after they agree.
+   */
   newPiece(): boolean;
   /**
    * Pre-fill the new-piece composer (pinning the style of a style card) and
@@ -400,6 +502,12 @@ export interface AppActions {
   commitMix(): void;
   toggleMute(track: TrackName): void;
   toggleSolo(track: TrackName): void;
+  /**
+   * 循环试听 on or off. A work loads with it on when it is a 循环片段 and off
+   * when it has a 完整结尾; what the user sets here is remembered for works of
+   * the same structure, not for the other one. Playback only.
+   */
+  setLoopAudition(loop: boolean): void;
 
   /* ---- works ---- */
   /**
@@ -418,12 +526,17 @@ export interface AppActions {
     id: string,
     confirmed?: boolean,
   ): "removed" | "confirm" | "refused";
-  undoRemove(id: string): void;
+  /** Put back one soft-deleted work, or every one still inside its window. */
+  undoRemove(id?: string): void;
   exportWork(request: ExportRequest): Promise<boolean>;
+  /** 重试保存: store the loaded work whose save failed. */
+  retrySave(): Promise<boolean>;
   /** Import one project JSON (local recipes), then open it. */
   importFile(file: ImportSource): Promise<boolean>;
-  /** Damaged records: save the raw stored data as JSON. */
+  /** Damaged records: save the raw stored data as JSON (never contains audio). */
   exportDamaged(id: string): Promise<boolean>;
+  /** Damaged records that still hold audio: save those bytes as they are. */
+  exportDamagedAudio(id: string): Promise<boolean>;
   removeDamaged(id: string): Promise<boolean>;
   refreshLibrary(): Promise<void>;
 
@@ -450,9 +563,10 @@ export interface AppContextValue {
   library: LibraryView;
   settings: SettingsView;
   /**
-   * Transport state and controls. Use `usePlaybackTime(player)` only inside
-   * the small components that show the playhead. Faders, mute and solo go
-   * through `actions`, never through `player.setMix`.
+   * Transport state and controls. The playhead is read with
+   * `usePlaybackSelector(player, …)` (ui/hooks), only inside the small
+   * components that show it. Faders, mute and solo go through `actions`,
+   * never through `player.setMix`.
    */
   player: Player;
   actions: AppActions;

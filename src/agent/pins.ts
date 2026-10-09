@@ -69,9 +69,7 @@ export function describePins(pins: Pins): string[] {
     ...(pins.key ? [keyLabel(pins.key)] : []),
     ...(pins.bpm !== undefined ? [`${pins.bpm} BPM`] : []),
     ...(pins.duration !== undefined ? [`${pins.duration} 秒`] : []),
-    ...(pins.loop !== undefined
-      ? [pins.loop ? "无缝循环" : "带完整结尾"]
-      : []),
+    ...(pins.loop !== undefined ? [pins.loop ? "循环片段" : "完整结尾"] : []),
   ];
   if (fixed.length) lines.push(`按你的设定：${fixed.join("、")}`);
   return lines;

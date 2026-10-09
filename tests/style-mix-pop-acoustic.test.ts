@@ -226,7 +226,10 @@ function hopLevel(hops: Float64Array, from: number, to: number): number {
   return energyToLufs(sum / Math.max(1, to - from));
 }
 
-async function measure(style: StyleId, overrides: Partial<MusicConfig>): Promise<Measured> {
+async function measure(
+  style: StyleId,
+  overrides: Partial<MusicConfig>,
+): Promise<Measured> {
   let head = NaN;
   let tail = NaN;
   let melodyOverChordsActive = NaN;
@@ -262,29 +265,36 @@ async function measure(style: StyleId, overrides: Partial<MusicConfig>): Promise
             sumC += blockC;
           }
         }
-        melodyOverChordsActive = sumC > 0 ? 10 * Math.log10(sumM / sumC) : Infinity;
+        melodyOverChordsActive =
+          sumC > 0 ? 10 * Math.log10(sumM / sumC) : Infinity;
       },
     },
   );
   return { audit, head, tail, melodyOverChordsActive };
 }
 
-const fx = (value: number, digits = 1) => (Number.isFinite(value) ? value.toFixed(digits) : String(value));
-const below = (audit: Audit, track: "bass" | "drums") => audit.mix.lufs - audit.stems[track].lufs;
-const melodyOverChords = (audit: Audit) => audit.stems.melody.lufs - audit.stems.chords.lufs;
+const fx = (value: number, digits = 1) =>
+  Number.isFinite(value) ? value.toFixed(digits) : String(value);
+const below = (audit: Audit, track: "bass" | "drums") =>
+  audit.mix.lufs - audit.stems[track].lufs;
+const melodyOverChords = (audit: Audit) =>
+  audit.stems.melody.lufs - audit.stems.chords.lufs;
 
 /** Power of the melody stem between 500 Hz and 6 kHz against the other three stems together, dB. */
 function melodyPresence(audit: Audit): number {
   const band = (track: "melody" | "chords" | "bass" | "drums") => {
     const spectrum = audit.stems[track].spectrum;
-    return spectrum ? 10 ** (spectrum.bands.mid / 10) + 10 ** (spectrum.bands.presence / 10) : 0;
+    return spectrum
+      ? 10 ** (spectrum.bands.mid / 10) + 10 ** (spectrum.bands.presence / 10)
+      : 0;
   };
   const others = band("chords") + band("bass") + band("drums");
   return others > 0 ? 10 * Math.log10(band("melody") / others) : Infinity;
 }
 
 function summary({ audit, head, tail }: Measured): string {
-  const stem = (track: "melody" | "chords" | "bass" | "drums") => (audit.stems[track].empty ? "–" : fx(audit.stems[track].lufs));
+  const stem = (track: "melody" | "chords" | "bass" | "drums") =>
+    audit.stems[track].empty ? "–" : fx(audit.stems[track].lufs);
   const master = audit.render.master;
   return [
     `${audit.score.loop ? "loop" : "song"} ${audit.score.bars} bars, lead ${audit.score.lead}`,
@@ -297,7 +307,9 @@ function summary({ audit, head, tail }: Measured): string {
     `limiter ${fx(master.limiter.activeRatio * 100, 0)} % / ${fx(master.limiter.maxReductionDb)} dB`,
     audit.score.loop
       ? `first / last 2 s ${fx(head)} / ${fx(tail)}`
-      : audit.sections.map((section) => `${section.type} ${fx(section.lufs)}`).join(", "),
+      : audit.sections
+          .map((section) => `${section.type} ${fx(section.lufs)}`)
+          .join(", "),
   ].join("; ");
 }
 
@@ -306,105 +318,268 @@ for (const [id, target] of Object.entries(TARGETS)) {
   test(`mix: ${style} is balanced, in tune with its genre and finished`, async (t) => {
     const problems: string[] = [];
     const within = (label: string, value: number, [low, high]: Window) => {
-      if (!(value >= low && value <= high)) problems.push(`${label}: ${fx(value, 2)} is outside ${low} … ${high}`);
+      if (!(value >= low && value <= high))
+        problems.push(`${label}: ${fx(value, 2)} is outside ${low} … ${high}`);
     };
     const atMost = (label: string, value: number, limit: number) => {
-      if (!(value <= limit)) problems.push(`${label}: ${fx(value, 2)} is above ${limit}`);
+      if (!(value <= limit))
+        problems.push(`${label}: ${fx(value, 2)} is above ${limit}`);
     };
     const atLeast = (label: string, value: number, limit: number) => {
-      if (!(value >= limit)) problems.push(`${label}: ${fx(value, 2)} is below ${limit}`);
+      if (!(value >= limit))
+        problems.push(`${label}: ${fx(value, 2)} is below ${limit}`);
     };
     /** What every render of the group must satisfy, whatever its settings. */
     const always = (name: string, { audit }: Measured) => {
       const master = audit.render.master;
       within(`${name} loudness`, audit.mix.lufs, [-16.3, -15.7]);
       atMost(`${name} loudness shortfall`, master.shortfallLu, 0);
-      atMost(`${name} share of samples past the clipper knee (%)`, audit.mix.kneeShare * 100, 0.5);
+      atMost(
+        `${name} share of samples past the clipper knee (%)`,
+        audit.mix.kneeShare * 100,
+        0.5,
+      );
       // (a denser master lowers the limiter's ceiling until it works up to a fifth of the time: DENSE_BUSY_RATIO in master.ts)
-      atMost(`${name} limiter activity (%)`, master.limiter.activeRatio * 100, 22);
+      atMost(
+        `${name} limiter activity (%)`,
+        master.limiter.activeRatio * 100,
+        22,
+      );
       atMost(`${name} limiter depth (dB)`, master.limiter.maxReductionDb, 7);
-      atMost(`${name} mean glue compression (dB)`, master.compressor.meanReductionDb, 2);
+      atMost(
+        `${name} mean glue compression (dB)`,
+        master.compressor.meanReductionDb,
+        2,
+      );
       // the tune reaches the listener: no other stem outweighs it between 500 Hz and 6 kHz by more than the dullest lead allows
-      atLeast(`${name} melody against the rest between 500 Hz and 6 kHz (dB)`, melodyPresence(audit), -6);
-      if (audit.flags.length) problems.push(`${name}: ${audit.flags.join("; ")}`);
+      atLeast(
+        `${name} melody against the rest between 500 Hz and 6 kHz (dB)`,
+        melodyPresence(audit),
+        -6,
+      );
+      if (audit.flags.length)
+        problems.push(`${name}: ${audit.flags.join("; ")}`);
     };
 
     /* ---- the loop at the style's own settings ---- */
     const loop = await measure(style, { loop: true, duration: 24 });
     t.diagnostic(summary(loop));
     always("loop", loop);
-    within("loop melody over chords (LU)", melodyOverChords(loop.audit), target.melodyOverChords);
-    atLeast("loop melody over chords while the melody sounds (LU)", loop.melodyOverChordsActive, target.melodyOverChords[0] - 0.7);
-    atLeast("loop melody against the rest between 500 Hz and 6 kHz (dB)", melodyPresence(loop.audit), 0);
-    if (target.bassBelowMix) within("loop bass below the mix (LU)", below(loop.audit, "bass"), target.bassBelowMix);
-    else assert.ok(loop.audit.stems.bass.empty, "no bass at the style's own energy");
+    within(
+      "loop melody over chords (LU)",
+      melodyOverChords(loop.audit),
+      target.melodyOverChords,
+    );
+    atLeast(
+      "loop melody over chords while the melody sounds (LU)",
+      loop.melodyOverChordsActive,
+      target.melodyOverChords[0] - 0.7,
+    );
+    atLeast(
+      "loop melody against the rest between 500 Hz and 6 kHz (dB)",
+      melodyPresence(loop.audit),
+      0,
+    );
+    if (target.bassBelowMix)
+      within(
+        "loop bass below the mix (LU)",
+        below(loop.audit, "bass"),
+        target.bassBelowMix,
+      );
+    else
+      assert.ok(
+        loop.audit.stems.bass.empty,
+        "no bass at the style's own energy",
+      );
     if (target.drumsBelowMix) {
-      within("loop drums below the mix (LU)", below(loop.audit, "drums"), target.drumsBelowMix);
+      within(
+        "loop drums below the mix (LU)",
+        below(loop.audit, "drums"),
+        target.drumsBelowMix,
+      );
       // even a lone shaker is there to be heard
-      atLeast("loop loudest 400 ms of the drums (LUFS)", loop.audit.stems.drums.momentaryMax, -38);
-    } else assert.ok(loop.audit.stems.drums.empty, "no drums at the style's own energy");
-    within("loop spectral slope (dB/octave)", loop.audit.mix.spectrum.slopeDbPerOctave, target.slope);
-    within("loop air above 6 kHz (dB)", loop.audit.mix.spectrum.bands.air, target.air);
+      atLeast(
+        "loop loudest 400 ms of the drums (LUFS)",
+        loop.audit.stems.drums.momentaryMax,
+        -38,
+      );
+    } else
+      assert.ok(
+        loop.audit.stems.drums.empty,
+        "no drums at the style's own energy",
+      );
+    within(
+      "loop spectral slope (dB/octave)",
+      loop.audit.mix.spectrum.slopeDbPerOctave,
+      target.slope,
+    );
+    within(
+      "loop air above 6 kHz (dB)",
+      loop.audit.mix.spectrum.bands.air,
+      target.air,
+    );
     // no mud, no boom: the low mids stay under the mids, the sub under the bass band
-    atMost("loop low mids against mids (dB)", loop.audit.mix.spectrum.bands.lowMid - loop.audit.mix.spectrum.bands.mid, 1);
-    atMost("loop sub against bass band (dB)", loop.audit.mix.spectrum.bands.sub - loop.audit.mix.spectrum.bands.bass, -4);
-    within("loop stereo correlation", loop.audit.mix.correlation, target.correlation);
-    atLeast("loop correlation below 150 Hz", loop.audit.mix.correlationLow, target.lowCorrelation);
-    within("loop melody reverb against dry (dB)", loop.audit.stems.melody.reverbDb, target.melodyWet);
+    atMost(
+      "loop low mids against mids (dB)",
+      loop.audit.mix.spectrum.bands.lowMid - loop.audit.mix.spectrum.bands.mid,
+      1,
+    );
+    atMost(
+      "loop sub against bass band (dB)",
+      loop.audit.mix.spectrum.bands.sub - loop.audit.mix.spectrum.bands.bass,
+      -4,
+    );
+    within(
+      "loop stereo correlation",
+      loop.audit.mix.correlation,
+      target.correlation,
+    );
+    atLeast(
+      "loop correlation below 150 Hz",
+      loop.audit.mix.correlationLow,
+      target.lowCorrelation,
+    );
+    within(
+      "loop melody reverb against dry (dB)",
+      loop.audit.stems.melody.reverbDb,
+      target.melodyWet,
+    );
     within("loop crest factor (dB)", loop.audit.mix.crestDb, [11, 17.5]);
     assert.ok(loop.audit.seam, "a loop has a seam");
-    atMost("loop seam step against the usual sample step", loop.audit.seam.jumpRatio, 1.5);
-    atLeast("loop level of the last 30 ms against the last 300 ms (dB)", loop.audit.seam.endDipDb, -18);
-    atMost("loop first 2 s against last 2 s (LU)", Math.abs(loop.head - loop.tail), target.wrap);
+    atMost(
+      "loop seam step against the usual sample step",
+      loop.audit.seam.jumpRatio,
+      1.5,
+    );
+    atLeast(
+      "loop level of the last 30 ms against the last 300 ms (dB)",
+      loop.audit.seam.endDipDb,
+      -18,
+    );
+    atMost(
+      "loop first 2 s against last 2 s (LU)",
+      Math.abs(loop.head - loop.tail),
+      target.wrap,
+    );
 
     /* ---- a piece that ends ---- */
-    const song = await measure(style, { loop: false, duration: target.songSeconds });
+    const song = await measure(style, {
+      loop: false,
+      duration: target.songSeconds,
+    });
     t.diagnostic(summary(song));
     always("song", song);
-    within("song melody over chords (LU)", melodyOverChords(song.audit), [target.melodyOverChords[0] - 0.7, target.melodyOverChords[1] + 0.5]);
-    within("song spectral slope (dB/octave)", song.audit.mix.spectrum.slopeDbPerOctave, [target.slope[0] - 0.4, target.slope[1] + 0.6]);
+    within("song melody over chords (LU)", melodyOverChords(song.audit), [
+      target.melodyOverChords[0] - 0.7,
+      target.melodyOverChords[1] + 0.5,
+    ]);
+    within(
+      "song spectral slope (dB/octave)",
+      song.audit.mix.spectrum.slopeDbPerOctave,
+      [target.slope[0] - 0.4, target.slope[1] + 0.6],
+    );
     const sections = song.audit.sections;
     const chorusAt = sections.findIndex((section) => section.type === "chorus");
-    assert.ok(chorusAt > 0, `${target.songSeconds} s of ${style} contain a chorus: ${sections.map((section) => section.type).join(" ")}`);
+    assert.ok(
+      chorusAt > 0,
+      `${target.songSeconds} s of ${style} contain a chorus: ${sections.map((section) => section.type).join(" ")}`,
+    );
     const verse = sections
       .slice(0, chorusAt)
       .reverse()
       .find((section) => section.type === "verse");
     assert.ok(verse, "a verse before the chorus");
-    within("song chorus above the verse (LU)", sections[chorusAt].lufs - verse.lufs, target.chorusLift);
+    within(
+      "song chorus above the verse (LU)",
+      sections[chorusAt].lufs - verse.lufs,
+      target.chorusLift,
+    );
     const intro = sections[0].type === "intro" ? sections[0] : undefined;
     if (target.introDrop > 0) {
       assert.ok(intro, "the piece opens with an intro");
-      within("song verse above the intro (LU)", verse.lufs - intro.lufs, [0.5, target.introDrop]);
+      within("song verse above the intro (LU)", verse.lufs - intro.lufs, [
+        0.5,
+        target.introDrop,
+      ]);
     }
     // the ending: quieter than the body, decayed to silence by itself, and not much dead air after it
     const outro = sections[sections.length - 1];
     assert.equal(outro.type, "outro");
-    atMost("song outro against the chorus (LU)", outro.lufs - sections[chorusAt].lufs, -0.5);
+    atMost(
+      "song outro against the chorus (LU)",
+      outro.lufs - sections[chorusAt].lufs,
+      -0.5,
+    );
     assert.ok(song.audit.edges, "a piece that ends has edges");
     atMost("song first sample", song.audit.edges.firstSample, 0.001);
     atMost("song last 50 ms (dBFS)", song.audit.edges.endDb, -90);
-    within("song silence after the last audible sample (s)", song.audit.edges.silentTail, [0.2, 2.4]);
+    within(
+      "song silence after the last audible sample (s)",
+      song.audit.edges.silentTail,
+      [0.2, 2.4],
+    );
 
     /* ---- an unusual lead keeps its place ---- */
-    const other = await measure(style, { loop: true, duration: 20, instrument: target.otherLead });
+    const other = await measure(style, {
+      loop: true,
+      duration: 20,
+      instrument: target.otherLead,
+    });
     t.diagnostic(summary(other));
     always(`${target.otherLead} lead`, other);
-    within(`${target.otherLead} lead over chords (LU)`, melodyOverChords(other.audit), target.otherLeadOverChords);
-    within(`${target.otherLead} lead: spectral slope (dB/octave)`, other.audit.mix.spectrum.slopeDbPerOctave, [target.slope[0] - 1, target.slope[1] + 1.6]);
+    within(
+      `${target.otherLead} lead over chords (LU)`,
+      melodyOverChords(other.audit),
+      target.otherLeadOverChords,
+    );
+    within(
+      `${target.otherLead} lead: spectral slope (dB/octave)`,
+      other.audit.mix.spectrum.slopeDbPerOctave,
+      [target.slope[0] - 1, target.slope[1] + 1.6],
+    );
 
     /* ---- turned up: every layer in, the tune still on top, the kit present but not in charge ---- */
-    const loud = await measure(style, { loop: true, duration: 20, energy: 0.9 });
+    const loud = await measure(style, {
+      loop: true,
+      duration: 20,
+      energy: 0.9,
+    });
     t.diagnostic(summary(loud));
     always("energy 0.9", loud);
-    assert.ok(loud.audit.score.parts.length >= loop.audit.score.parts.length, "energy never takes a layer away");
-    assert.ok(!loud.audit.stems.drums.empty && !loud.audit.stems.bass.empty, "at energy 0.9 every style has bass and drums");
-    within("energy 0.9 melody over chords (LU)", melodyOverChords(loud.audit), target.loudMelodyOverChords);
-    within("energy 0.9 drums below the mix (LU)", below(loud.audit, "drums"), target.loudDrumsBelowMix);
-    within("energy 0.9 bass below the mix (LU)", below(loud.audit, "bass"), [4.5, 12.5]);
-    atLeast("energy 0.9 correlation below 150 Hz", loud.audit.mix.correlationLow, 0.93);
+    assert.ok(
+      loud.audit.score.parts.length >= loop.audit.score.parts.length,
+      "energy never takes a layer away",
+    );
+    assert.ok(
+      !loud.audit.stems.drums.empty && !loud.audit.stems.bass.empty,
+      "at energy 0.9 every style has bass and drums",
+    );
+    within(
+      "energy 0.9 melody over chords (LU)",
+      melodyOverChords(loud.audit),
+      target.loudMelodyOverChords,
+    );
+    within(
+      "energy 0.9 drums below the mix (LU)",
+      below(loud.audit, "drums"),
+      target.loudDrumsBelowMix,
+    );
+    within(
+      "energy 0.9 bass below the mix (LU)",
+      below(loud.audit, "bass"),
+      [4.5, 12.5],
+    );
+    atLeast(
+      "energy 0.9 correlation below 150 Hz",
+      loud.audit.mix.correlationLow,
+      0.93,
+    );
     // more energy is a brighter, fuller mix — not just a louder one (the master holds the loudness)
-    atLeast("energy 0.9 air against the style's own energy (dB)", loud.audit.mix.spectrum.bands.air - loop.audit.mix.spectrum.bands.air, -1.5);
+    atLeast(
+      "energy 0.9 air against the style's own energy (dB)",
+      loud.audit.mix.spectrum.bands.air - loop.audit.mix.spectrum.bands.air,
+      -1.5,
+    );
 
     assert.deepEqual(problems, [], `${style}:\n  ${problems.join("\n  ")}`);
   });
@@ -416,9 +591,25 @@ test("mix: the group keeps its family resemblances", async () => {
   for (const style of ["bright", "sad", "festive", "focus"] as StyleId[])
     lufs[style] = (await measure(style, { loop: true, duration: 20 })).audit;
   // the ballad is the darkest and wettest, the bells the brightest
-  assert.ok(lufs.festive.mix.spectrum.bands.air > lufs.bright.mix.spectrum.bands.air - 1, "festive is at least as airy as bright");
-  assert.ok(lufs.bright.mix.spectrum.bands.air > lufs.focus.mix.spectrum.bands.air + 6, "focus is darker than bright");
-  assert.ok(lufs.focus.mix.spectrum.bands.air > lufs.sad.mix.spectrum.bands.air, "sad is the darkest");
-  assert.ok(lufs.sad.stems.melody.reverbDb > lufs.bright.stems.melody.reverbDb + 5, "sad is far wetter than bright");
-  assert.ok(lufs.sad.mix.correlation < lufs.bright.mix.correlation - 0.08, "sad is wider than bright");
+  assert.ok(
+    lufs.festive.mix.spectrum.bands.air >
+      lufs.bright.mix.spectrum.bands.air - 1,
+    "festive is at least as airy as bright",
+  );
+  assert.ok(
+    lufs.bright.mix.spectrum.bands.air > lufs.focus.mix.spectrum.bands.air + 6,
+    "focus is darker than bright",
+  );
+  assert.ok(
+    lufs.focus.mix.spectrum.bands.air > lufs.sad.mix.spectrum.bands.air,
+    "sad is the darkest",
+  );
+  assert.ok(
+    lufs.sad.stems.melody.reverbDb > lufs.bright.stems.melody.reverbDb + 5,
+    "sad is far wetter than bright",
+  );
+  assert.ok(
+    lufs.sad.mix.correlation < lufs.bright.mix.correlation - 0.08,
+    "sad is wider than bright",
+  );
 });

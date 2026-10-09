@@ -117,12 +117,15 @@ export function useShortcuts(app: AppContextValue): void {
         shiftKey: event.shiftKey,
         composing: event.isComposing || event.keyCode === 229,
         focus: focusKind(event.target),
-        modalOpen: ui.modal !== null,
+        // A question from the core owns the keyboard like any modal.
+        modalOpen: ui.modal !== null || ui.dialog !== null,
       });
       if (!shortcut) return;
       switch (shortcut) {
         case "close":
-          actions.closeModal();
+          // Escape answers a question with its cancel choice.
+          if (ui.dialog) actions.answerDialog(ui.dialog.id, ui.dialog.cancel);
+          else actions.closeModal();
           break;
         case "toggle-play":
           if (!player.ready) return;
@@ -140,7 +143,7 @@ export function useShortcuts(app: AppContextValue): void {
           break;
         case "toggle-loop":
           if (!player.ready) return;
-          player.setLoop(!player.loop);
+          actions.setLoopAudition(!player.loop);
           break;
         case "send":
           void actions.send();

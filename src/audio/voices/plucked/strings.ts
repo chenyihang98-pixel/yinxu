@@ -378,8 +378,7 @@ export const nylon: Voice = stringVoice({
   dispersion: [0, 0],
   position: [0.22, 0.06],
   bodyHz: (f0, vel) => f0 * 1.25 + 140 + 800 * vel * vel,
-  hardnessHz: (vel, f0) =>
-    Math.max(850 + 3600 * Math.pow(vel, 1.5), 1.6 * f0),
+  hardnessHz: (vel, f0) => Math.max(850 + 3600 * Math.pow(vel, 1.5), 1.6 * f0),
   noise: 0.015,
   smear: [
     [160, 0.8],
@@ -426,8 +425,7 @@ export const guzheng: Voice = stringVoice({
   dispersion: [-0.22, 2],
   position: [0.11, 0.03],
   bodyHz: (f0, vel) => f0 * 2.5 + 400 + 2400 * vel * vel,
-  hardnessHz: (vel, f0) =>
-    Math.max(2600 + 5400 * Math.pow(vel, 1.5), 1.6 * f0),
+  hardnessHz: (vel, f0) => Math.max(2600 + 5400 * Math.pow(vel, 1.5), 1.6 * f0),
   noise: 0.05,
   smear: [
     [210, 0.8],
@@ -483,8 +481,7 @@ export const pizzicato: Voice = stringVoice({
   dispersion: [0, 0],
   position: [0.32, 0.04],
   bodyHz: (f0, vel) => f0 * 0.8 + 80 + 500 * vel * vel,
-  hardnessHz: (vel, f0) =>
-    Math.max(500 + 1200 * Math.pow(vel, 1.5), 2 * f0),
+  hardnessHz: (vel, f0) => Math.max(500 + 1200 * Math.pow(vel, 1.5), 2 * f0),
   noise: 0.015,
   smear: [
     [140, 0.7],

@@ -5,6 +5,7 @@
 import type { MusicConfig } from "../types";
 import type { ArrangementSummary, Score, TrackName } from "../music/score";
 import type { RenderReport } from "./render";
+import type { EngineErrorCode } from "./engine-error";
 
 export type StereoPcm = [left: Float32Array, right: Float32Array];
 
@@ -46,9 +47,6 @@ export type RenderScore = (
   options?: RenderScoreOptions,
 ) => Promise<RenderedAudio>;
 
-/** music/compose.ts — pure and deterministic for a given config */
-export type Compose = (config: MusicConfig) => Score;
-
 /** What the master bus measured on the finished mix (see master.ts, MasterReport). */
 export interface MasterDiagnostics {
   /** integrated loudness of the mix at REFERENCE_VOLUMES after the soft clipper, LUFS (-Infinity for silence) */
@@ -80,7 +78,10 @@ export interface RenderDiagnostics {
   /** notes and drum hits that were synthesised (0 for the legacy engine, which does not count them) */
   notes: number;
   hits: number;
-  /** bytes of full-length sample buffers the renderer allocated */
+  /**
+   * the most sample memory the render held at one time, in bytes (full-length
+   * buffers, note scratch, the voices' work buffers, the master's curves)
+   */
   bufferBytes: number;
   /** seconds per stage of the Score renderer (zeros for the legacy engine) */
   seconds: { voices: number; parts: number; sends: number; master: number };
@@ -130,4 +131,8 @@ export type WorkerResponse =
   | { type: "warmed"; id: number; ms: number }
   /** the finished WAV file, transferred */
   | { type: "mixed"; id: number; wav: ArrayBuffer }
-  | { type: "error"; id: number; message: string };
+  /**
+   * the job failed: `code` says how (see engine-error.ts), `detail` is the
+   * original exception text, for logs only
+   */
+  | { type: "error"; id: number; code: EngineErrorCode; detail: string };

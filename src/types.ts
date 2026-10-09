@@ -63,14 +63,6 @@ export interface MusicConfig {
   arrangement?: ArrangementHints;
 }
 
-export interface CompositionPlan {
-  title: string;
-  description: string;
-  config: MusicConfig;
-  tags: string[];
-  reasoning: string[];
-}
-
 /** Result of a local render. Stems are final (already mastered); mixing is just gains. */
 export interface RenderResult {
   stems: Record<TrackName, AudioBuffer>;
@@ -124,8 +116,6 @@ export interface Project {
 }
 
 export interface DesktopSettings {
-  /** legacy flag: an ElevenLabs key is saved */
-  hasApiKey: boolean;
   providers: ProviderStatuses;
   llm: LlmStatus;
   dataPath: string;
@@ -134,8 +124,6 @@ export interface DesktopSettings {
 
 export interface DesktopAPI {
   getSettings(): Promise<DesktopSettings>;
-  saveApiKey(key: string): Promise<void>;
-  deleteApiKey(): Promise<void>;
   saveProviderCredentials(
     provider: CloudProvider,
     credentials: Record<string, string>,
@@ -148,6 +136,20 @@ export interface DesktopAPI {
     model?: string;
   }): Promise<{ audio: ArrayBuffer; mimeType: string }>;
   cancelGeneration(): Promise<void>;
+  /**
+   * Fetch the last finished result of this service again after its download
+   * failed: nothing is submitted, nothing is billed. Rejects when no result
+   * is waiting (another generation was started since, or the app restarted).
+   */
+  retryLastDownload(
+    provider: CloudProvider,
+  ): Promise<{ audio: ArrayBuffer; mimeType: string }>;
+  /**
+   * Tell the shell whether closing the window now would lose paid work (a
+   * cloud request under way, a paid result that is not stored yet). While
+   * true, closing asks first.
+   */
+  setUnsavedWork(value: boolean): Promise<void>;
   saveAudio(input: {
     name: string;
     data: ArrayBuffer;

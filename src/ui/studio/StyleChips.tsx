@@ -51,7 +51,9 @@ function StyleSheet(props: StyleChipsProps & { onClose(): void }) {
             <strong>自动</strong>
             <span>由制作人根据你的描述决定风格</span>
           </span>
-          {!mood && <Check className="style-option-tick" size={16} aria-hidden />}
+          {!mood && (
+            <Check className="style-option-tick" size={16} aria-hidden />
+          )}
         </button>
         {STYLES.map((style) => (
           <button
@@ -100,9 +102,7 @@ export const StyleChips = memo(function StyleChips(props: StyleChipsProps) {
           风格
         </span>
         <span className="style-picker-note ellipsis">
-          {mood
-            ? styleInfo(mood).description
-            : "自动：由制作人根据描述决定"}
+          {mood ? styleInfo(mood).description : "自动：由制作人根据描述决定"}
         </span>
         <LinkButton
           className="style-all"
@@ -143,9 +143,7 @@ export const StyleChips = memo(function StyleChips(props: StyleChipsProps) {
           </Chip>
         ))}
       </div>
-      {sheet && (
-        <StyleSheet {...props} onClose={() => setSheet(false)} />
-      )}
+      {sheet && <StyleSheet {...props} onClose={() => setSheet(false)} />}
     </div>
   );
 });

@@ -90,9 +90,7 @@ function struckGain(vel: number, extraPower = 0): number {
       modeRight,
       LEVEL_WINDOW,
     ) + extraPower;
-  return (
-    (REFERENCE_RMS * velocityGain(vel)) / Math.sqrt(Math.max(mean, 1e-12))
-  );
+  return (REFERENCE_RMS * velocityGain(vel)) / Math.sqrt(Math.max(mean, 1e-12));
 }
 
 /** Strike the mode table and let it ring: free until `hold`, then with the release times. */

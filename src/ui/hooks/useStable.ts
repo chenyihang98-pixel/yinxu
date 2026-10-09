@@ -6,7 +6,9 @@ function sameList<T>(
   b: readonly T[],
   same: (x: T, y: T) => boolean,
 ): boolean {
-  return a.length === b.length && a.every((item, index) => same(item, b[index]));
+  return (
+    a.length === b.length && a.every((item, index) => same(item, b[index]))
+  );
 }
 
 /**

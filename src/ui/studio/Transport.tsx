@@ -5,7 +5,15 @@
  */
 import { memo, useEffect, useRef } from "react";
 import type { Ref } from "react";
-import { Pause, Play, Repeat, SkipBack, Volume1, Volume2, VolumeX } from "lucide-react";
+import {
+  Pause,
+  Play,
+  Repeat,
+  SkipBack,
+  Volume1,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import type { Player } from "../../player/usePlayer";
 import { formatTime } from "../../state/format";
 import { usePlaybackSelector } from "../hooks/usePlaybackSelector";
@@ -18,6 +26,8 @@ export function PlayButton(props: {
   player: Player;
   testId: string;
   large?: boolean;
+  /** where the tip goes; the main transport has the time axis right above it */
+  tipSide?: "top" | "bottom";
   ref?: Ref<HTMLButtonElement>;
 }) {
   const { player, large } = props;
@@ -31,6 +41,7 @@ export function PlayButton(props: {
       aria-label="播放"
       aria-pressed={player.playing}
       data-tip={player.playing ? "暂停（空格）" : "播放（空格）"}
+      data-tip-side={props.tipSide}
       disabled={!player.ready}
       onClick={() => player.toggle()}
     >
@@ -109,6 +120,10 @@ function useReportInView(ref: { current: HTMLElement | null }) {
 
 export const Transport = memo(function Transport(props: {
   player: Player;
+  /** the work is a 循环片段: what the audition loop does by default */
+  loopWork: boolean;
+  /** 循环试听 on or off (remembered for works of this structure) */
+  onLoop(loop: boolean): void;
   playRef?: Ref<HTMLButtonElement>;
 }) {
   useRenderCount("Transport");
@@ -116,14 +131,14 @@ export const Transport = memo(function Transport(props: {
   const row = useRef<HTMLDivElement>(null);
   useReportInView(row);
   const percent = Math.round(player.volume * 100);
-  const VolumeIcon =
-    percent === 0 ? VolumeX : percent < 50 ? Volume1 : Volume2;
+  const VolumeIcon = percent === 0 ? VolumeX : percent < 50 ? Volume1 : Volume2;
   return (
     <div ref={row} className="transport" role="group" aria-label="播放控制">
       <div className="transport-main">
         <IconButton
           label="回到开头"
           data-testid="restart-button"
+          data-tip-side="bottom"
           disabled={!player.ready}
           onClick={() => player.seek(0)}
         >
@@ -133,6 +148,7 @@ export const Transport = memo(function Transport(props: {
           player={player}
           testId="play-button"
           large
+          tipSide="bottom"
           ref={props.playRef}
         />
         <button
@@ -140,9 +156,14 @@ export const Transport = memo(function Transport(props: {
           className="loop-toggle"
           data-testid="loop-toggle"
           aria-pressed={player.loop}
-          data-tip="循环试听（L）· 只影响试听，不改变作品"
+          data-tip={
+            props.loopWork
+              ? "循环试听（L）· 循环片段默认开启，听首尾是否衔接；只影响试听"
+              : "循环试听（L）· 完整结尾默认关闭，播到结尾停下；只影响试听"
+          }
+          data-tip-side="bottom"
           disabled={!player.ready}
-          onClick={() => player.setLoop(!player.loop)}
+          onClick={() => props.onLoop(!player.loop)}
         >
           <Repeat size={15} aria-hidden />
           <span>循环试听</span>
@@ -153,7 +174,11 @@ export const Transport = memo(function Transport(props: {
         testId="time-display"
         className="transport-time"
       />
-      <label className="transport-volume" data-tip="试听音量 · 不影响导出">
+      <label
+        className="transport-volume"
+        data-tip="试听音量 · 不影响导出"
+        data-tip-side="bottom"
+      >
         <VolumeIcon size={16} aria-hidden />
         <span className="sr-only">试听音量</span>
         <Slider

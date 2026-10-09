@@ -2,11 +2,17 @@
  * Putting a configuration into Chinese words: the prompt sent to a cloud
  * text-to-music model, and the short "what changed" phrases shown in the chat.
  *
- * Parameters and tracks are called what the inspector and the mixer call them
- * (情绪能量, 旋律丰富度, 空间混响, 主奏乐器, 旋律 / 和声 / 贝斯 / 鼓组), so a
- * reasoning chip can be found on screen by its name.
+ * Parameters, tracks and structures are called what the inspector and the
+ * mixer call them (情绪能量, 旋律丰富度, 空间混响, 主奏乐器, 旋律 / 和声 /
+ * 贝斯 / 鼓组, 循环片段 / 完整结尾), so a reasoning chip can be found on
+ * screen by its name. Whatever is quoted or named stands in 「」.
  */
-import type { ArrangementHints, MusicConfig, TrackName } from "../types";
+import type {
+  ArrangementHints,
+  MusicConfig,
+  Provider,
+  TrackName,
+} from "../types";
 import {
   instrumentLabel,
   parseKey,
@@ -14,8 +20,12 @@ import {
   styleLabel,
   type BassFeel,
   type DrumFeel,
+  type StyleId,
 } from "../music/catalog";
+import { melodyContinuity } from "../music/compose";
 import { DEFAULT_VOLUMES } from "../music/defaults";
+import { STYLE_COORDS } from "./lexicon";
+import { read } from "./reading";
 
 export const CLOUD_PROMPT_MAX = 1800;
 /** Every cloud prompt ends with this, whatever the user wrote. */
@@ -65,7 +75,11 @@ const LAYER_LABELS = {
   counter: "副旋律",
   perc: "打击乐点缀",
 } as const;
-const REGISTER_LABELS = { low: "低音区", mid: "中音区", high: "高音区" } as const;
+const REGISTER_LABELS = {
+  low: "低音区",
+  mid: "中音区",
+  high: "高音区",
+} as const;
 const MOTION_LABELS = {
   stepwise: "级进",
   leaps: "跳进",
@@ -176,7 +190,7 @@ export function describeChanges(
         `${AMOUNT_LABELS[field]} ${percent(before[field])} → ${percent(after[field])}`,
       );
   if (before.loop !== after.loop)
-    out.push(after.loop ? "改为无缝循环" : "改为带结尾的完整版本");
+    out.push(after.loop ? "结构改为循环片段" : "结构改为完整结尾");
   for (const track of TRACK_ORDER) {
     const from = before.volumes[track];
     const to = after.volumes[track];
@@ -191,8 +205,74 @@ export function describeChanges(
   }
   out.push(...describeArrangement(before.arrangement, after.arrangement));
   if (before.seed !== after.seed) out.push("换一组新的旋律");
-  if (before.engine !== after.engine) out.push("改用新版音色引擎");
+  if (before.engine !== after.engine) out.push("改用新版引擎");
   return out;
+}
+
+/**
+ * The same differences for a piece that is being made for the first time:
+ * what was chosen, not "from → to" (nothing existed before).
+ */
+export function describeChoices(
+  preset: MusicConfig,
+  chosen: MusicConfig,
+): string[] {
+  const out: string[] = [];
+  if (preset.mood !== chosen.mood)
+    out.push(`风格用「${styleLabel(chosen.mood)}」`);
+  if (preset.bpm !== chosen.bpm) out.push(`速度 ${chosen.bpm} BPM`);
+  if (preset.key !== chosen.key) out.push(`调性 ${keyLabel(chosen.key)}`);
+  if (preset.instrument !== chosen.instrument)
+    out.push(`主奏乐器用${instrumentLabel(chosen.instrument)}`);
+  if (preset.duration !== chosen.duration)
+    out.push(`时长 ${chosen.duration} 秒`);
+  for (const field of ["energy", "complexity", "reverb"] as const)
+    if (Math.abs(preset[field] - chosen[field]) > 1e-6)
+      out.push(
+        `${AMOUNT_LABELS[field]}${chosen[field] > preset[field] ? "调高" : "调低"}到 ${percent(chosen[field])}`,
+      );
+  if (preset.loop !== chosen.loop)
+    out.push(chosen.loop ? "结构：循环片段" : "结构：完整结尾");
+  for (const track of TRACK_ORDER) {
+    const from = preset.volumes[track];
+    const to = chosen.volumes[track];
+    if (Math.abs(from - to) <= 1e-6) continue;
+    out.push(
+      to === 0
+        ? `不用${TRACK_LABELS[track]}`
+        : `${TRACK_LABELS[track]}音量 ${percent(to)}`,
+    );
+  }
+  out.push(...describeArrangement(preset.arrangement, chosen.arrangement));
+  return out;
+}
+
+/**
+ * What a new version does to the tune when a cloud service makes it: the
+ * service composes from the description alone, every time. Said in the reply
+ * to any refinement on a cloud engine, whoever wrote the rest of the reply.
+ */
+export const CLOUD_MELODY_NOTE =
+  "云端服务会按新的设置重新生成，旋律会和上一版不同。";
+
+/**
+ * The sentence about the tune in the reply to a refinement: what the change
+ * does to the melody, by the composer's own account (melodyContinuity). ""
+ * when the change list already says that the melody is new.
+ */
+export function melodyNote(
+  before: MusicConfig,
+  after: MusicConfig,
+  provider: Provider = "local",
+): string {
+  if (before.seed !== after.seed) return "";
+  if (provider !== "local") return CLOUD_MELODY_NOTE;
+  const kind = melodyContinuity(before, after);
+  return kind === "identical"
+    ? "旋律保持不变。"
+    : kind === "adapted"
+      ? "旋律动机不变，会按新的设置重新演绎。"
+      : "这是一段新的旋律。";
 }
 
 /* ---------- cloud prompt ---------- */
@@ -263,11 +343,21 @@ const QUIET: Record<TrackName, string> = {
   drums: "鼓组轻一些",
 };
 
-function trackEmphasis(config: MusicConfig): string[] {
+/** A part that was off in the version before and is back now is named, not implied. */
+const BACK: Record<TrackName, string> = {
+  melody: "有清晰的主旋律",
+  chords: "有和声铺底",
+  bass: "有贝斯",
+  drums: "有鼓组",
+};
+
+function trackEmphasis(config: MusicConfig, before?: MusicConfig): string[] {
   const notes: string[] = [];
   for (const track of TRACK_ORDER) {
     const value = config.volumes[track];
     const reference = DEFAULT_VOLUMES[track];
+    if (value > 0.02 && before && before.volumes[track] <= 0.02)
+      notes.push(BACK[track]);
     if (value <= 0.02) notes.push(MUTED[track]);
     else if (value >= reference + 0.15) notes.push(LOUD[track]);
     else if (value <= reference - 0.2) notes.push(QUIET[track]);
@@ -291,29 +381,148 @@ const tidy = (text: string) =>
     .replace(/[。.!！;；,，、\s]+$/u, "");
 
 /**
- * A natural Chinese description of `config` for a text-to-music model. The
- * user's own words come first; the result always ends with the instrumental
- * requirement and never exceeds CLOUD_PROMPT_MAX characters.
+ * Does this clause of the description still hold for `config`? A cloud model
+ * is stateless: a clause that names another lead, another length, a part that
+ * is back in (or gone), another key or another style would contradict the
+ * description derived from the configuration, so it is left out. So is
+ * anything relative ("慢一点"): there is no earlier version to compare with.
  */
-export function buildCloudPrompt(config: MusicConfig, extra?: string): string {
+function stillHolds(clause: string, config: MusicConfig): boolean {
+  const { analysis, words } = read(clause, "new");
+  const minor = parseKey(config.key).minor;
+  if (analysis.key && analysis.key !== config.key) return false;
+  const named = new Set<string>();
+  const scores = new Map<StyleId, number>();
+  for (const word of words) {
+    const lex = word.lex;
+    const off = word.neg === "hard";
+    const qty = lex.qty;
+    if (qty?.unit === "bpm" && qty.value !== config.bpm) return false;
+    if (
+      qty?.unit === "s" &&
+      qty.value >= 5 &&
+      Math.round(qty.value) !== config.duration
+    )
+      return false;
+    if (qty && qty.unit !== "bpm" && qty.unit !== "s") return false;
+    if (lex.shift || lex.relative || lex.seed || lex.reset || lex.other)
+      return false;
+    // "女声演唱" next to "无人声" would be a contradiction of our own making
+    if (lex.unsupported && !word.neg) return false;
+    if (
+      lex.mode &&
+      !lex.w &&
+      !lex.dim &&
+      (lex.mode === "minor") !== (off ? !minor : minor)
+    )
+      return false;
+    if (lex.inst && !lex.cat) {
+      if (off && lex.inst === config.instrument) return false;
+      if (!off && !word.replaced) named.add(lex.inst);
+    }
+    if (
+      lex.target === "melody" ||
+      lex.target === "chords" ||
+      lex.target === "bass" ||
+      lex.target === "drums"
+    ) {
+      const audible = config.volumes[lex.target] > 0.02;
+      if (off ? audible : !audible) return false;
+    }
+    if (
+      lex.solo &&
+      (["chords", "bass", "drums"] as const).some(
+        (track) => config.volumes[track] > 0.02,
+      )
+    )
+      return false;
+    if (lex.noDrums && !off && config.volumes.drums > 0.02) return false;
+    if (
+      lex.loop !== undefined &&
+      !lex.w &&
+      (off ? !lex.loop : lex.loop) !== config.loop
+    )
+      return false;
+    if (lex.dim && lex.dir && (word.compared || word.too || lex.fixed))
+      return false;
+    if (lex.dim === "tempo" && lex.dir && !word.neg) {
+      if (lex.dir < 0 && config.bpm >= 116) return false;
+      if (lex.dir > 0 && (lex.pos ?? 0.7) >= 0.6 && config.bpm < 88)
+        return false;
+    }
+    if (lex.dim === "energy" && lex.dir && !word.neg) {
+      if (lex.dir < 0 && config.energy >= 0.7) return false;
+      if (lex.dir > 0 && config.energy <= 0.3) return false;
+    }
+    if ((lex.op === "up" || lex.op === "down") && word.text.length > 1)
+      return false;
+    if (lex.w && lex.cat && !word.neg && !word.too) {
+      const weights = Object.entries(lex.w) as [StyleId, number][];
+      // a mood word names a style only when it is that style's own word ("梦幻", "悲伤")
+      const telling =
+        lex.cat !== "emotion" || weights.some(([, weight]) => weight >= 3);
+      if (telling)
+        for (const [id, weight] of weights)
+          scores.set(id, (scores.get(id) ?? 0) + weight);
+      // "欢快" does not describe a piece that has become sad
+      const mood = STYLE_COORDS[config.mood][0];
+      if (
+        lex.cat === "emotion" &&
+        Math.abs(lex.v ?? 0) >= 0.4 &&
+        Math.abs(mood) >= 0.4 &&
+        Math.sign(lex.v ?? 0) !== Math.sign(mood)
+      )
+        return false;
+    }
+    if (lex.w && lex.cat && off && (lex.w[config.mood] ?? 0) >= 2) return false;
+  }
+  if (named.size && !named.has(config.instrument)) return false;
+  const strongest = Math.max(0, ...scores.values());
+  return !(strongest >= 2 && (scores.get(config.mood) ?? 0) < 0.5 * strongest);
+}
+
+/** The user's description without the clauses the configuration has moved away from. */
+function validDescription(config: MusicConfig): string {
+  const own = tidy(config.prompt);
+  if (!own) return "";
+  const clauses = own
+    .split(/[,，。;；!！?？\n]|\.(?=\s|$)/)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  // one endless clause list is not worth reading word by word
+  if (clauses.length > 80) return own;
+  const kept = clauses.filter((clause) => stillHolds(clause, config));
+  return kept.length === clauses.length ? own : kept.join("，");
+}
+
+/**
+ * A natural Chinese description of `config` for a text-to-music model: the
+ * still-valid part of the user's own description first, then the piece as the
+ * configuration has it (style, tempo, key, lead, the three sliders, the
+ * parts, structure, length). Nothing relative ("慢一点") is ever passed on —
+ * the model has no earlier version to compare with. `before` is the version
+ * a refinement started from: a part that was off there and is on now is
+ * named. The result always ends with the instrumental requirement and never
+ * exceeds CLOUD_PROMPT_MAX characters.
+ */
+export function buildCloudPrompt(
+  config: MusicConfig,
+  before?: MusicConfig,
+): string {
   const info = styleInfo(config.mood);
-  const derived = [
+  const tail = [
     `风格：${info.label}，${tidy(info.description)}`,
     `速度约 ${config.bpm} BPM（${tempoWord(config.bpm)}），${keyLabel(config.key)}，主奏乐器为${instrumentLabel(config.instrument)}`,
     `整体${energyWord(config.energy)}，${complexityWord(config.complexity)}，${reverbWord(config.reverb)}`,
-    ...[trackEmphasis(config).join("，")].filter(Boolean),
+    ...[trackEmphasis(config, before).join("，")].filter(Boolean),
     config.loop
       ? "需要能无缝循环播放，首尾自然衔接"
       : "有完整的开头和自然的结尾",
     `时长约 ${config.duration} 秒`,
     INSTRUMENTAL_ONLY,
   ].join("。");
-  const addition = tidy(extra ?? "").slice(0, 400);
-  const tail =
-    (addition ? `补充要求：${addition}。` : "") + derived;
   const room = CLOUD_PROMPT_MAX - tail.length - 1;
-  const own = tidy(config.prompt).slice(0, Math.max(0, room));
-  const head = tidy(own);
+  const head = tidy(validDescription(config).slice(0, Math.max(0, room)));
   const prompt = head ? `${head}。${tail}` : tail;
   return prompt.length <= CLOUD_PROMPT_MAX
     ? prompt

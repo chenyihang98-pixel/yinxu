@@ -898,3 +898,27 @@
   color: var(--muted);
   font-size: var(--t-13);
 }
+
+/* ---------- unsaved result: on every page until it is saved or exported ---------- */
+.unsaved-banner {
+  flex: none;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: var(--s-3) var(--s-4) 0;
+}
+
+.unsaved-banner > svg {
+  flex: none;
+  margin-top: 0;
+}
+
+.unsaved-banner .grow {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.unsaved-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}

@@ -106,9 +106,7 @@ export function triBlamp(phase: number, inc: number): number {
   let v = u + 0.5;
   if (v >= 1) v -= 1;
   return (
-    1 -
-    4 * Math.abs(u - 0.5) +
-    8 * (polyBlamp(u, inc) - polyBlamp(v, inc))
+    1 - 4 * Math.abs(u - 0.5) + 8 * (polyBlamp(u, inc) - polyBlamp(v, inc))
   );
 }
 

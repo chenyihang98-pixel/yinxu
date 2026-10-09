@@ -33,6 +33,13 @@
  * reference mix under LIMITER_CEILING, a little above the soft-clip knee, so
  * the clipper only rounds off the very tips of limited peaks and has headroom
  * left for fader moves.
+ *
+ * The edges of a piece that ends: its last moments are faded to exact zero
+ * (FADE_OUT_SECONDS). Its beginning is left alone — the first downbeat keeps
+ * its attack, and the glue and the limiter are in place from the first frame
+ * — unless some stem would open with a step, which only happens when a note
+ * was already sounding before the piece began; then, and only then, the
+ * first FADE_IN_SECONDS are faded in (MasterReport.startFaded).
  */
 import { SAMPLE_RATE, TRACKS } from "../music/score";
 import type {
@@ -56,10 +63,12 @@ import {
   clamp,
   dbToGain,
   fastTanh,
+  freeBuffer,
   gainToDb,
   hashSeed,
   nextPow2,
 } from "./dsp";
+import type { SampleArray } from "./dsp";
 import {
   ANTI_DENORMAL,
   BiquadCascade,
@@ -104,6 +113,12 @@ export interface MasterReport extends MixMeasurement {
   shortfallLu: number;
   /** static gain multiplied into every stem, dB */
   gainDb: number;
+  /**
+   * The piece would have opened with a step (some stem starts off zero) and
+   * was faded in over FADE_IN_SECONDS. False for loops and for anything whose
+   * first notes start at t = 0: their attacks are left as they are.
+   */
+  startFaded: boolean;
   compressor: {
     thresholdDb: number;
     maxReductionDb: number;
@@ -115,6 +130,12 @@ export interface MasterReport extends MixMeasurement {
     /** fraction of the piece with more than 0.5 dB of limiting */
     activeRatio: number;
   };
+  /**
+   * Bytes of work arrays the master held for itself at one time: its
+   * control-rate curves (about four bytes per frame), and a side buffer when
+   * the caller handed none over. All of them are released before it returns.
+   */
+  workBytes: number;
   /** the drum-bus glue (absent: no drums, or density 0) */
   glue?: GlueReport;
   /** stems the stereo guard narrowed: the factor their side signal was multiplied by */
@@ -159,7 +180,22 @@ const COMP_MAX_REDUCTION_DB = 3.5;
 const DETECTOR_SECONDS = 0.01;
 const LIMITER_LOOKAHEAD = 0.005;
 const LIMITER_RELEASE = 0.15;
+/**
+ * Length of the fade-in a piece that ends is given when it would otherwise
+ * open with a step (see startsOffZero). It is a guard, not a rule: music
+ * whose first note starts at t = 0 opens at zero by itself, and fading its
+ * first milliseconds only takes the tip off the first downbeat.
+ */
 const FADE_IN_SECONDS = 0.005;
+/**
+ * A first sample above this share of the level its stem reaches within
+ * FADE_IN_SECONDS is a step (a note that was already sounding when the piece
+ * begins); below it, the opening of an attack. The steepest voice (chipPulse,
+ * through the bitcrush master) starts at 1.2 % of that level.
+ */
+const START_STEP_RATIO = 0.05;
+/** A first sample this small in the finished stem (-70 dBFS) cannot click, whatever follows. */
+const START_STEP_FLOOR = 0.0003;
 /**
  * A piece that ends is faded to digital silence over its last moments (at
  * most a quarter of it). The composer leaves at least 1.5 s after the last
@@ -168,6 +204,8 @@ const FADE_IN_SECONDS = 0.005;
  * all the way up) glides out instead of being cut off 40 dB down.
  */
 const FADE_OUT_SECONDS = 1.2;
+/** See shapeSide: how long the zero-phase side filter takes to come in at the start of a piece that ends. */
+const SIDE_EASE_SECONDS = 0.005;
 /**
  * How hard each character holds the drum bus, 0..1 (MasterSettings.density
  * overrides it). Dense, loud genres live from a kit whose strokes are level
@@ -213,6 +251,62 @@ export const MIN_STEM_CORRELATION = 0.12;
 const BITCRUSH_HZ = 22050;
 const BITCRUSH_STEP = 1 / 1024; // 11 bits across ±1
 const HISS_RMS = 0.0007; // -63 dBFS in the reference mix
+
+/* ---- work memory ---- */
+
+/**
+ * The work arrays of one master run that are worth counting (one value per
+ * control block or per frame). They are counted while they are held and
+ * detached when they are given back, so that nothing of a finished master
+ * waits in an idle worker for a collection (see dsp/memory.ts).
+ */
+class Workspace {
+  /** the most bytes held at one time */
+  peak = 0;
+  private bytes = 0;
+  private readonly arrays: SampleArray[] = [];
+
+  private keep<T extends SampleArray>(array: T): T {
+    this.arrays.push(array);
+    this.bytes += array.byteLength;
+    if (this.bytes > this.peak) this.peak = this.bytes;
+    return array;
+  }
+
+  f32(length: number): Float32Array {
+    return this.keep(new Float32Array(length));
+  }
+
+  f64(length: number): Float64Array {
+    return this.keep(new Float64Array(length));
+  }
+
+  i32(length: number): Int32Array {
+    return this.keep(new Int32Array(length));
+  }
+
+  /** Give one array back; it must not be used afterwards. */
+  release(array: SampleArray): void {
+    const index = this.arrays.lastIndexOf(array);
+    if (index < 0) return;
+    this.arrays.splice(index, 1);
+    this.bytes -= array.byteLength;
+    freeBuffer(array);
+  }
+
+  /** How many arrays are held: pass it to releaseFrom to give back everything made since. */
+  get mark(): number {
+    return this.arrays.length;
+  }
+
+  releaseFrom(mark: number): void {
+    while (this.arrays.length > mark) {
+      const array = this.arrays.pop() as SampleArray;
+      this.bytes -= array.byteLength;
+      freeBuffer(array);
+    }
+  }
+}
 
 /* ---- per-stem linear chain ---- */
 
@@ -304,6 +398,14 @@ class StemChain {
  * whole stem: zero phase, so a hard-panned part stays hard-panned (a causal
  * side filter would smear up to -14 dB of it into the other channel).
  * A stem that is already mono is left alone. `side` is work space.
+ *
+ * Zero phase means the filter answers a stroke before it happens. Before the
+ * first frame of a piece that ends there is nowhere for that answer to go:
+ * it would be cut off, and a stereo stroke on the downbeat would open the
+ * stem with a step (up to -33 dBFS, in opposite directions left and right).
+ * So over the first SIDE_EASE_SECONDS the filter is eased in: the stem opens
+ * with its own side signal and has the filtered one a few milliseconds
+ * later, before any low frequency has had the time to swing.
  */
 function shapeSide(
   left: Float32Array,
@@ -418,7 +520,10 @@ function sideBackward(
     w1 = c1 * y - d1 * v + w2;
     w2 = c2 * y - d2 * v;
   }
-  for (let i = frames - 1; i >= 0; i--) {
+  const ease = loop
+    ? 0
+    : Math.min(frames, Math.round(SIDE_EASE_SECONDS * sampleRate));
+  for (let i = frames - 1; i >= ease; i--) {
     const x = side[i] + ANTI_DENORMAL;
     const y = b0 * x + z1;
     z1 = b1 * x - a1 * y + z2;
@@ -429,6 +534,21 @@ function sideBackward(
     const mid = (left[i] + right[i]) * 0.5;
     left[i] = mid + v;
     right[i] = mid - v;
+  }
+  for (let i = ease - 1; i >= 0; i--) {
+    const x = side[i] + ANTI_DENORMAL;
+    const y = b0 * x + z1;
+    z1 = b1 * x - a1 * y + z2;
+    z2 = b2 * x - a2 * y;
+    const v = c0 * y + w1;
+    w1 = c1 * y - d1 * v + w2;
+    w2 = c2 * y - d2 * v;
+    const mid = (left[i] + right[i]) * 0.5;
+    const own = (left[i] - right[i]) * 0.5;
+    const eased =
+      own + (v - own) * (0.5 - 0.5 * Math.cos((Math.PI * i) / ease));
+    left[i] = mid + eased;
+    right[i] = mid - eased;
   }
 }
 
@@ -450,12 +570,13 @@ function glueDrums(
   sampleRate: number,
   density: number,
   loop: boolean,
+  work: Workspace,
 ): GlueReport | undefined {
   const depthDb = GLUE_DEPTH_DB * clamp(density, 0, 1);
   if (!(depthDb > 0.25) || frames < CONTROL * 4) return undefined;
   const count = Math.ceil(frames / CONTROL);
-  const peaks = new Float32Array(count);
-  const energy = new Float64Array(count);
+  const peaks = work.f32(count);
+  const energy = work.f64(count);
   let top = 0;
   for (let k = 0; k < count; k++) {
     const end = Math.min(frames, (k + 1) * CONTROL);
@@ -493,7 +614,7 @@ function glueDrums(
   const threshold = typical * dbToGain(-depthDb);
 
   // static curve → gain needed per block
-  const need = new Float32Array(count);
+  const need = work.f32(count);
   const slope = 1 - 1 / GLUE_RATIO;
   const half = GLUE_KNEE_DB / 2;
   for (let k = 0; k < count; k++) {
@@ -509,7 +630,8 @@ function glueDrums(
   // look ahead (the gain is down before the stroke arrives), instant attack,
   // exponential release, then the steps smoothed into ramps
   const look = Math.max(1, Math.ceil((GLUE_LOOKAHEAD * sampleRate) / CONTROL));
-  const held = new Float32Array(need);
+  const held = work.f32(count);
+  held.set(need);
   for (let k = 0; k < count; k++) {
     const wanted = need[k];
     if (wanted >= 1) continue;
@@ -535,10 +657,16 @@ function glueDrums(
       }
     }
   if (lowest > 0.985) return undefined;
-  const curve = new Float32Array(count);
+  const curve = work.f32(count);
   const window = look + 1;
+  // (nothing precedes a piece that ends: its first stroke gets the gain it
+  // needs from the first frame on, not a ramp down from unity)
   const before = (index: number) =>
-    index >= 0 ? need[index] : loop ? need[((index % count) + count) % count] : 1;
+    index >= 0
+      ? need[index]
+      : loop
+        ? need[((index % count) + count) % count]
+        : need[0];
   let sum = 0;
   for (let j = 0; j < window; j++) sum += before(-j);
   for (let k = 0; k < count; k++) {
@@ -558,7 +686,11 @@ function glueDrums(
   }
   const makeup =
     energyAfter > 0
-      ? clamp(Math.sqrt(energyBefore / energyAfter), 1, dbToGain(depthDb * slope))
+      ? clamp(
+          Math.sqrt(energyBefore / energyAfter),
+          1,
+          dbToGain(depthDb * slope),
+        )
       : 1;
   const gains = new Float32Array(BLOCK);
   for (let from = 0; from < frames; from += BLOCK) {
@@ -663,6 +795,11 @@ function shaperFor(
  * Tape-style wow and flutter: both channels of a stem are re-read at a slowly
  * wandering position (about ±0.09 % and ±0.04 % of pitch). The same curve is
  * used for every stem, so the stems stay phase-coherent with each other.
+ *
+ * A piece that ends is read from its own first frame: the wander is counted
+ * from where it stands at frame 0, or the tape would begin up to a quarter of
+ * a millisecond into the first note and open the piece with a step. A loop
+ * has no first frame, and its wander closes on itself as it is.
  */
 function applyWow(
   left: Float32Array,
@@ -677,7 +814,10 @@ function applyWow(
   const flutterHz = loopSyncedRate(2.7, loop ? duration : undefined);
   const wowDepth = (0.0009 / (TAU * wowHz)) * sampleRate;
   const flutterDepth = (0.0004 / (TAU * flutterHz)) * sampleRate;
-  const reach = nextPow2(Math.ceil(wowDepth + flutterDepth) + 4);
+  // (counted from frame 0 the wander reaches twice as far to one side)
+  const reach = nextPow2(
+    Math.ceil((wowDepth + flutterDepth) * (loop ? 1 : 2)) + 4,
+  );
   if (frames < reach * 4) return;
   const phaseA = (hashSeed(seed, 11) / 4294967296) * TAU;
   const phaseB = (hashSeed(seed, 12) / 4294967296) * TAU;
@@ -685,6 +825,7 @@ function applyWow(
   let cosA = Math.cos(phaseA);
   let sinB = Math.sin(phaseB);
   let cosB = Math.cos(phaseB);
+  const origin = loop ? reach : reach - wowDepth * sinA - flutterDepth * sinB;
   const stepSinA = Math.sin((TAU * wowHz) / sampleRate);
   const stepCosA = Math.cos((TAU * wowHz) / sampleRate);
   const stepSinB = Math.sin((TAU * flutterHz) / sampleRate);
@@ -712,7 +853,7 @@ function applyWow(
         index < frames ? right[index] : loop ? headRight[wrapped] : 0;
     }
     for (let i = 0; i < count; i++) {
-      const position = reach + i + wowDepth * sinA + flutterDepth * sinB;
+      const position = origin + i + wowDepth * sinA + flutterDepth * sinB;
       const whole = Math.floor(position);
       const t = position - whole;
       // 4-point Hermite read of each channel
@@ -798,11 +939,11 @@ class MixAnalyser {
   private blockPeak = 0;
   private blockEnergy = 0;
 
-  constructor(frames: number, sampleRate: number) {
+  constructor(frames: number, sampleRate: number, work: Workspace) {
     const points = Math.ceil(frames / CONTROL);
-    this.detector = new Float32Array(points);
-    this.peaks = new Float32Array(points);
-    this.energy = new Float64Array(points);
+    this.detector = work.f32(points);
+    this.peaks = work.f32(points);
+    this.energy = work.f64(points);
     this.detectorCoef = 1 - Math.exp(-1 / (DETECTOR_SECONDS * sampleRate));
     const { shelf, highpass } = kWeightingCoefs(sampleRate);
     this.coefs = Float64Array.of(
@@ -882,8 +1023,7 @@ class MixAnalyser {
 
   /** Close a last, partial control block. */
   finish(): void {
-    if (this.fill > 0)
-      this.store(this.power, this.blockPeak, this.blockEnergy);
+    if (this.fill > 0) this.store(this.power, this.blockPeak, this.blockEnergy);
     this.fill = 0;
   }
 
@@ -910,17 +1050,21 @@ function compressorCurve(
   sampleRate: number,
   attackSeconds: number,
   loop: boolean,
+  work: Workspace,
 ): Compression {
   const count = analysis.count;
-  const level = new Float32Array(count);
+  const gain = work.f32(count).fill(1);
+  // (the levels are only needed in here)
+  const level = work.f32(count);
   let loudest = -Infinity;
   for (let k = 0; k < count; k++) {
     level[k] = 10 * Math.log10(analysis.detector[k] + 1e-30);
     if (level[k] > loudest) loudest = level[k];
   }
-  const gain = new Float32Array(count).fill(1);
-  if (!(loudest > -200))
+  if (!(loudest > -200)) {
+    work.release(level);
     return { gain, thresholdDb: 0, maxReductionDb: 0, meanReductionDb: 0 };
+  }
 
   // threshold 4.5 dB under the level the loudest 1 % of the piece reaches
   const floor = loudest - 50;
@@ -969,6 +1113,7 @@ function compressorCurve(
         if (level[k] > floor) sumReduction += reduction;
       }
     }
+  work.release(level);
   return {
     gain,
     thresholdDb,
@@ -1009,16 +1154,17 @@ class GainSolver {
     private readonly frames: number,
     sampleRate: number,
     private readonly loop: boolean,
+    private readonly work: Workspace,
   ) {
     const count = analysis.count;
     this.count = count;
-    this.need = new Float32Array(count);
-    this.held = new Float32Array(count);
-    this.limit = new Float32Array(count);
+    this.need = work.f32(count);
+    this.held = work.f32(count);
+    this.limit = work.f32(count);
     this.hopFrames = Math.max(1, Math.round(sampleRate * HOP_SECONDS));
     this.completeHops = Math.floor(frames / this.hopFrames);
-    this.hops = new Float64Array(this.completeHops + 1);
-    this.hopOf = new Int32Array(count);
+    this.hops = work.f64(this.completeHops + 1);
+    this.hopOf = work.i32(count);
     for (let k = 0; k < count; k++)
       this.hopOf[k] = Math.min(
         this.completeHops,
@@ -1071,14 +1217,16 @@ class GainSolver {
         if (held[k] < value) value = held[k];
         if (pass === 1) need[k] = value;
       }
-    // smooth the steps into ramps as long as the look-ahead
+    // smooth the steps into ramps as long as the look-ahead. Before a piece
+    // that ends there is nothing to ramp from: padding with unity would leave
+    // a stroke on the very first frame under-limited for the whole look-ahead.
     const window = this.lookBlocks + 1;
     const before = (index: number) =>
       index >= 0
         ? need[index]
         : loop
           ? need[((index % count) + count) % count]
-          : 1;
+          : need[0];
     let sum = 0;
     for (let j = 0; j < window; j++) sum += before(-j);
     for (let k = 0; k < count; k++) {
@@ -1194,7 +1342,7 @@ class GainSolver {
       g = this.solveFor(targetLufs + biasLu - shortfall, limit);
       stats = this.stats(g);
     }
-    const curve = new Float32Array(this.count);
+    const curve = this.work.f32(this.count);
     for (let k = 0; k < this.count; k++)
       curve[k] = g * this.compression[k] * this.limit[k];
     return {
@@ -1392,7 +1540,7 @@ function fillGains(
   loop: boolean,
 ): void {
   const points = curve.length;
-  for (let i = 0; i < n; ) {
+  for (let i = 0; i < n;) {
     const frame = from + i;
     const k = Math.min(points - 1, Math.floor(frame / CONTROL));
     const start = k > 0 ? curve[k - 1] : loop ? curve[points - 1] : curve[0];
@@ -1421,8 +1569,7 @@ function fadeGains(
       gains[i] *= 0.5 - 0.5 * Math.cos((Math.PI * frame) / fadeIn);
     const remaining = frames - 1 - frame;
     if (remaining < fadeOut)
-      gains[i] *=
-        0.5 - 0.5 * Math.cos((Math.PI * remaining) / (fadeOut - 1));
+      gains[i] *= 0.5 - 0.5 * Math.cos((Math.PI * remaining) / (fadeOut - 1));
   }
 }
 
@@ -1476,9 +1623,35 @@ function silentReport(settings: MasterSettings): MasterReport {
     clippedRatio: 0,
     shortfallLu: 0,
     gainDb: 0,
+    startFaded: false,
+    workBytes: 0,
     compressor: { thresholdDb: 0, maxReductionDb: 0, meanReductionDb: 0 },
     limiter: { ceiling: LIMITER_CEILING, maxReductionDb: 0, activeRatio: 0 },
   };
+}
+
+/**
+ * Does some stem open with a step? `gain` is the gain of the master at frame
+ * 0 and `span` the frames a fade-in would take. Every stem is looked at on
+ * its own (not their sum): each can be soloed or exported alone.
+ */
+function startsOffZero(
+  active: readonly ActiveStem[],
+  gain: number,
+  span: number,
+): boolean {
+  for (const stem of active)
+    for (const data of [stem.left, stem.right]) {
+      const first = data[0] < 0 ? -data[0] : data[0];
+      if (!(first * gain > START_STEP_FLOOR)) continue;
+      let peak = 0;
+      for (let i = 0; i < span; i++) {
+        const value = data[i] < 0 ? -data[i] : data[i];
+        if (value > peak) peak = value;
+      }
+      if (first > peak * START_STEP_RATIO) return true;
+    }
+  return false;
 }
 
 /**
@@ -1489,6 +1662,23 @@ export async function masterStems(
   stems: Stems,
   settings: MasterSettings,
   options: MasterOptions,
+): Promise<MasterReport> {
+  const work = new Workspace();
+  try {
+    const report = await masterWith(stems, settings, options, work);
+    report.workBytes = work.peak;
+    return report;
+  } finally {
+    // done, failed or cancelled: the curves go back now
+    work.releaseFrom(0);
+  }
+}
+
+async function masterWith(
+  stems: Stems,
+  settings: MasterSettings,
+  options: MasterOptions,
+  work: Workspace,
 ): Promise<MasterReport> {
   const { sampleRate, loop } = options;
   const seed = options.seed ?? 0;
@@ -1509,9 +1699,20 @@ export async function masterStems(
     1,
   );
   const drums = active.find((stem) => stem.track === "drums");
+  // (the glue is finished before anything else starts: its curves go back at once)
+  const glueMark = work.mark;
   const glue = drums
-    ? glueDrums(drums.left, drums.right, frames, sampleRate, density, loop)
+    ? glueDrums(
+        drums.left,
+        drums.right,
+        frames,
+        sampleRate,
+        density,
+        loop,
+        work,
+      )
     : undefined;
+  work.releaseFrom(glueMark);
   const narrowed: Partial<Record<TrackName, number>> = {};
   // progress: stem preparation, the analysis sweep, the final pass
   const steps = 3;
@@ -1527,7 +1728,7 @@ export async function masterStems(
   const side =
     options.scratch && options.scratch.length >= frames
       ? options.scratch
-      : new Float32Array(frames);
+      : work.f32(frames);
   for (let index = 0; index < active.length; index++) {
     const stem = active[index];
     // each of these is one pass over the whole stem (tens of milliseconds for
@@ -1610,7 +1811,7 @@ export async function masterStems(
 
   // the sweep: linear chain per stem, then the character's saturation
   const chains = active.map(() => new StemChain(sampleRate, settings));
-  const analysis = new MixAnalyser(frames, sampleRate);
+  const analysis = new MixAnalyser(frames, sampleRate, work);
   const warmFrames = Math.min(frames * 4, Math.round(sampleRate * 0.4));
   await sweep(
     (index, l, r, n) => {
@@ -1631,6 +1832,7 @@ export async function masterStems(
     sampleRate,
     character === "punchy" ? 0.06 : 0.025,
     loop,
+    work,
   );
   const ceiling = Math.min(LIMITER_CEILING, dbToGain(settings.ceilingDb));
   // (an explicit ceiling lower than that simply stays)
@@ -1641,6 +1843,7 @@ export async function masterStems(
     frames,
     sampleRate,
     loop,
+    work,
   );
   let plan = solver.solve(settings.targetLufs, ceiling, 0, denseCeiling);
   if (!(plan.estimatedLufs > -Infinity)) return silentReport(settings);
@@ -1680,6 +1883,7 @@ export async function masterStems(
         settings.targetLufs - plan.shortfallLu - rehearse(plan.curve);
       if (Math.abs(error) < 0.05) break;
       bias += error;
+      work.release(plan.curve);
       plan = solver.solve(settings.targetLufs, ceiling, bias, denseCeiling);
       const pending = tick(0);
       if (pending) await pending;
@@ -1693,8 +1897,7 @@ export async function masterStems(
   const hissGains = new Float32Array(BLOCK);
   const hissLeft = new Float32Array(BLOCK);
   const hissRight = new Float32Array(BLOCK);
-  const hissShare =
-    1 / active.reduce((sum, stem) => sum + stem.volume, 0);
+  const hissShare = 1 / active.reduce((sum, stem) => sum + stem.volume, 0);
   const hiss =
     character === "lofi"
       ? [
@@ -1702,9 +1905,14 @@ export async function masterStems(
           new Hiss(hashSeed(seed, 22), sampleRate, HISS_RMS * hissShare),
         ]
       : null;
-  const fadeIn = loop
+  const startFrames = loop
     ? 0
     : Math.min(frames, Math.round(FADE_IN_SECONDS * sampleRate));
+  // the music is only faded in when it would open with a step; the hiss bed,
+  // which has no attack to lose, always rises from nothing
+  const startFaded =
+    startFrames > 0 && startsOffZero(active, curve[0], startFrames);
+  const fadeIn = startFaded ? startFrames : 0;
   const fadeOut = loop
     ? 0
     : Math.max(
@@ -1720,12 +1928,11 @@ export async function masterStems(
     const count = Math.min(BLOCK, frames - from);
     fillGains(gains, curve, from, count, loop);
     const fading =
-      (fadeIn > 0 && from < fadeIn) ||
-      (fadeOut > 0 && from + count > frames - fadeOut);
+      from < startFrames || (fadeOut > 0 && from + count > frames - fadeOut);
     if (fading) {
-      // the hiss must fade with the music, so it gets the fade alone
+      // the hiss must fade with the music, so it gets the fades alone
       hissGains.fill(1, 0, count);
-      fadeGains(hissGains, from, count, frames, fadeIn, fadeOut);
+      fadeGains(hissGains, from, count, frames, startFrames, fadeOut);
       fadeGains(gains, from, count, frames, fadeIn, fadeOut);
     }
     if (hiss) {
@@ -1749,8 +1956,13 @@ export async function masterStems(
     const pending = tick(from / frames);
     if (pending) await pending;
   }
+  // A piece that ends begins and ends on a sample of exact zero, whatever
+  // surrounds the file. At the start that sample is next to nothing already
+  // (a voice's first sample, a step of the bitcrush grid) or has been faded.
   if (!loop)
     for (const stem of active) {
+      stem.left[0] = 0;
+      stem.right[0] = 0;
       stem.left[frames - 1] = 0;
       stem.right[frames - 1] = 0;
     }
@@ -1786,6 +1998,8 @@ export async function masterStems(
     ...measured,
     shortfallLu: plan.shortfallLu,
     gainDb: gainToDb(plan.staticGain * preGain) + trimDb,
+    startFaded,
+    workBytes: work.peak,
     compressor: {
       thresholdDb: compression.thresholdDb,
       maxReductionDb: compression.maxReductionDb,

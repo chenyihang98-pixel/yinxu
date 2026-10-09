@@ -417,6 +417,8 @@
 
 .studio-side {
   position: relative;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
@@ -434,8 +436,10 @@
 
 @media (max-width: 1099px) {
   .studio {
+    /* named: what sticks to the end of this scroll area steps over it */
+    --studio-end: var(--s-8);
     display: block;
-    padding: var(--s-5) var(--gutter) var(--s-8);
+    padding: var(--s-5) var(--gutter) var(--studio-end);
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -447,6 +451,7 @@
   }
 
   .studio-side {
+    display: block;
     max-width: 960px;
     margin: var(--s-4) auto 0;
     overflow: visible;
@@ -457,7 +462,8 @@
 
 @media (max-width: 719px) {
   .studio {
-    padding: var(--s-2) 0 var(--s-6);
+    --studio-end: var(--s-6);
+    padding: var(--s-2) 0 var(--studio-end);
   }
 
   .studio-flow {
@@ -575,9 +581,11 @@
   font-weight: 600;
 }
 
+/* the settings behind a work whose audio differs from them (fitted loops) */
 .player-notice {
   color: var(--muted);
   font-size: var(--t-12);
+  line-height: 1.5;
 }
 
 @media (max-width: 719px) {
@@ -1126,6 +1134,11 @@
   font-size: var(--t-12);
 }
 
+/* the web build shows both: the keys, then the way to the desktop app */
+.refine-foot .refine-hint + .desktop-link {
+  margin-left: var(--s-2);
+}
+
 @media (pointer: coarse) {
   .refine-input,
   .composer-input {
@@ -1399,7 +1412,9 @@
 
 @container mixer (min-width: 400px) and (max-width: 620px) {
   .mix-row {
-    grid-template-columns: 32px minmax(0, 1fr) minmax(72px, 0.6fr) 28px auto auto;
+    grid-template-columns:
+      32px minmax(0, 1fr) minmax(72px, 0.6fr)
+      28px auto auto;
     grid-template-areas:
       "icon name wave wave wave wave"
       "fader fader fader value mute solo";
@@ -1412,15 +1427,22 @@
 
 /* ---------- inspector ---------- */
 .inspector {
+  --insp-pad: var(--s-5);
   display: flex;
+  flex: 1 0 auto;
   flex-direction: column;
   gap: var(--s-4);
   min-width: 0;
-  padding: var(--s-6) var(--s-5) var(--s-8);
+  /* the footer brings its own bottom padding and sticks to the column's end */
+  padding: var(--s-6) var(--insp-pad) 0;
 }
 
 .inspector-card {
   padding: var(--s-5);
+}
+
+.inspector-card[data-open="true"] {
+  padding-bottom: var(--s-4);
 }
 
 .insp-head {
@@ -1468,6 +1490,7 @@
 
 .insp-body {
   display: flex;
+  flex: 1 0 auto;
   flex-direction: column;
   gap: var(--s-4);
   min-width: 0;
@@ -1543,12 +1566,52 @@
   font-size: var(--t-12);
 }
 
+/* what a loop's tempo / length will really be, under the field that sets it */
+.insp-fit {
+  margin-top: -2px;
+  color: var(--muted);
+  font-size: var(--t-12);
+  line-height: 1.5;
+}
+
+/*
+ * The footer: what is pending, 应用调整 / 全部还原, 换一版旋律. In the inspector
+ * column it is always on screen (sticky at the column's end); as a card it
+ * sticks to the bottom of the page for as long as edits are pending.
+ */
 .insp-actions {
+  position: sticky;
+  z-index: 2;
+  bottom: 0;
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
-  padding-top: var(--s-4);
+  margin: 0 calc(-1 * var(--insp-pad));
+  padding: var(--s-3) var(--insp-pad) var(--s-4);
   border-top: 1px solid var(--border);
+  background: var(--bg-deep);
+}
+
+.insp-apply {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.insp-pending {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--t-12);
+}
+
+.insp-pending strong {
+  flex: none;
+  color: var(--accent-hi);
+  font-weight: 600;
 }
 
 .insp-actions-row {
@@ -1576,7 +1639,7 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-top: var(--s-4);
+  padding: var(--s-4) 0 var(--s-2);
   border-top: 1px solid var(--border);
 }
 
@@ -1615,7 +1678,37 @@
   content: "";
 }
 
-/* as a card under the mixer: two columns of fields from 720 px */
+/*
+ * As a card under the mixer (below 1100 px) the page scrolls, not the panel:
+ * 应用调整 / 全部还原 stick to the bottom of the page while edits are pending,
+ * 换一版旋律 stays in the flow below them.
+ */
+@media (max-width: 1099px) {
+  .inspector {
+    flex: none;
+  }
+
+  .inspector-card .insp-actions {
+    display: contents;
+  }
+
+  .inspector-card .insp-apply {
+    margin: 0 calc(-1 * var(--insp-pad));
+    padding: var(--s-3) var(--insp-pad);
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  .inspector-card .insp-actions[data-pending] .insp-apply {
+    position: sticky;
+    z-index: 2;
+    /* flush with the end of the page area, over its bottom padding */
+    bottom: calc(-1 * var(--studio-end, 0px));
+    box-shadow: 0 -12px 16px -12px rgba(0, 0, 0, 0.6);
+  }
+}
+
+/* two columns of fields from 720 px */
 @media (min-width: 720px) and (max-width: 1099px) {
   .inspector-card .insp-body {
     display: grid;
@@ -1625,33 +1718,85 @@
   }
 
   .inspector-card .insp-body > .notice,
-  .inspector-card .insp-actions,
   .inspector-card .insp-notes {
     grid-column: 1 / -1;
   }
 
-  .inspector-card .insp-actions {
-    flex-direction: row;
-    flex-wrap: wrap;
+  .inspector-card .insp-apply {
+    flex-flow: row wrap;
     align-items: center;
+    gap: var(--s-2) var(--s-4);
   }
 
-  .inspector-card .insp-actions > .btn {
-    width: auto;
+  .inspector-card .insp-pending {
+    flex: 1 0 100%;
+  }
+
+  .inspector-card .insp-actions-row {
+    flex: none;
+  }
+
+  .inspector-card .insp-actions-row .btn-block {
+    flex: none;
     min-width: 200px;
   }
 
-  .inspector-card .insp-actions-row .btn {
-    width: auto;
+  .inspector-card .insp-hint {
+    flex: 1 1 240px;
   }
 
-  .inspector-card .insp-hint {
-    flex: 1 0 100%;
+  .inspector-card .insp-variation {
+    align-self: flex-start;
+    width: auto;
+    min-width: 200px;
   }
 }
 
 @media (max-width: 719px) {
   .inspector-card {
+    --insp-pad: var(--s-4);
     padding: var(--s-4);
   }
+}
+
+/* ---------- billing notice, version note, style hint ---------- */
+.paid-notice {
+  padding: 8px 10px;
+  font-size: var(--t-12);
+}
+
+.paid-notice svg,
+.thread-version svg {
+  flex: none;
+}
+
+.composer > .paid-notice {
+  margin-top: var(--s-3);
+}
+
+.refine > .paid-notice {
+  margin-bottom: var(--s-2);
+}
+
+.thread-version {
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: var(--s-3);
+  font-size: var(--t-12);
+}
+
+.thread-version .grow {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.style-hint {
+  margin-top: var(--s-2);
+  color: var(--muted);
+  font-size: var(--t-12);
+  line-height: 1.55;
+}
+
+.save-retry {
+  font-size: var(--t-12);
 }

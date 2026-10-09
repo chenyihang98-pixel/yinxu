@@ -15,6 +15,7 @@ import { DEFAULT_CONFIG } from "../music/defaults";
 import { TRACKS } from "../music/score";
 import type { Score } from "../music/score";
 import { DRUMS } from "./drums";
+import { describeFailure } from "./engine-error";
 import { mixdownToWav } from "./mixdown";
 import { renderScoreWith } from "./render";
 import type { RenderReport } from "./render";
@@ -138,14 +139,10 @@ export interface WorkerScope {
   onmessage: ((event: { data: WorkerRequest }) => void) | null;
 }
 
-function describeError(error: unknown): string {
-  if (error instanceof RangeError && /alloc|memory|length/i.test(error.message))
-    return "内存不足，无法生成这么长的音频";
-  if (error instanceof Error) return error.message || error.name;
-  return String(error);
-}
-
-async function handle(scope: WorkerScope, request: WorkerRequest): Promise<void> {
+async function handle(
+  scope: WorkerScope,
+  request: WorkerRequest,
+): Promise<void> {
   try {
     if (request.type === "warm") {
       scope.postMessage({ type: "warmed", id: request.id, ms: await warmUp() });
@@ -174,10 +171,12 @@ async function handle(scope: WorkerScope, request: WorkerRequest): Promise<void>
         transfer.push(channel.buffer as ArrayBuffer);
     scope.postMessage({ type: "done", id: request.id, ...result }, transfer);
   } catch (error) {
+    // what went wrong travels as a code and the original text; the words the
+    // user reads are chosen on the other side (engine-error.ts)
     scope.postMessage({
       type: "error",
       id: request.id,
-      message: describeError(error),
+      ...describeFailure(error),
     });
   }
 }

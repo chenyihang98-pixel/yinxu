@@ -26,7 +26,7 @@ import {
 } from "../../state/format";
 import type { AppActions, LibraryView } from "../../state/types";
 import { useLibraryFilter } from "../../state/useLibrary";
-import { projectDuration, versionLabel } from "../../state/works";
+import { projectDuration, versionTag } from "../../state/works";
 import type { LibrarySort } from "../../state/works";
 import type { DamagedRecord } from "../../storage";
 import type { Project } from "../../types";
@@ -43,8 +43,12 @@ const SORTS: { value: LibrarySort; label: string; testId: string }[] = [
 
 const WorkCard = memo(function WorkCard(props: {
   project: Project;
-  /** "v2 · 源自《…》" */
+  /** "v3" */
   version: string;
+  /** "源自 v2" — where this version came from, when that work still exists */
+  origin: string | null;
+  /** the whole lineage line, for the tooltip */
+  versionTip: string;
   current: boolean;
   /** this is the loaded work and it is playing */
   playing: boolean;
@@ -88,6 +92,13 @@ const WorkCard = memo(function WorkCard(props: {
           {formatTime(projectDuration(project))}
         </span>
       </button>
+      {current && (
+        // On the cover, away from the version line: that line is the only
+        // thing that tells two versions of a piece apart.
+        <span className="work-now" data-testid="library-current">
+          当前打开
+        </span>
+      )}
       <div className="work-body">
         <button
           type="button"
@@ -104,10 +115,19 @@ const WorkCard = memo(function WorkCard(props: {
             tone={current ? "accent" : "neutral"}
             testId="library-version"
             className="work-version"
+            tip={props.origin ? props.versionTip : undefined}
           >
-            <span className="ellipsis">{props.version}</span>
+            {props.version}
           </Badge>
-          {current && <span className="work-now">正在创作台</span>}
+          {props.origin && (
+            <span
+              className="work-origin ellipsis"
+              data-testid="library-origin"
+              data-tip={props.versionTip}
+            >
+              {props.origin}
+            </span>
+          )}
           <time className="work-date tabular" dateTime={project.updatedAt}>
             {formatDate(project.updatedAt)}
           </time>
@@ -195,7 +215,7 @@ function DamagedSection(props: {
         </h2>
       </div>
       <p className="damaged-lede">
-        这些记录不会影响其他作品。可以先导出原始数据留存，再删除。
+        这些记录不会影响其他作品。可以先导出原始数据（参数与对话，不含音频）留存，再删除；带有音频的记录请先导出原始音频。
       </p>
       <ul className="damaged-list">
         {records.map((record) => (
@@ -206,10 +226,31 @@ function DamagedSection(props: {
             data-record={record.id}
           >
             <div className="grow">
-              <strong className="ellipsis">{record.title || "未命名的记录"}</strong>
+              <strong className="ellipsis">
+                {record.title || "未命名的记录"}
+              </strong>
               <p className="damaged-reason" data-testid="damaged-reason">
                 {record.reason}
               </p>
+              {record.audio && (
+                <p className="damaged-audio" data-testid="damaged-audio-note">
+                  {record.paid ? "含付费生成的音频" : "含音频"}（
+                  {formatBytes(record.audio.size)}）。删除前请先导出原始音频。
+                </p>
+              )}
+              {confirming === record.id && (
+                <p
+                  className="damaged-audio"
+                  role="alert"
+                  data-testid="damaged-confirm-note"
+                >
+                  {record.audio
+                    ? record.paid
+                      ? "删除后，这段付费生成的音频将无法找回。"
+                      : "删除后，这段音频将无法找回。"
+                    : "删除后无法找回。"}
+                </p>
+              )}
             </div>
             <div className="damaged-actions">
               <Button
@@ -219,6 +260,16 @@ function DamagedSection(props: {
               >
                 导出原始数据
               </Button>
+              {record.audio && (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  data-testid="damaged-export-audio"
+                  onClick={() => void actions.exportDamagedAudio(record.id)}
+                >
+                  导出原始音频
+                </Button>
+              )}
               {confirming === record.id ? (
                 <>
                   <Button size="sm" onClick={() => setConfirming(null)}>
@@ -384,11 +435,15 @@ export function LibraryPage() {
 
         {library.status === "loading" && (
           <p className="library-state" role="status">
-            正在读取作品库…
+            正在读取作品…
           </p>
         )}
         {library.status === "error" && (
-          <div className="notice notice-danger" role="alert" data-testid="library-error">
+          <div
+            className="notice notice-danger"
+            role="alert"
+            data-testid="library-error"
+          >
             <FileWarning size={16} aria-hidden />
             <span className="grow">{library.error}</span>
             <Button size="sm" onClick={() => void actions.refreshLibrary()}>
@@ -432,21 +487,26 @@ export function LibraryPage() {
 
         {filter.results.length > 0 && (
           <ul className="work-grid" aria-labelledby="library-title">
-            {filter.results.map((project) => (
-              <WorkCard
-                key={project.id}
-                project={project}
-                version={versionLabel(project, library.projects)}
-                current={project.id === currentId}
-                playing={project.id === currentId && player.playing}
-                busy={busy}
-                confirming={confirming === project.id}
-                onRemove={remove}
-                onCancelRemove={cancelRemove}
-                onPause={player.pause}
-                actions={actions}
-              />
-            ))}
+            {filter.results.map((project) => {
+              const version = versionTag(project, library.projects);
+              return (
+                <WorkCard
+                  key={project.id}
+                  project={project}
+                  version={version.tag}
+                  origin={version.origin}
+                  versionTip={version.full}
+                  current={project.id === currentId}
+                  playing={project.id === currentId && player.playing}
+                  busy={busy}
+                  confirming={confirming === project.id}
+                  onRemove={remove}
+                  onCancelRemove={cancelRemove}
+                  onPause={player.pause}
+                  actions={actions}
+                />
+              );
+            })}
           </ul>
         )}
 

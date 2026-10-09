@@ -35,9 +35,10 @@ import {
   INSTRUMENTAL_ONLY,
   buildCloudPrompt,
   describeChanges,
+  melodyNote,
 } from "./cloudPrompt";
 import { describePins, pinNote, readPins, withPins } from "./pins";
-import { keptTitle, planWithRules, readMentions } from "./rules";
+import { catalogBlurb, keptTitle, planWithRules, readMentions } from "./rules";
 
 export { describeChanges };
 
@@ -67,6 +68,13 @@ const PRESET_FIELDS = [
  */
 const DRIFT_BPM = 3;
 const DRIFT_UNIT = 0.06;
+/**
+ * A reply that says something was changed ("已经把速度提到 140", "换成了古筝").
+ * When the validated settings are exactly what they were, such a reply is
+ * not shown: it would announce a version that does not exist.
+ */
+const CLAIMS_A_CHANGE =
+  /已经?(?:把|将|为你|帮你|给你)|(?:换|改|调|提|降|加|减|延长|缩短|去掉|关闭|恢复|升|放慢|加快)(?:成|到|为|了|高|低|快|慢|长|短|回)|\b(?:changed|switched|raised|lowered|increased|decreased|added|removed|set)\b/i;
 /** A section plan is kept while its bars are within these factors of what the duration holds. */
 const FORM_FIT: [number, number] = [0.6, 1.5];
 
@@ -243,7 +251,8 @@ function refinedArrangement(
     if (told.melody?.density !== undefined) shape.density = told.melody.density;
     else if (density !== undefined && density < 0) delete shape.density;
     for (const field of ["register", "motion"] as const)
-      if (told.melody?.[field]) Object.assign(shape, { [field]: told.melody[field] });
+      if (told.melody?.[field])
+        Object.assign(shape, { [field]: told.melody[field] });
       else if (own(melody, field) === "auto") delete shape[field];
     next.melody = shape;
   }
@@ -493,9 +502,29 @@ export function agentPlanFromRaw(
   const changes = describeChanges(current, config);
   const unchanged = mode === "refine" && changes.length === 0;
   const info = styleInfo(config.mood);
-  const reply = overruled ? "" : rawReply;
+  // the model reports a change, the settings are what they were: its words are not shown
+  const hollow = unchanged && CLAIMS_A_CHANGE.test(rawReply);
+  const reply = overruled || hollow ? "" : rawReply;
   const pinNotes = describePins(pins);
-  const rawReasons = overruled ? [] : own(raw, "reasoning");
+  const rawReasons = overruled || hollow ? [] : own(raw, "reasoning");
+  // a value beyond what the engine can do was asked for (by the user or the model)
+  const beyond = (value: number | undefined, [low, high]: readonly number[]) =>
+    value !== undefined && (value < low || value > high);
+  const rangeNotes = [
+    ...(pins.bpm === undefined &&
+    (beyond(numbers.bpm, LIMITS.bpm) || beyond(mentions.bpm, LIMITS.bpm)) &&
+    LIMITS.bpm.includes(config.bpm)
+      ? [`速度范围是 ${LIMITS.bpm[0]}–${LIMITS.bpm[1]} BPM，已取 ${config.bpm}`]
+      : []),
+    ...(pins.duration === undefined &&
+    (beyond(numbers.duration, LIMITS.duration) ||
+      beyond(mentions.duration, LIMITS.duration)) &&
+    LIMITS.duration.includes(config.duration)
+      ? [
+          `时长范围是 ${LIMITS.duration[0]}–${LIMITS.duration[1]} 秒，已取 ${config.duration} 秒`,
+        ]
+      : []),
+  ];
   const theirs = (Array.isArray(rawReasons) ? rawReasons.slice(0, 32) : [])
     .map((item) => line(item, REASON_CHARS))
     .filter(Boolean);
@@ -507,10 +536,11 @@ export function agentPlanFromRaw(
       : pins.mood
         ? []
         : [`风格定为「${styleLabel(config.mood)}」`];
+  const closing = [...rangeNotes, ...(formNote ? [formNote] : [])];
   const reasoning = [
     ...pinNotes,
-    ...ours.slice(0, MAX_REASONS - pinNotes.length - (formNote ? 1 : 0)),
-    ...(formNote ? [formNote] : []),
+    ...ours.slice(0, MAX_REASONS - pinNotes.length - closing.length),
+    ...closing,
   ];
   const title =
     (mode === "refine" ? keptTitle(request) : "") ||
@@ -523,7 +553,10 @@ export function agentPlanFromRaw(
       ? ""
       : line(own(raw, "cloudPrompt"), CLOUD_PROMPT_MAX);
     if ([...written].length < 12)
-      cloudPrompt = buildCloudPrompt(config, mode === "refine" ? text : undefined);
+      cloudPrompt = buildCloudPrompt(
+        config,
+        mode === "refine" ? current : undefined,
+      );
     else if (/无人声|纯音乐|no vocals?|instrumental/i.test(written))
       cloudPrompt = written;
     else
@@ -536,22 +569,24 @@ export function agentPlanFromRaw(
   }
   const modelName = line(model, 80);
 
+  const said =
+    reply ||
+    (mode === "new"
+      ? `好的，做一段「${info.label}」风格的音乐。`
+      : changes.length
+        ? `好的：${changes.slice(0, 3).join("，")}${changes.length > 3 ? " 等" : ""}。` +
+          melodyNote(current, config, request.provider)
+        : "这次没有需要改动的地方，作品保持不变。");
+  const ranged = rangeNotes.filter(() => !/范围/.test(said));
+
   return {
     config,
     title,
-    reply:
-      reply ||
-      (mode === "new"
-        ? `好的，做一段「${info.label}」风格的音乐。`
-        : changes.length
-          ? `好的：${changes.slice(0, 3).join("，")}。`
-          : "这次没有需要改动的地方，作品保持不变。"),
+    reply: ranged.length
+      ? `${said}${/[。.!！?？]$/.test(said) ? "" : "。"}${ranged.join("。")}。`
+      : said,
     reasoning,
-    tags: [
-      info.label,
-      `${config.bpm} BPM`,
-      instrumentLabel(config.instrument),
-    ],
+    tags: [info.label, `${config.bpm} BPM`, instrumentLabel(config.instrument)],
     unchanged,
     brain: "llm",
     ...(cloudPrompt ? { cloudPrompt } : {}),
@@ -592,7 +627,11 @@ function firstClause(message: string): string {
     .trim();
   if (/^已取消/.test(clause)) return "大模型编排已取消";
   // an instruction to the user ("请填写…") or a bare "操作失败" says nothing about the model
-  if (!clause || /^(?:请|操作失败)/.test(clause) || [...clause].length > NOTICE_CHARS)
+  if (
+    !clause ||
+    /^(?:请|操作失败)/.test(clause) ||
+    [...clause].length > NOTICE_CHARS
+  )
     return UNAVAILABLE;
   return clause;
 }
@@ -638,9 +677,13 @@ export async function producePlan(
   request: AgentRequest,
   options: { llm?: DesktopAPI["agentPlan"] } = {},
 ): Promise<AgentPlan> {
-  const hasText =
-    typeof request.text === "string" && request.text.trim().length > 0;
-  if (!options.llm || !hasText) return planWithRules(request);
+  const said = typeof request.text === "string" ? request.text.trim() : "";
+  // A style card's own blurb (for the style it pins) says nothing the preset
+  // does not: like a message without words, there is nothing to interpret.
+  const blurb = request.mode === "refine" ? undefined : catalogBlurb(said);
+  const pinned = readPins(request).mood;
+  const wordless = !said || (!!blurb && (!pinned || pinned === blurb));
+  if (!options.llm || wordless) return planWithRules(request);
   try {
     return await planWithLlm(request, options.llm);
   } catch (error) {

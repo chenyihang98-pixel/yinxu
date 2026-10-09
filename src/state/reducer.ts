@@ -1,7 +1,7 @@
 /**
  * The whole renderer state and the only code that changes it. Pure.
  *
- * Structural guarantees (regressions of the v0.2 audit, APP-01..04/13):
+ * Structural guarantees:
  *  - job results (`job/update`, `thread/append`, `studio/loaded`) carry the
  *    id of the job that produced them and are dropped unless that job is
  *    still the running one and has not been cancelled;
@@ -9,7 +9,10 @@
  *  - mixer actions write the committed `project.config.volumes`;
  *  - solo changes only when a work is loaded or the user toggles it — a
  *    failed or cancelled job leaves solo, mix and audio exactly as they were;
- *  - a work replaces draft, thread, solo and audio together, in one step.
+ *  - a work replaces draft, thread, solo and audio together, in one step;
+ *    inspector edits a generation did not use are carried onto its result;
+ *  - a toast that offers an action (撤销) or is sticky is never pushed out
+ *    by later toasts.
  */
 import type { AgentTurn, BrainKind } from "../agent/types";
 import { DEFAULT_CONFIG } from "../music/defaults";
@@ -35,6 +38,7 @@ import {
 import { cleanPins } from "./plan";
 import { upsertProject } from "./works";
 import type {
+  Dialog,
   Draft,
   DraftField,
   Job,
@@ -72,6 +76,8 @@ export type AppAction =
     }
   | { type: "toast/push"; toast: Toast }
   | { type: "toast/dismiss"; id: number }
+  | { type: "toast/withdraw"; key: string }
+  | { type: "ui/dialog"; dialog: Dialog | null }
   | { type: "composer/text"; text: string }
   | { type: "composer/pins"; pins: Pins }
   | { type: "composer/provider"; provider: Provider }
@@ -102,6 +108,14 @@ export type AppAction =
       notes?: Record<string, TurnNote>;
       reason: LoadEvent["reason"];
       saveState: SaveState;
+      /**
+       * The work is in the library. Default: what `saveState` implies —
+       * "idle" (opened from the library) and "saved" are, "saving" and
+       * "failed" (a fresh result) are not yet.
+       */
+      stored?: boolean;
+      /** inspector edits to keep on top of the new work's values */
+      carry?: Partial<Draft>;
       /** engine to select for the next generation, when it should follow the work */
       provider?: Provider;
       /** a new piece was made from the composer: its pins are used up */
@@ -109,7 +123,13 @@ export type AppAction =
     }
   | { type: "studio/unloaded" }
   | { type: "studio/solo"; track: TrackName | null }
-  | { type: "studio/saveState"; id: string; saveState: SaveState }
+  | {
+      type: "studio/saveState";
+      id: string;
+      saveState: SaveState;
+      /** the write that is reported put the whole work into the library */
+      stored?: boolean;
+    }
   | { type: "studio/exporting"; exporting: boolean }
   | { type: "studio/peaks"; id: string; peaks: number[] }
   | { type: "mix/volume"; track: TrackName; value: number }
@@ -121,13 +141,42 @@ export type AppAction =
   | { type: "library/hide"; id: string; expiresAt: number }
   | { type: "library/restore"; id: string }
   | { type: "library/removed"; id: string }
+  /** the record no longer exists (deleted in another window) */
+  | { type: "library/gone"; id: string }
   | { type: "library/damagedRemoved"; id: string }
   | { type: "library/storage"; storage: StorageUsage | null }
   | { type: "settings/loading" }
   | { type: "settings/loaded"; settings: DesktopSettings }
   | { type: "settings/failed"; error: string };
 
+/** Plain notices on screen at once; toasts with an action or sticky ones do not count. */
 const MAX_TOASTS = 4;
+
+const lasting = (toast: Toast) => !!toast.action || !!toast.sticky;
+
+/**
+ * Add a toast. One with a key takes the place of the visible toast with the
+ * same key; a plain one replaces an identical plain one instead of stacking.
+ * Only plain toasts are ever pushed out to make room.
+ */
+function pushToast(toasts: readonly Toast[], toast: Toast): Toast[] {
+  const slot = toasts.findIndex((item) =>
+    toast.key !== undefined
+      ? item.key === toast.key
+      : !lasting(item) &&
+        !lasting(toast) &&
+        item.kind === toast.kind &&
+        item.text === toast.text,
+  );
+  const next =
+    slot >= 0 && toast.key !== undefined
+      ? toasts.map((item, index) => (index === slot ? toast : item))
+      : [...toasts.filter((_, index) => index !== slot), toast];
+  let extra = next.filter((item) => !lasting(item)).length - MAX_TOASTS;
+  return extra > 0
+    ? next.filter((item) => lasting(item) || extra-- <= 0)
+    : next;
+}
 
 const EMPTY_STUDIO: Pick<
   StudioState,
@@ -141,6 +190,7 @@ const EMPTY_STUDIO: Pick<
   | "solo"
   | "mutedFrom"
   | "saveState"
+  | "stored"
 > = {
   project: null,
   audio: null,
@@ -152,6 +202,7 @@ const EMPTY_STUDIO: Pick<
   solo: null,
   mutedFrom: {},
   saveState: "idle",
+  stored: false,
 };
 
 export function initialState(options: {
@@ -167,6 +218,7 @@ export function initialState(options: {
       settingsTab: "music",
       settingsProvider: null,
       toasts: [],
+      dialog: null,
     },
     studio: {
       ...EMPTY_STUDIO,
@@ -237,7 +289,9 @@ function withVolumes(
 }
 
 /** Faders exist only for a loaded local work. */
-function mixable(studio: StudioState): studio is StudioState & { project: Project } {
+function mixable(
+  studio: StudioState,
+): studio is StudioState & { project: Project } {
   return !!studio.project && studio.audio?.kind === "stems";
 }
 
@@ -319,8 +373,12 @@ function studioReducer(state: AppState, action: AppAction): AppState {
         },
       };
 
-    case "studio/loaded":
+    case "studio/loaded": {
       if (!jobMayWrite(studio, action.job)) return state;
+      const fresh = draftOf(action.project.config);
+      const carried = (Object.keys(action.carry ?? {}) as DraftField[]).filter(
+        (field) => fresh[field] !== action.carry?.[field],
+      );
       return {
         ...state,
         studio: {
@@ -328,8 +386,11 @@ function studioReducer(state: AppState, action: AppAction): AppState {
           project: action.project,
           audio: action.audio,
           audioError: action.audioError,
-          draft: draftOf(action.project.config),
-          touched: [],
+          draft: carried.length ? { ...fresh, ...action.carry } : fresh,
+          touched: carried,
+          stored:
+            action.stored ??
+            (action.saveState === "idle" || action.saveState === "saved"),
           thread: capThread(action.thread),
           pendingTurn: null,
           turnNotes: { ...studio.turnNotes, ...action.notes },
@@ -344,6 +405,7 @@ function studioReducer(state: AppState, action: AppAction): AppState {
           },
         },
       };
+    }
     case "studio/unloaded":
       return {
         ...state,
@@ -360,11 +422,16 @@ function studioReducer(state: AppState, action: AppAction): AppState {
             action.track && TRACKS.includes(action.track) ? action.track : null,
         },
       };
-    case "studio/saveState":
-      return studio.project?.id === action.id &&
-        studio.saveState !== action.saveState
-        ? { ...state, studio: { ...studio, saveState: action.saveState } }
-        : state;
+    case "studio/saveState": {
+      if (studio.project?.id !== action.id) return state;
+      const stored = action.stored ?? studio.stored;
+      return studio.saveState === action.saveState && studio.stored === stored
+        ? state
+        : {
+            ...state,
+            studio: { ...studio, saveState: action.saveState, stored },
+          };
+    }
     case "studio/exporting":
       return { ...state, studio: { ...studio, exporting: action.exporting } };
     case "studio/peaks":
@@ -381,7 +448,10 @@ function studioReducer(state: AppState, action: AppAction): AppState {
     case "mix/volume": {
       if (!mixable(studio) || !TRACKS.includes(action.track)) return state;
       const value = clampVolume(action.value);
-      const volumes = { ...studio.project.config.volumes, [action.track]: value };
+      const volumes = {
+        ...studio.project.config.volumes,
+        [action.track]: value,
+      };
       const { [action.track]: _forgotten, ...mutedFrom } = studio.mutedFrom;
       const next = changeProject(state, studio.project.id, (project) =>
         withVolumes(project, volumes),
@@ -460,9 +530,7 @@ function libraryReducer(state: AppState, action: AppAction): AppState {
         ...state,
         // A deleted work cannot stay loaded: later mixer saves would bring
         // the record back.
-        studio: current
-          ? { ...state.studio, ...EMPTY_STUDIO }
-          : state.studio,
+        studio: current ? { ...state.studio, ...EMPTY_STUDIO } : state.studio,
         library: {
           ...library,
           projects: library.projects.filter((item) => item.id !== action.id),
@@ -497,6 +565,30 @@ function libraryReducer(state: AppState, action: AppAction): AppState {
           ),
         },
       };
+    case "library/gone": {
+      const listed = library.projects.some((item) => item.id === action.id);
+      const waiting = library.removing.some(
+        (item) => item.project.id === action.id,
+      );
+      const current = state.studio.project?.id === action.id;
+      if (!listed && !waiting && !current) return state;
+      return {
+        ...state,
+        // As with a deletion made here: the work cannot stay loaded, or its
+        // next fader save would have nowhere to go.
+        studio:
+          current && !state.studio.job
+            ? { ...state.studio, ...EMPTY_STUDIO }
+            : state.studio,
+        library: {
+          ...library,
+          projects: library.projects.filter((item) => item.id !== action.id),
+          removing: library.removing.filter(
+            (item) => item.project.id !== action.id,
+          ),
+        },
+      };
+    }
     case "library/damagedRemoved":
       return {
         ...state,
@@ -560,10 +652,18 @@ function uiReducer(ui: UiState, action: AppAction): UiState {
             : null,
       };
     case "toast/push":
-      return {
-        ...ui,
-        toasts: [...ui.toasts, action.toast].slice(-MAX_TOASTS),
-      };
+      return { ...ui, toasts: pushToast(ui.toasts, action.toast) };
+    case "toast/withdraw":
+      return ui.toasts.some((toast) => toast.key === action.key)
+        ? {
+            ...ui,
+            toasts: ui.toasts.filter((toast) => toast.key !== action.key),
+          }
+        : ui;
+    case "ui/dialog":
+      return ui.dialog === action.dialog
+        ? ui
+        : { ...ui, dialog: action.dialog };
     case "toast/dismiss":
       return ui.toasts.some((toast) => toast.id === action.id)
         ? { ...ui, toasts: ui.toasts.filter((toast) => toast.id !== action.id) }

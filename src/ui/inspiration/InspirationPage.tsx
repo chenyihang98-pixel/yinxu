@@ -13,7 +13,6 @@ import {
 import { useApp } from "../../state/context";
 import type { AppActions } from "../../state/types";
 import { useRenderCount } from "../hooks/useRenderCount";
-import { promptMood } from "../logic/promptMood";
 import { Cover } from "../primitives/Art";
 
 const StyleGrid = memo(function StyleGrid(props: {
@@ -81,7 +80,7 @@ const ScenarioGroups = memo(function ScenarioGroups(props: {
                     props.actions.chooseInspiration(scenarioInspiration(item))
                   }
                 >
-                  <Cover mood={promptMood(item.prompt)} className="prompt-art" />
+                  <Cover mood={item.style} className="prompt-art" />
                   <span className="prompt-text">
                     <strong>{item.title}</strong>
                     <span>{item.prompt}</span>
@@ -107,7 +106,7 @@ export function InspirationPage() {
           <div className="grow">
             <h1>灵感</h1>
             <p className="page-lede">
-              从一种风格或一个场景开始。选中后会填入描述，可以改完再生成。
+              从一种风格或一个场景开始。风格卡片只固定风格，描述留给你写；场景卡片会填入一段现成的描述，可以改完再生成。
             </p>
           </div>
         </header>
@@ -115,7 +114,9 @@ export function InspirationPage() {
         <section aria-labelledby="styles-title">
           <div className="section-title">
             <h2 id="styles-title">{STYLE_CARDS.length} 种风格</h2>
-            <span className="muted">选中即固定为这次创作的风格</span>
+            <span className="muted">
+              选中即固定为这次创作的风格，可以直接生成
+            </span>
           </div>
           <StyleGrid disabled={studio.busy} actions={actions} />
         </section>

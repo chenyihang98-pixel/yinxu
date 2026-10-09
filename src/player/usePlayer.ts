@@ -128,7 +128,8 @@ const MESSAGE_NEEDS_GESTURE =
 const MESSAGE_NOT_STARTED =
   "还不能播放声音：请再点一次播放按钮；如果仍然没有声音，请检查扬声器或耳机。";
 const MESSAGE_NO_OUTPUT = "无法初始化音频输出，请检查系统的播放设备后重试。";
-const MESSAGE_BAD_AUDIO = "音频数据不完整，无法播放。请重新生成或重新打开作品。";
+const MESSAGE_BAD_AUDIO =
+  "音频数据不完整，无法播放。请重新生成或重新打开作品。";
 
 function createAudioContext(sampleRate: number): AudioContext {
   const scope = globalThis as typeof globalThis & {
@@ -889,17 +890,5 @@ export function usePlayer(onError: (message: string) => void): Player {
       unlock: engine.unlock,
     }),
     [engine, state],
-  );
-}
-
-/**
- * Playhead in seconds. Only the components that call this re-render while
- * the music plays (about 30 times a second); the rest of the app does not.
- */
-export function usePlaybackTime(player: Player): number {
-  return useSyncExternalStore(
-    player.subscribeTime,
-    player.getTime,
-    player.getTime,
   );
 }

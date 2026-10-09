@@ -10,11 +10,16 @@ import {
   importProject,
   normalizeProject,
 } from "../../src/storage";
-import type { DamagedRecord } from "../../src/storage";
+import type { DamagedRecord, ProjectPatch } from "../../src/storage";
 import { AppCore } from "../../src/state/core";
 import type { CoreDeps, PlayerPort, StoragePort } from "../../src/state/ports";
-import { EMPTY_SESSION } from "../../src/state/session";
+import {
+  EMPTY_SESSION,
+  parseSession,
+  serializeSession,
+} from "../../src/state/session";
 import type { Session } from "../../src/state/session";
+import type { SyncMessage, TabSync } from "../../src/state/sync";
 import type {
   DesktopAPI,
   DesktopSettings,
@@ -86,11 +91,17 @@ export function stems(
   sampleRate = 48000,
 ): Record<TrackName, AudioBuffer> {
   return Object.fromEntries(
-    TRACKS.map((track) => [track, buffer(seconds, STEM_LEVELS[track], sampleRate)]),
+    TRACKS.map((track) => [
+      track,
+      buffer(seconds, STEM_LEVELS[track], sampleRate),
+    ]),
   ) as Record<TrackName, AudioBuffer>;
 }
 
-export function renderResult(config: MusicConfig, seconds = 0.01): RenderResult {
+export function renderResult(
+  config: MusicConfig,
+  seconds = 0.01,
+): RenderResult {
   const legacy = config.engine === 1;
   return {
     stems: stems(seconds, legacy ? 32000 : 48000),
@@ -173,24 +184,58 @@ export interface FakeStorage extends StoragePort {
   records: Map<string, Project>;
   damaged: DamagedRecord[];
   raw: Map<string, string>;
+  /** audio bytes of damaged records, by id */
+  rawAudio: Map<string, Blob>;
+  /** every record as it was written (whole saves and merged patches) */
   saves: Project[];
+  /** field-level writes, as they were asked for */
+  patches: { id: string; patch: ProjectPatch }[];
   deletes: string[];
   /** chronological record of what happened, shared with other fakes */
   log: string[];
+  /** every write fails with this */
   failSave: Error | null;
+  /** only the next n writes fail */
+  failNext: { count: number; error: Error } | null;
+  /**
+   * Writes and deletes never complete — what a database request does when
+   * it is started while the page is being torn down.
+   */
+  stall: boolean;
+  /** while set, writes and deletes wait for it (a slow disk); reads do not */
+  hold: Deferred<void> | null;
   failList: Error | null;
   persistenceRequests: number;
 }
 
+const laterOf = (a: string, b: string | undefined) =>
+  b !== undefined && Date.parse(b) > Date.parse(a) ? b : a;
+
 export function fakeStorage(log: string[] = []): FakeStorage {
+  const pass = () =>
+    storage.stall
+      ? new Promise<never>(() => {})
+      : (storage.hold?.promise ?? Promise.resolve());
+  const refuse = () => {
+    if (storage.failSave) throw storage.failSave;
+    if (storage.failNext && storage.failNext.count > 0) {
+      storage.failNext.count--;
+      throw storage.failNext.error;
+    }
+  };
   const storage: FakeStorage = {
     records: new Map(),
     damaged: [],
     raw: new Map(),
+    rawAudio: new Map(),
     saves: [],
+    patches: [],
     deletes: [],
     log,
     failSave: null,
+    failNext: null,
+    stall: false,
+    hold: null,
     failList: null,
     persistenceRequests: 0,
     async listProjects() {
@@ -202,17 +247,66 @@ export function fakeStorage(log: string[] = []): FakeStorage {
         damaged: [...storage.damaged],
       };
     },
-    async saveProject(project) {
-      await Promise.resolve();
-      if (storage.failSave) throw storage.failSave;
+    async saveProject(project, options) {
+      await pass();
+      refuse();
       // The real validator: whatever the core saves must be a valid record.
       normalizeProject(project);
+      if (options?.ifMissing && storage.records.has(project.id)) {
+        log.push(`kept:${project.id}`);
+        return false;
+      }
       log.push(`save:${project.id}`);
       storage.saves.push(project);
       storage.records.set(project.id, project);
+      return true;
+    },
+    // Same contract as storage.updateProject: merge into what is stored,
+    // null when the record is gone.
+    async updateProject(id, patch, options) {
+      await pass();
+      refuse();
+      const current = storage.records.get(id);
+      if (!current) {
+        log.push(`gone:${id}`);
+        return null;
+      }
+      if (
+        options?.unlessNewer &&
+        patch.updatedAt !== undefined &&
+        Date.parse(current.updatedAt) > Date.parse(patch.updatedAt)
+      )
+        return current;
+      const defined = Object.fromEntries(
+        Object.entries(patch.volumes ?? {}).filter(
+          ([, value]) => value !== undefined,
+        ),
+      );
+      const merged: Project = {
+        ...current,
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.favorite !== undefined ? { favorite: patch.favorite } : {}),
+        ...(patch.audioDuration !== undefined
+          ? { audioDuration: patch.audioDuration }
+          : {}),
+        updatedAt: laterOf(current.updatedAt, patch.updatedAt),
+        config: {
+          ...current.config,
+          volumes: { ...current.config.volumes, ...defined },
+        },
+      };
+      normalizeProject(merged);
+      log.push(`save:${id}`);
+      storage.saves.push(merged);
+      storage.patches.push({ id, patch });
+      storage.records.set(id, merged);
+      return merged;
+    },
+    async readProject(id) {
+      return storage.records.get(id) ?? null;
     },
     async deleteProject(id) {
-      await Promise.resolve();
+      await pass();
       log.push(`delete:${id}`);
       storage.deletes.push(id);
       storage.records.delete(id);
@@ -220,6 +314,9 @@ export function fakeStorage(log: string[] = []): FakeStorage {
     },
     async readRawRecord(id) {
       return storage.raw.get(id) ?? null;
+    },
+    async readRawAudio(id) {
+      return storage.rawAudio.get(id) ?? null;
     },
     importProject,
     async storageInfo() {
@@ -253,7 +350,11 @@ export function fakePlayer(): FakePlayer {
     plays: 0,
     unlocks: 0,
     load(source, mix, options) {
-      player.loads.push({ source, mix: { ...mix, gains: { ...mix.gains } }, options });
+      player.loads.push({
+        source,
+        mix: { ...mix, gains: { ...mix.gains } },
+        options,
+      });
     },
     unload() {
       player.unloads++;
@@ -295,7 +396,6 @@ export function desktopSettings(
   patch: Partial<DesktopSettings> = {},
 ): DesktopSettings {
   return {
-    hasApiKey: false,
     providers: {
       tencent: { configured: true, model: "minimax-music-v3.0" },
       volcengine: { configured: true },
@@ -310,14 +410,20 @@ export function desktopSettings(
 }
 
 export interface FakeBridge extends DesktopAPI {
+  /** every value setUnsavedWork was called with */
+  risk: boolean[];
   calls: string[];
   settings: DesktopSettings;
   /** replace to control what the "service" answers */
   generate: DesktopAPI["generateMusic"];
+  /** replace to control what 重新下载 gets; by default nothing is waiting */
+  download: DesktopAPI["retryLastDownload"];
   plan: DesktopAPI["agentPlan"];
 }
 
-export const MP3_BYTES = new Uint8Array([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 1, 7]);
+export const MP3_BYTES = new Uint8Array([
+  0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 1, 7,
+]);
 
 export function fakeBridge(log: string[] = []): FakeBridge {
   const call = (name: string) => {
@@ -325,12 +431,21 @@ export function fakeBridge(log: string[] = []): FakeBridge {
     log.push(`bridge:${name}`);
   };
   const bridge: FakeBridge = {
+    risk: [],
+    async setUnsavedWork(value) {
+      bridge.risk.push(value);
+    },
     calls: [],
     settings: desktopSettings(),
     generate: async () => ({
       audio: MP3_BYTES.slice().buffer,
       mimeType: "audio/mpeg",
     }),
+    download: async () => {
+      throw new Error(
+        "没有等待重新下载的音乐。如需这首音乐，请到服务控制台查找，或重新生成。",
+      );
+    },
     plan: async () => {
       throw new Error("还没有配置大模型。请先在设置中填写大模型的连接信息。");
     },
@@ -338,8 +453,6 @@ export function fakeBridge(log: string[] = []): FakeBridge {
       call("getSettings");
       return bridge.settings;
     },
-    async saveApiKey() {},
-    async deleteApiKey() {},
     async saveProviderCredentials(provider) {
       call(`saveProvider:${provider}`);
       bridge.settings = {
@@ -366,6 +479,10 @@ export function fakeBridge(log: string[] = []): FakeBridge {
     },
     async cancelGeneration() {
       call("cancelGeneration");
+    },
+    retryLastDownload(provider) {
+      call(`retryLastDownload:${provider}`);
+      return bridge.download(provider);
     },
     async saveAudio() {
       return { saved: true };
@@ -398,6 +515,57 @@ export function fakeBridge(log: string[] = []): FakeBridge {
   return bridge;
 }
 
+/**
+ * What several tabs of one origin share: the library, localStorage (the
+ * session) and the channel they talk on. Pass the same object to two
+ * harnesses to get two tabs.
+ */
+export interface SharedOrigin {
+  storage: FakeStorage;
+  log: string[];
+  /** the session as it is stored: serialised, like localStorage holds it */
+  session: { raw: string; writes: Session[] };
+  /** every message any tab posted */
+  posted: SyncMessage[];
+  /** one endpoint per tab; a tab does not hear itself */
+  connect(): TabSync;
+}
+
+export function sharedOrigin(session: Partial<Session> = {}): SharedOrigin {
+  const log: string[] = [];
+  const posted: SyncMessage[] = [];
+  const tabs: Set<(message: SyncMessage) => void>[] = [];
+  return {
+    storage: fakeStorage(log),
+    log,
+    session: {
+      raw: serializeSession({ ...EMPTY_SESSION, ...session }),
+      writes: [],
+    },
+    posted,
+    connect() {
+      const mine = new Set<(message: SyncMessage) => void>();
+      tabs.push(mine);
+      return {
+        post(message) {
+          posted.push(message);
+          // delivered later, like a real channel: never inside the sender's call
+          for (const tab of tabs)
+            if (tab !== mine)
+              for (const listener of [...tab])
+                void Promise.resolve().then(() => listener(message));
+        },
+        subscribe(listener) {
+          mine.add(listener);
+          return () => {
+            mine.delete(listener);
+          };
+        },
+      };
+    },
+  };
+}
+
 export interface Harness {
   core: AppCore;
   clock: FakeClock;
@@ -409,7 +577,10 @@ export interface Harness {
   renders: MusicConfig[];
   /** set to make the next renders wait until released */
   gate: { current: Deferred<void> | null };
-  session: { value: Session; writes: Session[] };
+  /** `value` is the stored session, parsed the way the next launch reads it */
+  session: { readonly value: Session; writes: Session[] };
+  /** the origin this tab belongs to (its own, unless one was passed in) */
+  origin: SharedOrigin;
   plans: { llm: boolean; text: string; mode: string }[];
   decodes: number;
   /** make decode fail */
@@ -426,12 +597,16 @@ export function harness(
     session?: Partial<Session>;
     records?: Project[];
     undoMs?: number;
+    /** another tab of the same origin: shares library, session and channel */
+    origin?: SharedOrigin;
+    /** share the clock of another tab */
+    clock?: FakeClock;
   } = {},
 ): Harness {
   installAudioBuffer();
-  const log: string[] = [];
-  const clock = new FakeClock();
-  const storage = fakeStorage(log);
+  const origin = options.origin ?? sharedOrigin(options.session);
+  const { log, storage } = origin;
+  const clock = options.clock ?? new FakeClock();
   for (const record of options.records ?? [])
     storage.records.set(record.id, record);
   const player = fakePlayer();
@@ -441,8 +616,10 @@ export function harness(
   const renders: MusicConfig[] = [];
   const gate: Harness["gate"] = { current: null };
   const session: Harness["session"] = {
-    value: { ...EMPTY_SESSION, ...options.session },
-    writes: [],
+    get value() {
+      return parseSession(origin.session.raw);
+    },
+    writes: origin.session.writes,
   };
   const plans: Harness["plans"] = [];
   const decodeError: Harness["decodeError"] = { current: null };
@@ -475,8 +652,7 @@ export function harness(
       return buffer(0.02, 0.25);
     },
     mixPeaks: () => [0.1, 0.5, 0.25],
-    stemsOutline: (_audio, volumes) =>
-      TRACKS.map((track) => volumes[track]),
+    stemsOutline: (_audio, volumes) => TRACKS.map((track) => volumes[track]),
     async producePlan(request, planOptions) {
       plans.push({
         llm: !!planOptions?.llm,
@@ -503,12 +679,13 @@ export function harness(
     now: clock.now,
     timers: clock.timers,
     session: {
-      read: () => ({ ...session.value }),
+      read: () => parseSession(origin.session.raw),
       write: (value) => {
-        session.value = { ...value };
-        session.writes.push({ ...value });
+        origin.session.raw = serializeSession(value);
+        origin.session.writes.push(parseSession(origin.session.raw));
       },
     },
+    sync: origin.connect(),
     ...(options.undoMs !== undefined ? { undoMs: options.undoMs } : {}),
   };
   const core = new AppCore(deps);
@@ -524,6 +701,7 @@ export function harness(
     renders,
     gate,
     session,
+    origin,
     plans,
     get decodes() {
       return state.decodes;

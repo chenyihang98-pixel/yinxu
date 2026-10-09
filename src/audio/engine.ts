@@ -9,6 +9,11 @@
  * runs on the calling thread in small slices instead, and the engine
  * remembers that for the rest of the session.
  *
+ * A worker that is merely slow to start is another matter: its script may be
+ * coming down a slow line. A render asked for meanwhile waits for it for about
+ * a second (reported as the "starting" phase), then runs on the calling
+ * thread; the worker is left to come up and serves the renders after that.
+ *
  * Renders never overlap: the voices keep module state and are not
  * re-entrant, so every render — worker, in-thread or legacy — waits its turn
  * in one queue. Cancelling a queued render just drops it; cancelling the
@@ -19,10 +24,14 @@
  * copied out a channel at a time and mixed, clipped and encoded over there, so
  * an export of two minutes no longer stalls the page. Without an idle worker
  * the caller runs mixStems + encodeWav here instead; the bytes are the same.
+ *
+ * A render that fails rejects with an EngineError (engine-error.ts): a code, a
+ * sentence for the user, and the exception text kept apart for the log.
  */
 import type { MusicConfig, RenderResult, TrackName } from "../types";
 import { TRACKS } from "../music/score";
 import { renderMusic as renderLegacy } from "./engine-v1";
+import { EngineError, describeFailure, engineFailure } from "./engine-error";
 import { addScaled, finishMix } from "./mixdown";
 import { freeBuffer } from "./render";
 import type {
@@ -38,11 +47,27 @@ import { renderJob } from "./worker";
 export { fadeChannels } from "./mixdown";
 export { encodeWav } from "./wav";
 export { REFERENCE_VOLUMES } from "./render-types";
+export { EngineError, ENGINE_ERROR_TEXT } from "./engine-error";
+export type { EngineErrorCode } from "./engine-error";
 export type { MasterDiagnostics, RenderDiagnostics } from "./render-types";
+
+/**
+ * What a render is doing before its first progress: "starting" while it waits
+ * for the render worker to come up, "rendering" once the music is being made
+ * (in the worker or on the calling thread).
+ */
+export type RenderPhase = "starting" | "rendering";
 
 export interface RenderOptions {
   /** 0..1, never backwards, at most about 20 times a second; ends with exactly 1 */
   onProgress?: (fraction: number) => void;
+  /**
+   * Called when the phase changes, "rendering" always and before the first
+   * progress above 0. "starting" comes first only when the render really has
+   * to wait for the worker (a first visit on a slow connection): show it
+   * instead of a bar that stands at 0 %. It lasts at most the start-up time.
+   */
+  onPhase?: (phase: RenderPhase) => void;
   /** abort to cancel; renderMusic then rejects with an AbortError */
   signal?: AbortSignal;
 }
@@ -66,7 +91,12 @@ export interface EngineOptions {
   worker?: boolean;
   /** how the render worker is made (tests; the default starts worker.ts as a module worker) */
   createWorker?: (() => WorkerLike) | null;
-  /** milliseconds a new worker has to post its first message before it is given up on */
+  /**
+   * Milliseconds after its start during which renders wait for a worker that
+   * has not posted its first message yet (default 1000). After that they run
+   * on the calling thread; the worker is not given up on, and takes over as
+   * soon as it is up.
+   */
   startupTimeoutMs?: number;
   /** milliseconds the worker has to answer an export mixdown before the export is built on the calling thread */
   mixdownTimeoutMs?: number;
@@ -75,8 +105,9 @@ export interface EngineOptions {
 export interface EngineStatus {
   /**
    * "idle": no worker yet (one is started on demand) · "starting": started,
-   * nothing heard yet · "ready": a warm worker is waiting · "unavailable":
-   * renders run on the calling thread
+   * nothing heard yet (renders wait for it for the start-up time, then run on
+   * the calling thread until it is up) · "ready": a warm worker is waiting ·
+   * "unavailable": workers do not work here, renders run on the calling thread
    */
   worker: "idle" | "starting" | "ready" | "unavailable";
   /** renders waiting or running */
@@ -90,7 +121,12 @@ const PROGRESS_INTERVAL_MS = 50;
 const IN_THREAD_PACE_MS = 12;
 /** Share of the progress bar that belongs to the render job; the rest is handing the audio to the UI. */
 const JOB_SHARE = 0.97;
-const STARTUP_TIMEOUT_MS = 10_000;
+/**
+ * How long after its start a worker is waited for. From disk or from the
+ * cache it is up in a tenth of that; if it is not, a bar at 0 % for longer
+ * than this is worse than a render on the calling thread.
+ */
+const STARTUP_TIMEOUT_MS = 1000;
 /** Two minutes of audio are mixed and encoded in well under a second. */
 const MIXDOWN_TIMEOUT_MS = 20_000;
 /** A worker that dies this many times in a row mid-render is not started again. */
@@ -290,7 +326,8 @@ function progressReporter(
     const value = clamp01(fraction);
     if (value <= last) return;
     const time = now();
-    if (value < 1 && last >= 0 && time - lastTime < PROGRESS_INTERVAL_MS) return;
+    if (value < 1 && last >= 0 && time - lastTime < PROGRESS_INTERVAL_MS)
+      return;
     last = value;
     lastTime = time;
     onProgress(value);
@@ -304,16 +341,19 @@ function progressReporter(
 interface WorkerTask {
   id: number;
   message(message: WorkerResponse): void;
-  /** the worker is gone: it never started ("startup") or died mid-render ("crash") */
-  failure(reason: "startup" | "crash", detail: string): void;
+  /** the worker is gone: it died in the middle of this job, or the engine was reconfigured */
+  failure(detail: string): void;
 }
 
 interface Session {
   worker: WorkerLike;
-  /** the worker has posted at least one message, so workers do work here */
+  /** the worker has posted at least one message: workers do work here, and this one is up */
   spoke: boolean;
   task: WorkerTask | null;
-  watchdog: ReturnType<typeof setTimeout> | undefined;
+  /** when the worker was started, on the engine's clock */
+  startedAt: number;
+  /** renders waiting for the first message: called with true when it comes, false when the worker is gone */
+  waiting: ((up: boolean) => void)[];
 }
 
 let options: EngineOptions = {};
@@ -337,8 +377,6 @@ function errorDetail(event: unknown): string {
 }
 
 function closeSession(target: Session): void {
-  if (target.watchdog !== undefined) clearTimeout(target.watchdog);
-  target.watchdog = undefined;
   target.worker.onmessage = null;
   target.worker.onerror = null;
   if ("onmessageerror" in target.worker) target.worker.onmessageerror = null;
@@ -348,6 +386,8 @@ function closeSession(target: Session): void {
     // a worker that cannot be terminated is abandoned all the same
   }
   if (session === target) session = null;
+  // whoever was waiting for it to come up goes on without it
+  for (const resume of target.waiting.splice(0)) resume(false);
 }
 
 function failSession(target: Session, detail: string): void {
@@ -355,16 +395,11 @@ function failSession(target: Session, detail: string): void {
   const task = target.task;
   target.task = null;
   closeSession(target);
-  let reason: "startup" | "crash";
   if (!target.spoke) {
-    // never a word from it: workers do not work here (CSP, file://, …)
+    // an error and never a word: workers do not work here (CSP, file://, …)
     unavailable = true;
-    reason = "startup";
-  } else {
-    reason = "crash";
-    if (++crashes >= MAX_CRASHES) unavailable = true;
-  }
-  task?.failure(reason, detail);
+  } else if (++crashes >= MAX_CRASHES) unavailable = true;
+  task?.failure(detail);
 }
 
 /** The warm worker, started on first use; null when renders must stay on this thread. */
@@ -390,46 +425,103 @@ function openSession(): Session | null {
     worker,
     spoke: false,
     task: null,
-    watchdog: undefined,
+    startedAt: now(),
+    waiting: [],
   };
   worker.onmessage = (event) => {
     if (session !== opened) return;
     if (!opened.spoke) {
       opened.spoke = true;
-      if (opened.watchdog !== undefined) clearTimeout(opened.watchdog);
-      opened.watchdog = undefined;
+      for (const resume of opened.waiting.splice(0)) resume(true);
     }
     const message = event.data;
     if (!message || message.type === "ready") return;
-    if (opened.task && message.id === opened.task.id) opened.task.message(message);
+    if (opened.task && message.id === opened.task.id)
+      opened.task.message(message);
   };
   worker.onerror = (event) => {
     (event as { preventDefault?: () => void } | null)?.preventDefault?.();
     failSession(opened, errorDetail(event));
   };
   if ("onmessageerror" in worker)
-    worker.onmessageerror = () => failSession(opened, "message could not be read");
-  opened.watchdog = setTimeout(
-    () => failSession(opened, "worker did not start"),
-    options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS,
-  );
-  // a pending watchdog must not keep a Node process alive
-  (opened.watchdog as { unref?: () => void }).unref?.();
+    worker.onmessageerror = () =>
+      failSession(opened, "message could not be read");
   session = opened;
   return opened;
 }
 
+/** Milliseconds left of the time a starting worker is waited for. */
+function startupLeft(target: Session): number {
+  return (
+    target.startedAt + (options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS) - now()
+  );
+}
+
+/**
+ * Wait for a worker that has been started and not yet heard from. Resolves
+ * with true once it has posted its first message, with false when this render
+ * should not wait for it (any longer): the worker failed, or the time a worker
+ * is given to start is over.
+ *
+ * A slow worker is NOT given up on. Its script may be 300 kB coming down a
+ * slow line: the render that could not wait runs on this thread, the worker
+ * goes on loading, and the next render after its first message runs there.
+ */
+function workerUp(
+  target: Session,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  if (target.spoke) return Promise.resolve(true);
+  const patience = startupLeft(target);
+  if (!(patience > 0)) return Promise.resolve(false);
+  return new Promise<boolean>((resolve, reject) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      const index = target.waiting.indexOf(settle);
+      if (index >= 0) target.waiting.splice(index, 1);
+    };
+    const settle = (up: boolean) => {
+      done();
+      resolve(up);
+    };
+    const onAbort = () => {
+      // nothing is running yet: the worker is left to finish starting
+      done();
+      reject(abortError());
+    };
+    const timer = setTimeout(() => settle(false), patience);
+    // a pending timer must not keep a Node process alive
+    (timer as { unref?: () => void }).unref?.();
+    target.waiting.push(settle);
+    signal?.addEventListener("abort", onAbort);
+  });
+}
+
 /**
  * Render in the worker. Resolves with null when the job has to run on this
- * thread after all (no worker, or it never came up).
+ * thread after all (no worker, or it is not up in time). `starting` is called
+ * when the job has to wait for the worker to come up, `began` when the job
+ * has been handed to it.
  */
-function renderInWorker(
+async function renderInWorker(
   config: MusicConfig,
   report: (fraction: number) => void,
   signal: AbortSignal | undefined,
+  starting: () => void,
+  began: () => void,
 ): Promise<RenderJobResult | null> {
   const target = openSession();
-  if (!target) return Promise.resolve(null);
+  if (!target) return null;
+  if (!target.spoke) {
+    // past its start-up time it is not waited for: the job runs here at once
+    if (!(startupLeft(target) > 0)) return null;
+    starting();
+    const up = await workerUp(target, signal);
+    // (it may have been closed meanwhile: the engine was reconfigured)
+    if (!up || session !== target) return null;
+  }
+  began();
   return new Promise<RenderJobResult | null>((resolve, reject) => {
     const id = ++lastId;
     const release = () => {
@@ -463,13 +555,13 @@ function renderInWorker(
           });
         } else if (message.type === "error") {
           release();
-          reject(new Error(`本地引擎出错：${message.message}`));
+          reject(new EngineError(message.code, message.detail));
         }
       },
-      failure(reason, detail) {
+      failure(detail) {
         release();
-        if (reason === "startup") resolve(null);
-        else reject(new Error(`本地引擎出错：${detail}`));
+        const { code } = describeFailure(detail, "engine-crashed");
+        reject(new EngineError(code, detail));
       },
     };
     signal?.addEventListener("abort", onAbort);
@@ -487,12 +579,34 @@ function renderInWorker(
 /* public API                                                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * `handler` (the caller's onProgress or onPhase), with whatever it throws
+ * noted in `thrown`: that is the caller's own error, not a failure of the
+ * engine, and the render is rejected with it as it is.
+ */
+function callerHandler<T>(
+  handler: ((value: T) => void) | undefined,
+  thrown: unknown[],
+): ((value: T) => void) | undefined {
+  if (!handler) return undefined;
+  return (value) => {
+    try {
+      handler(value);
+    } catch (error) {
+      thrown.push(error);
+      throw error;
+    }
+  };
+}
+
 async function renderLegacyJob(
   config: MusicConfig,
   report: (fraction: number) => void,
   signal: AbortSignal | undefined,
+  phase: (phase: RenderPhase) => void,
 ): Promise<EngineRenderResult> {
   const started = now();
+  phase("rendering");
   const legacy = await renderLegacy(config, (fraction) => {
     if (signal?.aborted) throw abortError();
     // the last word belongs to the facade
@@ -537,16 +651,20 @@ async function renderCurrentJob(
   config: MusicConfig,
   report: (fraction: number) => void,
   signal: AbortSignal | undefined,
+  phase: (phase: RenderPhase) => void,
 ): Promise<EngineRenderResult> {
   let path: RenderDiagnostics["path"] = "worker";
   let job = await renderInWorker(
     config,
     (fraction) => report(fraction * JOB_SHARE),
     signal,
+    () => phase("starting"),
+    () => phase("rendering"),
   );
   if (!job) {
     path = "main";
     if (signal?.aborted) throw abortError();
+    phase("rendering");
     job = await renderJobHere(config, report, signal);
   }
   if (signal?.aborted) throw abortError();
@@ -570,18 +688,37 @@ async function renderCurrentJob(
  * Offline, deterministic composition + synthesis. No network, no audio
  * permission. Calls may overlap: they are rendered one after another, in the
  * order they were made.
+ *
+ * Rejects with an AbortError when `signal` aborts, with whatever the caller's
+ * own onProgress / onPhase handler threw, and otherwise only with an
+ * EngineError: a stable `code`, a message that can be shown to the user, and
+ * the original exception text in `detail` for the log.
  */
 export function renderMusic(
   config: MusicConfig,
   renderOptions: RenderOptions = {},
 ): Promise<EngineRenderResult> {
-  const { onProgress, signal } = renderOptions;
-  const report = progressReporter(onProgress);
-  return enqueue(signal, () =>
-    config.engine === 1
-      ? renderLegacyJob(config, report, signal)
-      : renderCurrentJob(config, report, signal),
+  const { signal } = renderOptions;
+  const thrown: unknown[] = [];
+  const report = progressReporter(
+    callerHandler(renderOptions.onProgress, thrown),
   );
+  const onPhase = callerHandler(renderOptions.onPhase, thrown);
+  let last: RenderPhase | undefined;
+  const phase = (next: RenderPhase) => {
+    if (next === last) return;
+    last = next;
+    onPhase?.(next);
+  };
+  return enqueue(signal, async () => {
+    try {
+      return await (config.engine === 1
+        ? renderLegacyJob(config, report, signal, phase)
+        : renderCurrentJob(config, report, signal, phase));
+    } catch (error) {
+      throw thrown.includes(error) ? error : engineFailure(error);
+    }
+  });
 }
 
 /**
@@ -605,7 +742,7 @@ export function configureEngine(next: EngineOptions = {}): void {
     const task = session.task;
     session.task = null;
     closeSession(session);
-    task?.failure("crash", "engine reconfigured");
+    task?.failure("engine reconfigured");
   }
   options = { ...next };
   unavailable = false;

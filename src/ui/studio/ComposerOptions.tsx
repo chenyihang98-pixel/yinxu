@@ -5,16 +5,15 @@
 import { memo } from "react";
 import { ArrowUpRight } from "lucide-react";
 import type { BrainKind } from "../../agent/types";
-import type {
-  AppActions,
-  BrainOption,
-  EngineOption,
-} from "../../state/types";
+import type { AppActions, BrainOption, EngineOption } from "../../state/types";
 import type { Provider } from "../../types";
 import { Select } from "../primitives/Controls";
 
-const optionText = (option: { label: string; hint?: string }) =>
-  option.hint ? `${option.label} · ${option.hint}` : option.label;
+const optionText = (option: {
+  label: string;
+  hint?: string;
+  billing?: string;
+}) => [option.label, option.hint, option.billing].filter(Boolean).join(" · ");
 
 export const EngineSelect = memo(function EngineSelect(props: {
   engines: readonly EngineOption[];
@@ -90,16 +89,16 @@ export function DesktopLink(props: { href: string; short?: boolean }) {
     >
       {props.short ? (
         <>
-          <span className="sr-only">云端引擎与大模型制作人在桌面版可用，</span>
+          <span className="sr-only">云端生成与制作人大模型在桌面版可用，</span>
           了解桌面版
         </>
       ) : (
         <>
           <span className="desktop-link-long">
-            云端 AI 音乐与大模型制作人在桌面版可用 · 下载 Windows 版
+            云端生成与制作人大模型在桌面版可用 · 下载 Windows 版
           </span>
           <span className="desktop-link-short" aria-hidden>
-            云端引擎与大模型：桌面版可用
+            云端生成与大模型：桌面版可用
           </span>
         </>
       )}

@@ -4,12 +4,15 @@
  *   npx tsx scripts/render-demos.ts [--out dir] [--seconds n] [--styles a,b] [--seed n]
  *
  *   --out <dir>       where the files go (default: demos/ at the repository root)
- *   --seconds <n>     length of every piece, 15..120 (default 20)
+ *   --seconds <n>     length of every piece, 15..120 (default 40)
  *   --styles <ids>    comma-separated style ids (default: all 22, in catalogue order)
  *   --seed <n>        the seed every piece is composed from (default 2026)
  *
  * Every piece is a piece that ends (not a loop), played by the style's default
- * lead at the style's default tempo, key and settings. The files are
+ * lead at the style's default tempo, key and settings. A demo should let the
+ * style's B section be heard: a style too slow to reach its chorus in the
+ * time asked for gets five seconds more at a time until it does (60 s at
+ * most; see demoSeconds). The files are
  *   <nn>-<id>-<中文名>.wav   what the app plays at its default faders:
  *                            softClip(Σ stem × REFERENCE_VOLUMES), 48 kHz 16-bit stereo
  *   index.md                 style, tempo, key, instruments and arrangement notes of each
@@ -29,17 +32,30 @@ import { REFERENCE_VOLUMES } from "../src/audio/render-types";
 import type { RenderedAudio, StereoPcm } from "../src/audio/render-types";
 import { softClipBuffer } from "../src/audio/softclip";
 import { encodeWavFromChannels } from "../src/audio/wav";
-import { STYLE_IDS, instrumentLabel, isStyleId, styleInfo, styleLabel } from "../src/music/catalog";
+import {
+  STYLE_IDS,
+  instrumentLabel,
+  isStyleId,
+  styleInfo,
+  styleLabel,
+} from "../src/music/catalog";
 import type { StyleId } from "../src/music/catalog";
 import { compose, summarize } from "../src/music/compose";
-import { DEFAULT_CONFIG, clampConfig, stylePreset } from "../src/music/defaults";
+import {
+  DEFAULT_CONFIG,
+  clampConfig,
+  stylePreset,
+} from "../src/music/defaults";
 import { TRACKS } from "../src/music/score";
 import type { ArrangementSummary } from "../src/music/score";
 import { exportProject } from "../src/storage";
 import type { MusicConfig, Project } from "../src/types";
 
 export const DEMO_SEED = 2026;
-export const DEMO_SECONDS = 20;
+/** Long enough for a verse and a chorus in all but the slowest styles. */
+export const DEMO_SECONDS = 40;
+/** The longest a demo is stretched to reach its chorus. */
+export const DEMO_SECONDS_MOST = 60;
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -61,7 +77,11 @@ export function demoMix(audio: RenderedAudio): StereoPcm {
 }
 
 /** The demo piece of a style: its preset, a piece that ends, a fixed seed. */
-export function demoConfig(style: StyleId, seconds = DEMO_SECONDS, seed = DEMO_SEED): MusicConfig {
+export function demoConfig(
+  style: StyleId,
+  seconds = DEMO_SECONDS,
+  seed = DEMO_SEED,
+): MusicConfig {
   return clampConfig({
     ...DEFAULT_CONFIG,
     ...stylePreset(style),
@@ -71,6 +91,25 @@ export function demoConfig(style: StyleId, seconds = DEMO_SECONDS, seed = DEMO_S
     seed,
     engine: 2,
   });
+}
+
+/**
+ * How long the demo of a style is: the length asked for, or as much more (in
+ * steps of five seconds, up to DEMO_SECONDS_MOST) as the style needs to get
+ * from its verse to its chorus — ambient at 60 BPM fits ten bars into 40 s.
+ */
+export function demoSeconds(
+  style: StyleId,
+  seconds = DEMO_SECONDS,
+  seed = DEMO_SEED,
+): number {
+  const reachesChorus = (length: number) =>
+    compose(demoConfig(style, length, seed)).sections.some(
+      (section) => section.type === "chorus",
+    );
+  let length = seconds;
+  while (length + 5 <= DEMO_SECONDS_MOST && !reachesChorus(length)) length += 5;
+  return reachesChorus(length) ? length : seconds;
 }
 
 export interface RenderedDemo {
@@ -109,24 +148,49 @@ export function demoFileName(style: StyleId): string {
   return `${number}-${style}-${fileSafe(styleLabel(style))}.wav`;
 }
 
-function indexMarkdown(rows: { style: StyleId; file: string; demo: RenderedDemo }[], seconds: number, seed: number): string {
+function indexMarkdown(
+  rows: { style: StyleId; file: string; demo: RenderedDemo }[],
+  seconds: number,
+  seed: number,
+): string {
+  const hasChorus = (demo: RenderedDemo) =>
+    demo.summary.sections.some((section) => section.type === "chorus");
+  const longer = rows.filter(({ demo }) => demo.config.duration > seconds);
+  const without = rows.filter(({ demo }) => !hasChorus(demo));
+  const command = [
+    "npx tsx scripts/render-demos.ts",
+    ...(seconds !== DEMO_SECONDS ? [`--seconds ${seconds}`] : []),
+    ...(seed !== DEMO_SEED ? [`--seed ${seed}`] : []),
+  ].join(" ");
   const lines: string[] = [
     "# 音序 Muse 风格试听",
     "",
     `每种风格一首约 ${seconds} 秒、有结尾的小曲（非循环），使用该风格的默认主奏乐器、速度与调式，种子 ${seed}。`,
-    "文件是应用默认推子下听到的混音（48 kHz / 16 bit 立体声）。重新生成：`npx tsx scripts/render-demos.ts`。",
+    without.length
+      ? `除${without.map(({ style }) => styleLabel(style)).join("、")}外，每首都从主歌走到副歌。`
+      : `每首都从主歌走到副歌，能听到两段旋律的对比${
+          longer.length
+            ? `；${longer.map(({ style }) => styleLabel(style)).join("、")}速度较慢，为此延长到 ${[
+                ...new Set(longer.map(({ demo }) => demo.config.duration)),
+              ].join(" / ")} 秒`
+            : ""
+        }。`,
+    `文件是应用默认推子下听到的混音（48 kHz / 16 bit 立体声）。重新生成：\`${command}\`。`,
     "",
-    "| 文件 | 风格 | 速度 | 调 | 配器 | 响度 |",
-    "| --- | --- | --- | --- | --- | --- |",
+    "| 文件 | 风格 | 速度 | 调 | 时长 | 配器 | 响度 |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
   ];
   for (const { style, file, demo } of rows)
     lines.push(
-      `| [${file}](${encodeURI(file)}) | ${styleLabel(style)}（${style}） | ${Math.round(demo.summary.bpm)} BPM | ${demo.summary.keyLabel} | ${demo.summary.instruments.join("、")} | ${demo.lufs.toFixed(1)} LUFS |`,
+      `| [${file}](${encodeURI(file)}) | ${styleLabel(style)}（${style}） | ${Math.round(demo.summary.bpm)} BPM | ${demo.summary.keyLabel} | ${demo.config.duration} 秒 | ${demo.summary.instruments.join("、")} | ${demo.lufs.toFixed(1)} LUFS |`,
     );
   lines.push("", "## 编曲思路", "");
   for (const { style, file, demo } of rows) {
     lines.push(`### ${file.replace(/\.wav$/, "")}`, "");
-    lines.push(`主奏：${instrumentLabel(demo.config.instrument)}；能量 ${demo.config.energy}，复杂度 ${demo.config.complexity}，混响 ${demo.config.reverb}。`, "");
+    lines.push(
+      `主奏：${instrumentLabel(demo.config.instrument)}；情绪能量 ${demo.config.energy}，旋律丰富度 ${demo.config.complexity}，空间混响 ${demo.config.reverb}。`,
+      "",
+    );
     for (const note of demo.summary.notes) lines.push(`- ${note}`);
     lines.push("");
     void style;
@@ -146,7 +210,8 @@ export function exampleProject(): Project {
   const config = clampConfig({
     ...DEFAULT_CONFIG,
     ...stylePreset("bright"),
-    prompt: "晴朗的周末早晨出门散步，轻快、明亮，钢琴主旋律，适合日常 Vlog 的片头。",
+    prompt:
+      "晴朗的周末早晨出门散步，轻快、明亮，钢琴主旋律，适合日常 Vlog 的片头。",
     duration: 30,
     loop: false,
     seed: 20261009,
@@ -161,7 +226,11 @@ export function exampleProject(): Project {
     provider: "local",
     favorite: false,
     revision: 1,
-    tags: [styleLabel(config.mood), `${config.bpm} BPM`, instrumentLabel(config.instrument)],
+    tags: [
+      styleLabel(config.mood),
+      `${config.bpm} BPM`,
+      instrumentLabel(config.instrument),
+    ],
   };
 }
 
@@ -171,7 +240,10 @@ async function writeExample(directory: string): Promise<void> {
   const json = exportProject(project);
   const demo = await renderDemo(project.config);
   writeFileSync(join(directory, `${EXAMPLE_TITLE}.muse.json`), `${json}\n`);
-  writeFileSync(join(directory, `${EXAMPLE_TITLE}.wav`), new Uint8Array(demo.wav));
+  writeFileSync(
+    join(directory, `${EXAMPLE_TITLE}.wav`),
+    new Uint8Array(demo.wav),
+  );
   console.log(
     `${EXAMPLE_TITLE}: ${Math.round(demo.summary.bpm)} BPM, ${demo.summary.keyLabel}, ${demo.summary.instruments.join("、")} — ${demo.lufs.toFixed(2)} LUFS, peak ${demo.peakDb.toFixed(1)} dBFS, ${(demo.wav.byteLength / 1e6).toFixed(2)} MB → ${directory}`,
   );
@@ -185,7 +257,8 @@ const USAGE = `npx tsx scripts/render-demos.ts [--out dir] [--seconds n] [--styl
 npx tsx scripts/render-demos.ts --example [dir]
 
   --out <dir>      output folder (default: demos/ at the repository root)
-  --seconds <n>    length of every piece, 15..120 (default ${DEMO_SECONDS})
+  --seconds <n>    length of every piece, 15..120 (default ${DEMO_SECONDS}; a style that has not
+                   reached its chorus by then gets up to ${DEMO_SECONDS_MOST} s)
   --styles <ids>   comma-separated style ids (default: all ${STYLE_IDS.length})
   --seed <n>       seed of every piece (default ${DEMO_SEED})
   --example [dir]  write the example project and its 30 s WAV (default: examples/)`;
@@ -200,7 +273,8 @@ async function main(argv: string[]): Promise<void> {
     const flag = argv[i];
     const value = () => {
       const next = argv[++i];
-      if (next === undefined) throw new Error(`${flag} needs a value\n\n${USAGE}`);
+      if (next === undefined)
+        throw new Error(`${flag} needs a value\n\n${USAGE}`);
       return next;
     };
     if (flag === "--help" || flag === "-h") {
@@ -215,25 +289,34 @@ async function main(argv: string[]): Promise<void> {
         .map((id) => id.trim())
         .filter(Boolean);
       const unknown = ids.filter((id) => !isStyleId(id));
-      if (unknown.length) throw new Error(`unknown style: ${unknown.join(", ")} (known: ${STYLE_IDS.join(", ")})`);
+      if (unknown.length)
+        throw new Error(
+          `unknown style: ${unknown.join(", ")} (known: ${STYLE_IDS.join(", ")})`,
+        );
       styles = ids as StyleId[];
     } else if (flag === "--example") {
       const next = argv[i + 1];
-      example = next !== undefined && !next.startsWith("--") ? resolve(argv[++i]) : join(ROOT, "examples");
+      example =
+        next !== undefined && !next.startsWith("--")
+          ? resolve(argv[++i])
+          : join(ROOT, "examples");
     } else throw new Error(`unknown option ${flag}\n\n${USAGE}`);
   }
   if (example) {
     await writeExample(example);
     return;
   }
-  if (!(seconds >= 15 && seconds <= 120)) throw new Error("--seconds must be between 15 and 120");
+  if (!(seconds >= 15 && seconds <= 120))
+    throw new Error("--seconds must be between 15 and 120");
   if (!Number.isFinite(seed)) throw new Error("--seed must be a number");
 
   mkdirSync(out, { recursive: true });
   const rows: { style: StyleId; file: string; demo: RenderedDemo }[] = [];
   const started = performance.now();
   for (const style of styles) {
-    const demo = await renderDemo(demoConfig(style, seconds, seed));
+    const demo = await renderDemo(
+      demoConfig(style, demoSeconds(style, seconds, seed), seed),
+    );
     const file = demoFileName(style);
     writeFileSync(join(out, file), new Uint8Array(demo.wav));
     rows.push({ style, file, demo });
@@ -242,10 +325,15 @@ async function main(argv: string[]): Promise<void> {
     );
   }
   writeFileSync(join(out, "index.md"), indexMarkdown(rows, seconds, seed));
-  console.log(`${rows.length} piece(s) and index.md in ${out} (${((performance.now() - started) / 1000).toFixed(1)} s)`);
+  console.log(
+    `${rows.length} piece(s) and index.md in ${out} (${((performance.now() - started) / 1000).toFixed(1)} s)`,
+  );
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+)
   main(process.argv.slice(2)).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;

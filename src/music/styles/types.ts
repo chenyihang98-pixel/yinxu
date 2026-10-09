@@ -24,12 +24,7 @@
  * Small percussion is also quieter by nature: at equal velocity and gain a
  * shaker or a closed hat is 17–19 LU under a kick (see DRUM_PEAKS).
  */
-import type {
-  BassFeel,
-  InstrumentId,
-  SectionType,
-  StyleId,
-} from "../catalog";
+import type { BassFeel, InstrumentId, SectionType, StyleId } from "../catalog";
 import type {
   DrumKind,
   DrumKitId,
@@ -84,6 +79,16 @@ export interface ModeDef {
   /** weight used instead when the lead is one of these instruments (0 = never with that lead) */
   leads?: Partial<Record<InstrumentId, number>>;
   bank: ProgressionBank;
+  /**
+   * The mode's own endings, used instead of HarmonyDef.cadence / final /
+   * turnaround. A modal scale (lydian, dorian, phrygian, mixolydian) needs
+   * them only for a special colour: endings from the style's tables that
+   * would bring back the degree the mode has altered are left out anyway, and
+   * the engine falls back to the mode's plain cadence.
+   */
+  cadence?: Progression[];
+  final?: string;
+  turnaround?: BarChords[];
 }
 
 /**
@@ -117,7 +122,12 @@ export interface HarmonyDef {
   voices: 3 | 4 | 5;
   /** MIDI window of the comp voicing */
   register: [number, number];
-  /** bars each bank entry lasts; default 1 (2 once the tempo passes ~156 BPM) */
+  /**
+   * Bars each bank entry lasts; default 1, or 2 where a bar flies by (see
+   * isFastTempo in form.ts). A style that switches on the tempo itself keeps
+   * its thresholds at least a tenth away from its own tempo, so that a small
+   * tempo change does not re-harmonise the piece.
+   */
   barsPerChord?: (info: { bpm: number; section: SectionType }) => 1 | 2;
   /**
    * Last bar of a loop when the progression does not already lead home. One
@@ -133,6 +143,13 @@ export interface HarmonyDef {
 
 /* ---------------------------- melody ----------------------------- */
 
+/**
+ * The tune is WRITTEN once per seed at the style's own settings — the tempo,
+ * energy and complexity the catalog lists for the style — from the numbers
+ * below. Whatever the user then sets only adapts that tune (see composeLead):
+ * retuning a style's catalog tempo or complexity therefore gives every seed
+ * of that style another melody.
+ */
 export interface MelodyDef {
   /** 0..1 rhythmic density of the lead (hints.melody.density overrides) */
   density: number;
@@ -176,7 +193,8 @@ export interface MelodyDef {
 /* --------------------------- accompaniment ----------------------- */
 
 /** Which notes of the current voicing a comp row plays ("1" = lowest … "5"). */
-export type CompRow = "all" | "low" | "upper" | "top" | "mid" | "1" | "2" | "3" | "4" | "5";
+export type CompRow =
+  "all" | "low" | "upper" | "top" | "mid" | "1" | "2" | "3" | "4" | "5";
 
 export interface CompPattern {
   rows: Partial<Record<CompRow, StepRow>>;

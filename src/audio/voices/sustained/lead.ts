@@ -110,10 +110,7 @@ export const synth: Voice = {
     const beatHz = f0 * (Math.exp(pulseDetune) - Math.exp(sawDetune));
 
     // --- level: both spectra through the filter, where the envelope spends the first 400 ms ---
-    const measured = Math.min(
-      peakCutoff,
-      sustainCutoff * (1 + snap * 0.33),
-    );
+    const measured = Math.min(peakCutoff, sustainCutoff * (1 + snap * 0.33));
     let sawSpectrum = 0;
     let pulseSpectrum = 0;
     let shared = 0;

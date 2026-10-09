@@ -83,9 +83,11 @@ export const battle: StyleDef = {
     voicing: "open",
     voices: 3,
     register: [50, 72],
-    // riffing verses sit on a chord for two bars; the chorus changes every bar until bars get too short
+    // riffing verses sit on a chord for two bars; the chorus changes every bar until bars get too short.
+    // Both switches lie more than a tenth away from the style's own 160 BPM: a
+    // small tempo change must not re-harmonise the piece under its tune.
     barsPerChord: ({ bpm, section }) =>
-      bpm >= 172 || (bpm >= 150 && section !== "chorus" && section !== "build") ? 2 : 1,
+      bpm >= 180 || (bpm >= 140 && section !== "chorus" && section !== "build") ? 2 : 1,
     turnaround: { major: ["V", "bVII"], minor: ["V", "bVII", "v"] },
     cadence: {
       major: [

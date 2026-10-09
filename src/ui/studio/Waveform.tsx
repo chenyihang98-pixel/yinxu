@@ -274,7 +274,9 @@ export const WaveformCanvas = memo(function WaveformCanvas(props: {
       paint();
     };
     const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resized);
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(resized);
     observer?.observe(node);
     window.addEventListener("resize", resized);
     return () => {

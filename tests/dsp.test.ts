@@ -63,38 +63,21 @@ import {
   triBlamp,
   velocityGain,
 } from "../src/audio/dsp";
+// amplitude and phase of one spectral line — as two numbers, for a reason: see the file
+import { amplitudeAt, measureLine, phaseAt } from "./helpers/spectrum";
 
 const SR = 48000;
 const dB = (gain: number) => 20 * Math.log10(Math.max(gain, 1e-12));
-const near = (actual: number, expected: number, tolerance: number, what: string) =>
+const near = (
+  actual: number,
+  expected: number,
+  tolerance: number,
+  what: string,
+) =>
   assert.ok(
     Math.abs(actual - expected) <= tolerance,
     `${what}: got ${actual}, expected ${expected} ±${tolerance}`,
   );
-
-/** Complex amplitude of `signal` at `hz` over [start, start + length) (Hann-weighted DFT bin). */
-function probe(
-  signal: ArrayLike<number>,
-  hz: number,
-  sampleRate: number,
-  start = 0,
-  length = signal.length - start,
-): { amplitude: number; phase: number } {
-  let re = 0;
-  let im = 0;
-  let weight = 0;
-  for (let i = 0; i < length; i++) {
-    const w = 0.5 - 0.5 * Math.cos((TAU * i) / length);
-    const angle = (TAU * hz * (start + i)) / sampleRate;
-    re += signal[start + i] * w * Math.cos(angle);
-    im -= signal[start + i] * w * Math.sin(angle);
-    weight += w;
-  }
-  return {
-    amplitude: (2 * Math.hypot(re, im)) / weight,
-    phase: Math.atan2(im, re),
-  };
-}
 
 /** Precise frequency of the partial near `guessHz` from the phase advance between two windows. */
 function measureHz(
@@ -105,9 +88,9 @@ function measureHz(
   length: number,
   hop: number,
 ): number {
-  const a = probe(signal, guessHz, sampleRate, start, length);
-  const b = probe(signal, guessHz, sampleRate, start + hop, length);
-  let delta = b.phase - a.phase;
+  const a = phaseAt(signal, guessHz, sampleRate, start, length);
+  const b = phaseAt(signal, guessHz, sampleRate, start + hop, length);
+  let delta = b - a;
   delta -= TAU * Math.round(delta / TAU);
   return guessHz + (delta * sampleRate) / (TAU * hop);
 }
@@ -135,7 +118,11 @@ function gainAt(
  * what aliasing adds. 10 kHz keeps the measurement to the range where folded
  * partials are clearly audible.
  */
-function inharmonicPower(signal: Float32Array, f0: number, maxHz = 10000): number {
+function inharmonicPower(
+  signal: Float32Array,
+  f0: number,
+  maxHz = 10000,
+): number {
   const spectrum = powerSpectrum(signal, SR);
   const guard = 6;
   let power = 0;
@@ -180,8 +167,14 @@ test("seeded random streams are repeatable, uniform and forkable", () => {
   const b = createRng(7);
   const c = createRng(8);
   const one = Array.from({ length: 64 }, () => a());
-  assert.deepEqual(one, Array.from({ length: 64 }, () => b()));
-  assert.notDeepEqual(one, Array.from({ length: 64 }, () => c()));
+  assert.deepEqual(
+    one,
+    Array.from({ length: 64 }, () => b()),
+  );
+  assert.notDeepEqual(
+    one,
+    Array.from({ length: 64 }, () => c()),
+  );
   const rng = createRng(123);
   let sum = 0;
   for (let i = 0; i < 100000; i++) {
@@ -212,7 +205,7 @@ test("wavetable sine is accurate for any phase", () => {
   const osc = new Oscillator(1000, SR);
   const buffer = new Float32Array(4800);
   for (let i = 0; i < buffer.length; i++) buffer[i] = osc.sine();
-  near(probe(buffer, 1000, SR).amplitude, 1, 1e-3, "sine amplitude");
+  near(amplitudeAt(buffer, 1000, SR), 1, 1e-3, "sine amplitude");
 });
 
 test("PolyBLEP saw / pulse and PolyBLAMP triangle alias far less than naive shapes", () => {
@@ -237,27 +230,60 @@ test("PolyBLEP saw / pulse and PolyBLAMP triangle alias far less than naive shap
       phase += inc;
       if (phase >= 1) phase -= 1;
     }
-    const sawGain = dB(Math.sqrt(inharmonicPower(naive, hz) / inharmonicPower(blep, hz)));
+    const sawGain = dB(
+      Math.sqrt(inharmonicPower(naive, hz) / inharmonicPower(blep, hz)),
+    );
     const pulseGain = dB(
       Math.sqrt(inharmonicPower(naivePulse, hz) / inharmonicPower(pulse, hz)),
     );
-    const triGain = dB(Math.sqrt(inharmonicPower(naiveTri, hz) / inharmonicPower(tri, hz)));
-    assert.ok(sawGain > 28, `saw ${hz} Hz: aliasing only ${sawGain.toFixed(1)} dB lower`);
-    assert.ok(pulseGain > 28, `pulse ${hz} Hz: aliasing only ${pulseGain.toFixed(1)} dB lower`);
+    const triGain = dB(
+      Math.sqrt(inharmonicPower(naiveTri, hz) / inharmonicPower(tri, hz)),
+    );
+    assert.ok(
+      sawGain > 28,
+      `saw ${hz} Hz: aliasing only ${sawGain.toFixed(1)} dB lower`,
+    );
+    assert.ok(
+      pulseGain > 28,
+      `pulse ${hz} Hz: aliasing only ${pulseGain.toFixed(1)} dB lower`,
+    );
     if (hz > 2000)
-      assert.ok(triGain > 10, `triangle ${hz} Hz: aliasing only ${triGain.toFixed(1)} dB lower`);
+      assert.ok(
+        triGain > 10,
+        `triangle ${hz} Hz: aliasing only ${triGain.toFixed(1)} dB lower`,
+      );
     // even counting everything up to Nyquist the band-limited saw is far cleaner
     const fullBand = dB(
-      Math.sqrt(inharmonicPower(naive, hz, 24000) / inharmonicPower(blep, hz, 24000)),
+      Math.sqrt(
+        inharmonicPower(naive, hz, 24000) / inharmonicPower(blep, hz, 24000),
+      ),
     );
-    assert.ok(fullBand > 12, `saw ${hz} Hz full band: ${fullBand.toFixed(1)} dB`);
+    assert.ok(
+      fullBand > 12,
+      `saw ${hz} Hz full band: ${fullBand.toFixed(1)} dB`,
+    );
     // the wanted harmonics keep their textbook amplitudes
-    near(dB(probe(blep, hz, SR).amplitude), dB(2 / Math.PI), 0.3, "saw fundamental");
-    // (PolyBLEP droops a little towards Nyquist)
-    near(dB(probe(blep, 2 * hz, SR).amplitude), dB(1 / Math.PI), 1, "saw 2nd harmonic");
-    near(dB(probe(tri, hz, SR).amplitude), dB(8 / (Math.PI * Math.PI)), 0.3, "triangle fundamental");
     near(
-      dB(probe(pulse, hz, SR).amplitude),
+      dB(amplitudeAt(blep, hz, SR)),
+      dB(2 / Math.PI),
+      0.3,
+      "saw fundamental",
+    );
+    // (PolyBLEP droops a little towards Nyquist)
+    near(
+      dB(amplitudeAt(blep, 2 * hz, SR)),
+      dB(1 / Math.PI),
+      1,
+      "saw 2nd harmonic",
+    );
+    near(
+      dB(amplitudeAt(tri, hz, SR)),
+      dB(8 / (Math.PI * Math.PI)),
+      0.3,
+      "triangle fundamental",
+    );
+    near(
+      dB(amplitudeAt(pulse, hz, SR)),
       dB((4 / Math.PI) * Math.sin(Math.PI * 0.25)),
       0.3,
       "25 % pulse fundamental",
@@ -306,7 +332,8 @@ test("noise sources: white is flat, pink falls 3 dB per octave, LFSR has console
   const filled = new Float32Array(16);
   new WhiteNoise(5).fill(filled, 16, 0.5);
   const reference = new WhiteNoise(5);
-  for (let i = 0; i < 16; i++) near(filled[i], 0.5 * reference.next(), 1e-7, "fill");
+  for (let i = 0; i < 16; i++)
+    near(filled[i], 0.5 * reference.next(), 1e-7, "fill");
 
   const pink = new PinkNoise(createRng(3));
   const pinkBuffer = new Float32Array(n);
@@ -322,7 +349,10 @@ test("noise sources: white is flat, pink falls 3 dB per octave, LFSR has console
     .slice(0, -1)
     .map((hz, i) => dB(Math.sqrt(bandPower(spectrum, hz, octaves[i + 1]))));
   const spread = Math.max(...levels) - Math.min(...levels);
-  assert.ok(spread < 2.5, `pink octave levels spread ${spread.toFixed(2)} dB: ${levels.map((v) => v.toFixed(1))}`);
+  assert.ok(
+    spread < 2.5,
+    `pink octave levels spread ${spread.toFixed(2)} dB: ${levels.map((v) => v.toFixed(1))}`,
+  );
 
   for (const [short, period] of [
     [false, 32767],
@@ -335,7 +365,8 @@ test("noise sources: white is flat, pink falls 3 dB per octave, LFSR has console
       assert.ok(v === 1 || v === -1);
       values.push(v);
     }
-    for (let i = 0; i < period; i++) assert.equal(values[i], values[i + period]);
+    for (let i = 0; i < period; i++)
+      assert.equal(values[i], values[i + period]);
   }
 });
 
@@ -345,8 +376,22 @@ test("envelopes start and end at zero and never step", () => {
   const cases = [
     { attack: 0, decay: 0.1, sustain: 0.6, release: 0, hold: 0.5 },
     { attack: 0.01, decay: 0.3, sustain: 0.2, release: 0.2, hold: 0.4 },
-    { attack: 0.3, decay: 0.5, sustain: 1, release: 0.4, hold: 0.05, attackShape: "cos" as const },
-    { attack: 0.02, decay: 0.2, sustain: 0.8, release: 3, hold: 0.9, attackShape: "lin" as const },
+    {
+      attack: 0.3,
+      decay: 0.5,
+      sustain: 1,
+      release: 0.4,
+      hold: 0.05,
+      attackShape: "cos" as const,
+    },
+    {
+      attack: 0.02,
+      decay: 0.2,
+      sustain: 0.8,
+      release: 3,
+      hold: 0.9,
+      attackShape: "lin" as const,
+    },
     { attack: 0.002, decay: 0.05, sustain: 0, release: 0.05, hold: 0.999 },
   ];
   for (const params of cases) {
@@ -360,23 +405,46 @@ test("envelopes start and end at zero and never step", () => {
       step = Math.max(step, Math.abs(env[i] - env[i - 1]));
       peak = Math.max(peak, env[i]);
     }
-    assert.ok(step < 0.03, `largest step ${step} for ${JSON.stringify(params)}`);
+    assert.ok(
+      step < 0.03,
+      `largest step ${step} for ${JSON.stringify(params)}`,
+    );
     assert.ok(peak > 0.05);
   }
   // nominal shape: reaches 1 after the attack, settles on sustain, silent after the release
-  adsr(env, frames, SR, { attack: 0.01, decay: 0.2, sustain: 0.5, release: 0.1 }, 0.5);
+  adsr(
+    env,
+    frames,
+    SR,
+    { attack: 0.01, decay: 0.2, sustain: 0.5, release: 0.1 },
+    0.5,
+  );
   near(env[Math.round(0.01 * SR) + 2], 1, 0.02, "attack peak");
   near(env[Math.round(0.4 * SR)], 0.5, 1e-3, "sustain");
   assert.equal(env[Math.round(0.6 * SR) + 2], 0);
-  assert.ok(env[Math.round(0.59 * SR)] < 0.002 && env[Math.round(0.55 * SR)] > 0.005);
+  assert.ok(
+    env[Math.round(0.59 * SR)] < 0.002 && env[Math.round(0.55 * SR)] > 0.005,
+  );
   // a buffer shorter than the release still ends on zero without a jump
   const short = new Float32Array(600);
-  adsr(short, 600, SR, { attack: 0.001, decay: 1, sustain: 1, release: 2 }, 0.005);
+  adsr(
+    short,
+    600,
+    SR,
+    { attack: 0.001, decay: 1, sustain: 1, release: 2 },
+    0.005,
+  );
   assert.equal(short[599], 0);
-  for (let i = 1; i < 600; i++) assert.ok(Math.abs(short[i] - short[i - 1]) < 0.03);
+  for (let i = 1; i < 600; i++)
+    assert.ok(Math.abs(short[i] - short[i - 1]) < 0.03);
 
   // streaming use
-  const live = new Adsr(SR, { attack: 0.005, decay: 0.05, sustain: 0.7, release: 0.02 });
+  const live = new Adsr(SR, {
+    attack: 0.005,
+    decay: 0.05,
+    sustain: 0.7,
+    release: 0.02,
+  });
   assert.equal(live.next(), 0);
   live.gate();
   for (let i = 0; i < 0.2 * SR; i++) live.next();
@@ -387,7 +455,10 @@ test("envelopes start and end at zero and never step", () => {
     live.next();
     count++;
   }
-  assert.ok(count <= Math.ceil(0.02 * SR) + 1 && count > 0.01 * SR, `release took ${count}`);
+  assert.ok(
+    count <= Math.ceil(0.02 * SR) + 1 && count > 0.01 * SR,
+    `release took ${count}`,
+  );
   // a zero release is raised to MIN_FALL instead of gating
   live.set({ attack: 0, decay: 0, sustain: 1, release: 0 });
   live.gate();
@@ -426,7 +497,8 @@ test("envelopes start and end at zero and never step", () => {
   assert.equal(ones[0], 0);
   assert.ok(Math.abs(ones[999]) < 1e-12);
   assert.equal(ones[500], 1);
-  for (let i = 1; i < 1000; i++) assert.ok(Math.abs(ones[i] - ones[i - 1]) < 0.02);
+  for (let i = 1; i < 1000; i++)
+    assert.ok(Math.abs(ones[i] - ones[i - 1]) < 0.02);
 });
 
 test("one-pole, biquad and state-variable filters match their ideal responses", () => {
@@ -435,15 +507,27 @@ test("one-pole, biquad and state-variable filters match their ideal responses", 
   lp1.reset();
   near(dB(gainAt((x) => lp1.next(x), 50)), 0, 0.05, "one-pole LP passband");
   lp1.reset();
-  near(dB(gainAt((x) => lp1.next(x), 8000)), dB(lp1.magnitude(8000, SR)), 0.01, "one-pole LP model");
-  assert.ok(dB(lp1.magnitude(8000, SR)) < -16 && dB(lp1.magnitude(8000, SR)) > -20);
+  near(
+    dB(gainAt((x) => lp1.next(x), 8000)),
+    dB(lp1.magnitude(8000, SR)),
+    0.01,
+    "one-pole LP model",
+  );
+  assert.ok(
+    dB(lp1.magnitude(8000, SR)) < -16 && dB(lp1.magnitude(8000, SR)) > -20,
+  );
 
   const hp1 = new OnePoleHP(500, SR);
   near(dB(gainAt((x) => hp1.next(x), 500)), -3.01, 0.02, "one-pole HP corner");
   hp1.reset();
   near(dB(gainAt((x) => hp1.next(x), 20000)), 0, 0.01, "one-pole HP passband");
   hp1.reset();
-  near(dB(gainAt((x) => hp1.next(x), 50)), dB(hp1.magnitude(50, SR)), 0.01, "one-pole HP model");
+  near(
+    dB(gainAt((x) => hp1.next(x), 50)),
+    dB(hp1.magnitude(50, SR)),
+    0.01,
+    "one-pole HP model",
+  );
   assert.ok(dB(hp1.magnitude(50, SR)) < -19 && dB(hp1.magnitude(50, SR)) > -21);
 
   const q = Math.SQRT1_2;
@@ -468,7 +552,8 @@ test("one-pole, biquad and state-variable filters match their ideal responses", 
   assert.ok(measure(3000) < -60);
   near(measure(300), 0, 0.1, "notch passband");
   bq.setAllpass(1500, 1, SR);
-  for (const hz of [100, 1500, 9000]) near(measure(hz), 0, 0.01, `allpass ${hz}`);
+  for (const hz of [100, 1500, 9000])
+    near(measure(hz), 0, 0.01, `allpass ${hz}`);
   bq.setPeak(1000, 2, 6, SR);
   near(measure(1000), 6, 0.05, "peak centre");
   near(measure(100), 0, 0.15, "peak far below");
@@ -502,20 +587,40 @@ test("one-pole, biquad and state-variable filters match their ideal responses", 
     const low = dB(gainAt((x) => svf.low(x), hz));
     near(low, dB(bq.magnitude(hz, SR)), 0.05, `svf LP ${hz}`);
     near(low, dB(svf.magnitude(hz, SR)), 0.01, `svf LP model ${hz}`);
-    near(low, dB(svfLowpassGain(hz, 1000, q, SR)), 0.01, `svf LP gain helper ${hz}`);
+    near(
+      low,
+      dB(svfLowpassGain(hz, 1000, q, SR)),
+      0.01,
+      `svf LP gain helper ${hz}`,
+    );
   }
   bq.setHighpass(1000, q, SR);
   for (const hz of [200, 1000, 6000]) {
     svf.reset();
-    near(dB(gainAt((x) => svf.high(x), hz)), dB(bq.magnitude(hz, SR)), 0.05, `svf HP ${hz}`);
+    near(
+      dB(gainAt((x) => svf.high(x), hz)),
+      dB(bq.magnitude(hz, SR)),
+      0.05,
+      `svf HP ${hz}`,
+    );
   }
   svf.set(2000, 5, SR);
   svf.reset();
-  near(dB(gainAt((x) => svf.band(x), 2000)), dB(5), 0.05, "svf BP peak gain is q");
+  near(
+    dB(gainAt((x) => svf.band(x), 2000)),
+    dB(5),
+    0.05,
+    "svf BP peak gain is q",
+  );
   svf.reset();
   svf.tick(1);
   assert.ok(Number.isFinite(svf.lp + svf.bp + svf.hp));
-  near(svf.lp + 0.2 * svf.bp + svf.hp, 1, 1e-9, "svf outputs reconstruct the input");
+  near(
+    svf.lp + 0.2 * svf.bp + svf.hp,
+    1,
+    1e-9,
+    "svf outputs reconstruct the input",
+  );
 
   // violent audio-rate modulation with high resonance stays bounded
   const wild = new Svf(1000, 12, SR);
@@ -526,7 +631,10 @@ test("one-pole, biquad and state-variable filters match their ideal responses", 
     wild.set(40 * Math.pow(450, rng()), 12, SR);
     worst = Math.max(worst, Math.abs(wild.low(source.next())));
   }
-  assert.ok(Number.isFinite(worst) && worst < 60, `modulated SVF peak ${worst}`);
+  assert.ok(
+    Number.isFinite(worst) && worst < 60,
+    `modulated SVF peak ${worst}`,
+  );
 
   const dc = new DcBlocker(SR, 20);
   let last = 1;
@@ -539,22 +647,33 @@ test("one-pole, biquad and state-variable filters match their ideal responses", 
   for (const delay of [0.2, 0.5, 0.83, 1.19]) {
     const omega = (TAU * 440) / SR;
     const coef = allpassCoefForDelay(delay, omega);
-    near(allpassPhaseDelay(coef, omega), delay, 1e-9, `allpass coefficient for ${delay}`);
+    near(
+      allpassPhaseDelay(coef, omega),
+      delay,
+      1e-9,
+      `allpass coefficient for ${delay}`,
+    );
     const ap = new Allpass1(coef);
     const out = new Float32Array(9600);
     for (let i = 0; i < out.length; i++) out[i] = ap.next(Math.sin(omega * i));
-    const result = probe(out, 440, SR, 4800, 4800);
-    const reference = probe(
+    const phase = phaseAt(out, 440, SR, 4800, 4800);
+    const reference = phaseAt(
       Float32Array.from({ length: 9600 }, (_, i) => Math.sin(omega * i)),
       440,
       SR,
       4800,
       4800,
     );
-    let lag = (reference.phase - result.phase) / omega;
+    let lag = (reference - phase) / omega;
     lag -= Math.round(lag / (TAU / omega)) * (TAU / omega);
-    near(lag, delay, 1e-3, `measured allpass delay ${delay}`);
-    near(result.amplitude, 1, 1e-4, "allpass gain");
+    // (should this ever fail again: the numbers that tell a filter fault from a measuring fault)
+    near(
+      lag,
+      delay,
+      1e-3,
+      `measured allpass delay ${delay} (coefficient ${coef}, phase ${phase} against ${reference}, out[4800] = ${out[4800]})`,
+    );
+    near(amplitudeAt(out, 440, SR, 4800, 4800), 1, 1e-4, "allpass gain");
   }
 });
 
@@ -575,13 +694,16 @@ test("biquadChain gives the samples of reset() + process() on every filter, bit 
   ];
   const random = createRng(77);
   const frames = 6000;
-  const source = Float32Array.from({ length: frames }, (_, i) => (i < 4000 ? 0.4 * Math.sin(i * 0.031) + 0.5 * (random() - 0.5) : 0));
+  const source = Float32Array.from({ length: frames }, (_, i) =>
+    i < 4000 ? 0.4 * Math.sin(i * 0.031) + 0.5 * (random() - 0.5) : 0,
+  );
   for (let count = 0; count <= designs.length; count++) {
     const filters = designs.slice(0, count).map((design) => design());
     // the filters are in use elsewhere: the chain must neither need nor disturb their state
     for (const filter of filters) filter.next(0.3);
     const expected = Float32Array.from(source);
-    for (const design of designs.slice(0, count)) design().process(expected, frames);
+    for (const design of designs.slice(0, count))
+      design().process(expected, frames);
     const chained = Float32Array.from(source);
     biquadChain(filters, chained, frames);
     assert.deepEqual(chained, expected, `${count} sections`);
@@ -626,7 +748,10 @@ test("delay line taps: integer exact, fractional accurate", () => {
       const ideal = Math.sin(omega * (i + 1 - delay));
       const ap = allpass.readAllpass(delay);
       if (i < 4000) continue;
-      errLinear = Math.max(errLinear, Math.abs(linear.readLinear(delay) - ideal));
+      errLinear = Math.max(
+        errLinear,
+        Math.abs(linear.readLinear(delay) - ideal),
+      );
       errCubic = Math.max(errCubic, Math.abs(cubic.readCubic(delay) - ideal));
       errAllpass = Math.max(errAllpass, Math.abs(ap - ideal));
     }
@@ -668,14 +793,22 @@ test("Karplus-Strong string is in tune within a few cents and decays as requeste
         const out = new Float32Array(sampleRate);
         for (let i = 0; i < out.length; i++) out[i] = string.next();
         const window = Math.round(sampleRate * 0.3);
-        const measured = measureHz(out, hz, sampleRate, Math.round(sampleRate * 0.1), window, 2048);
+        const measured = measureHz(
+          out,
+          hz,
+          sampleRate,
+          Math.round(sampleRate * 0.1),
+          window,
+          2048,
+        );
         const cents = centsBetween(measured, hz);
         assert.ok(
           Math.abs(cents) < 1.5,
           `midi ${midi} @${sampleRate} dispersion ${config.coef}x${config.sections}: ${cents.toFixed(2)} cents`,
         );
         let peak = 0;
-        for (let i = 0; i < out.length; i++) peak = Math.max(peak, Math.abs(out[i]));
+        for (let i = 0; i < out.length; i++)
+          peak = Math.max(peak, Math.abs(out[i]));
         assert.ok(Number.isFinite(peak) && peak > 0 && peak < 4);
       }
     }
@@ -687,16 +820,28 @@ test("Karplus-Strong string is in tune within a few cents and decays as requeste
   string.setDecay(2, 0.4, 4000);
   near(string.t60At(220), 2, 0.01, "model T60 of the fundamental");
   near(string.t60At(4000), 0.4, 0.01, "model T60 at the reference");
-  const options = { sampleRate: SR, period: string.period, position: 0.2, bodyHz: 2000, hardnessHz: 9000, noise: 0 };
+  const options = {
+    sampleRate: SR,
+    period: string.period,
+    position: 0.2,
+    bodyHz: 2000,
+    hardnessHz: 9000,
+    noise: 0,
+  };
   string.excite(excitation, makePluck(excitation, options, createRng(1)));
   const out = new Float32Array(SR);
   for (let i = 0; i < SR; i++) out[i] = string.next();
-  const early = probe(out, 220, SR, 2400, 9600).amplitude;
-  const late = probe(out, 220, SR, 2400 + 24000, 9600).amplitude;
+  const early = amplitudeAt(out, 220, SR, 2400, 9600);
+  const late = amplitudeAt(out, 220, SR, 2400 + 24000, 9600);
   near(dB(late / early), -60 * (0.5 / 2), 0.4, "fundamental decay over 0.5 s");
-  const earlyHigh = probe(out, 3960, SR, 2400, 4800).amplitude;
-  const lateHigh = probe(out, 3960, SR, 2400 + 9600, 4800).amplitude;
-  near(dB(lateHigh / earlyHigh), -60 * (0.2 / string.t60At(3960)), 1.5, "18th partial decay over 0.2 s");
+  const earlyHigh = amplitudeAt(out, 3960, SR, 2400, 4800);
+  const lateHigh = amplitudeAt(out, 3960, SR, 2400 + 9600, 4800);
+  near(
+    dB(lateHigh / earlyHigh),
+    -60 * (0.2 / string.t60At(3960)),
+    1.5,
+    "18th partial decay over 0.2 s",
+  );
   // damping at note-off shortens the ring without a jump
   string.setDecay(0.1, 0.05, 4000);
   let previous = string.next();
@@ -716,7 +861,14 @@ test("Karplus-Strong string is in tune within a few cents and decays as requeste
     s.setDispersion(-0.3, 2);
     s.setDecay(3, 0.5);
   }
-  const pluckOptions = { sampleRate: SR, period: one.period, position: 0.3, bodyHz: 900, hardnessHz: 6000, noise: 0.5 };
+  const pluckOptions = {
+    sampleRate: SR,
+    period: one.period,
+    position: 0.3,
+    bodyHz: 900,
+    hardnessHz: 6000,
+    noise: 0.5,
+  };
   const excitationA = new Float32Array(4096);
   const excitationB = new Float32Array(4096);
   one.excite(excitationA, makePluck(excitationA, pluckOptions, createRng(9)));
@@ -725,12 +877,20 @@ test("Karplus-Strong string is in tune within a few cents and decays as requeste
   const blockOut = new Float32Array(3000);
   one.process(blockOut, 0, 1000);
   one.process(blockOut, 1000, 2000);
-  for (let i = 0; i < 3000; i++) near(blockOut[i], two.next(), 1e-6, "process() vs next()");
+  for (let i = 0; i < 3000; i++)
+    near(blockOut[i], two.next(), 1e-6, "process() vs next()");
   assert.equal(one.tap(0), blockOut[2999]);
   assert.equal(one.tap(10), blockOut[2989]);
 
   // the excitation has the spectrum its model promises (pulse only)
-  const spectrumOptions = { sampleRate: SR, period: 218.18, position: 0.18, bodyHz: 440, hardnessHz: 4000, noise: 0 };
+  const spectrumOptions = {
+    sampleRate: SR,
+    period: 218.18,
+    position: 0.18,
+    bodyHz: 440,
+    hardnessHz: 4000,
+    noise: 0,
+  };
   const length = makePluck(excitation, spectrumOptions, createRng(1));
   for (const hz of [220, 660, 1540, 3080]) {
     const re = { c: 0, s: 0 };
@@ -738,7 +898,12 @@ test("Karplus-Strong string is in tune within a few cents and decays as requeste
       re.c += excitation[i] * Math.cos((TAU * hz * i) / SR);
       re.s += excitation[i] * Math.sin((TAU * hz * i) / SR);
     }
-    near(dB(Math.hypot(re.c, re.s)), dB(pluckSpectrum(hz, spectrumOptions)), 0.3, `pluck spectrum ${hz}`);
+    near(
+      dB(Math.hypot(re.c, re.s)),
+      dB(pluckSpectrum(hz, spectrumOptions)),
+      0.3,
+      `pluck spectrum ${hz}`,
+    );
   }
 });
 
@@ -749,7 +914,14 @@ test("Karplus-Strong bends by resampling its output and lands back on pitch", ()
     string.setFrequency(hz);
     string.setDecay(5, 1.5, 4000);
     const excitation = new Float32Array(4096);
-    const options = { sampleRate: SR, period: string.period, position: 0.2, bodyHz: 700, hardnessHz: 5000, noise: 0.2 };
+    const options = {
+      sampleRate: SR,
+      period: string.period,
+      position: 0.2,
+      bodyHz: 700,
+      hardnessHz: 5000,
+      noise: 0.2,
+    };
     string.excite(excitation, makePluck(excitation, options, createRng(4)));
     return string;
   };
@@ -779,7 +951,10 @@ test("Karplus-Strong bends by resampling its output and lands back on pitch", ()
     let typical = 0;
     for (let i = SR / 2 - 3000; i < SR / 2 - 200; i++)
       typical = Math.max(typical, Math.abs(out[i] - out[i - 1]));
-    assert.ok(jump < typical * 1.3 + 1e-4, `release of the bend jumps ${jump} vs ${typical}`);
+    assert.ok(
+      jump < typical * 1.3 + 1e-4,
+      `release of the bend jumps ${jump} vs ${typical}`,
+    );
   }
 });
 
@@ -802,7 +977,8 @@ test("modal bank: exact decaying sinusoids, predictable level, usable as a filte
   const ratios = [1, 2.76, 5.4, 8.93, 13.34];
   const amps = [1, 0.6, 0.4, 0.25, 0.15];
   const t60s = [1.5, 1.1, 0.7, 0.4, 0.25];
-  for (let i = 0; i < 5; i++) bank.set(i, 300 * ratios[i], t60s[i], amps[i] * 0.2, SR);
+  for (let i = 0; i < 5; i++)
+    bank.set(i, 300 * ratios[i], t60s[i], amps[i] * 0.2, SR);
   bank.strike();
   const left = new Float32Array(SR);
   const right = new Float32Array(SR);
@@ -818,8 +994,21 @@ test("modal bank: exact decaying sinusoids, predictable level, usable as a filte
     5,
     0.4,
   );
-  near(dB(Math.sqrt(power / window)), dB(predicted), 0.15, "predicted RMS of a struck bank");
-  near(dB(probe(right, 300 * 2.76, SR, 0, 2048).amplitude / probe(left, 300 * 2.76, SR, 0, 2048).amplitude), 6.02, 0.1, "per-mode stereo gains");
+  near(
+    dB(Math.sqrt(power / window)),
+    dB(predicted),
+    0.15,
+    "predicted RMS of a struck bank",
+  );
+  near(
+    dB(
+      amplitudeAt(right, 300 * 2.76, SR, 0, 2048) /
+        amplitudeAt(left, 300 * 2.76, SR, 0, 2048),
+    ),
+    6.02,
+    0.1,
+    "per-mode stereo gains",
+  );
 
   // start phases: mode i begins at amp·sin(phase) and keeps its frequency and decay
   const phased = new ModalBank(2);
@@ -853,7 +1042,8 @@ test("modal bank: exact decaying sinusoids, predictable level, usable as a filte
   const withoutSkip = new Float32Array(SR);
   sleepy.render(withSkip, 0, SR);
   awake.render(withoutSkip, 0, SR);
-  for (let i = 0; i < SR; i += 13) near(withSkip[i], withoutSkip[i], 3e-6, "silent-mode skipping");
+  for (let i = 0; i < SR; i += 13)
+    near(withSkip[i], withoutSkip[i], 3e-6, "silent-mode skipping");
 
   // damping while ringing is continuous
   bank.scaleDecay(0.05);
@@ -874,7 +1064,12 @@ test("modal bank: exact decaying sinusoids, predictable level, usable as a filte
   }
   // an impulse rings each mode at its amplitude (seen through the decay at the window centre)
   const centre = Math.exp((-Math.log(1000) * 512) / (0.5 * SR));
-  near(probe(ring, 440, SR, 0, 1024).amplitude, 0.7 * centre, 0.01, "driven mode amplitude");
+  near(
+    amplitudeAt(ring, 440, SR, 0, 1024),
+    0.7 * centre,
+    0.01,
+    "driven mode amplitude",
+  );
   assert.ok(peak < 1);
 });
 
@@ -884,20 +1079,21 @@ test("FM operator produces Bessel sidebands", () => {
   const n = 48000;
   const out = new Float32Array(n);
   for (let i = 0; i < n; i++) out[i] = carrier.next(0);
-  near(probe(out, 1000, SR).amplitude, 1, 1e-3, "unmodulated carrier");
+  near(amplitudeAt(out, 1000, SR), 1, 1e-3, "unmodulated carrier");
   // index 2.4048 is the first zero of J0: the carrier vanishes, J1 = 0.5191
   carrier.reset();
   for (let i = 0; i < n; i++) out[i] = carrier.next(2.4048 * modulator.next());
-  assert.ok(probe(out, 1000, SR).amplitude < 0.005);
-  near(probe(out, 1200, SR).amplitude, 0.5191, 0.005, "first upper sideband");
-  near(probe(out, 800, SR).amplitude, 0.5191, 0.005, "first lower sideband");
-  near(probe(out, 1400, SR).amplitude, 0.4318, 0.005, "second sideband");
+  assert.ok(amplitudeAt(out, 1000, SR) < 0.005);
+  near(amplitudeAt(out, 1200, SR), 0.5191, 0.005, "first upper sideband");
+  near(amplitudeAt(out, 800, SR), 0.5191, 0.005, "first lower sideband");
+  near(amplitudeAt(out, 1400, SR), 0.4318, 0.005, "second sideband");
   const fb = new FmOperator(220, SR);
   fb.feedback = 1.2;
   let peak = 0;
-  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs((out[i] = fb.next())));
+  for (let i = 0; i < n; i++)
+    peak = Math.max(peak, Math.abs((out[i] = fb.next())));
   assert.ok(peak <= 1.0001);
-  assert.ok(probe(out, 440, SR).amplitude > 0.1, "feedback adds harmonics");
+  assert.ok(amplitudeAt(out, 440, SR) > 0.1, "feedback adds harmonics");
 });
 
 test("saturation curves and the 2x oversampler", () => {
@@ -925,10 +1121,15 @@ test("saturation curves and the 2x oversampler", () => {
       dry[i] = Math.sin((TAU * hz * i) / SR);
       out[i] = os.process(dry[i], (v) => v);
     }
-    const a = probe(out, hz, SR, 4800, 4800);
-    const b = probe(dry, hz, SR, 4800, 4800);
-    near(dB(a.amplitude / b.amplitude), 0, hz > 12000 ? 0.5 : 0.05, `oversampler passband ${hz}`);
-    let lag = ((b.phase - a.phase) * SR) / (TAU * hz);
+    const [wetAmplitude, wetPhase] = measureLine(out, hz, SR, 4800, 4800);
+    const [dryAmplitude, dryPhase] = measureLine(dry, hz, SR, 4800, 4800);
+    near(
+      dB(wetAmplitude / dryAmplitude),
+      0,
+      hz > 12000 ? 0.5 : 0.05,
+      `oversampler passband ${hz}`,
+    );
+    let lag = ((dryPhase - wetPhase) * SR) / (TAU * hz);
     const period = SR / hz;
     lag -= Math.round((lag - Oversampler2x.LATENCY) / period) * period;
     near(lag, Oversampler2x.LATENCY, 0.01, `oversampler latency at ${hz}`);
@@ -941,11 +1142,22 @@ test("saturation curves and the 2x oversampler", () => {
     plain[i] = oversampled[i] = 0.9 * Math.sin((TAU * 5000 * i) / SR);
   saturateBlock(plain, plain.length, 8);
   saturateBlock(oversampled, oversampled.length, 8, new Oversampler2x());
-  const aliasPlain = probe(plain, 3000, SR, 1024, 16384).amplitude;
-  const aliasOver = probe(oversampled, 3000, SR, 1024, 16384).amplitude;
+  const aliasPlain = amplitudeAt(plain, 3000, SR, 1024, 16384);
+  const aliasOver = amplitudeAt(oversampled, 3000, SR, 1024, 16384);
   assert.ok(aliasPlain > 0.02, `expected an alias at 3 kHz, got ${aliasPlain}`);
-  assert.ok(dB(aliasOver / aliasPlain) < -40, `2x reduces the 3 kHz alias by ${dB(aliasOver / aliasPlain).toFixed(1)} dB`);
-  near(dB(probe(oversampled, 5000, SR, 1024, 16384).amplitude / probe(plain, 5000, SR, 1024, 16384).amplitude), 0, 0.1, "fundamental unchanged");
+  assert.ok(
+    dB(aliasOver / aliasPlain) < -40,
+    `2x reduces the 3 kHz alias by ${dB(aliasOver / aliasPlain).toFixed(1)} dB`,
+  );
+  near(
+    dB(
+      amplitudeAt(oversampled, 5000, SR, 1024, 16384) /
+        amplitudeAt(plain, 5000, SR, 1024, 16384),
+    ),
+    0,
+    0.1,
+    "fundamental unchanged",
+  );
 });
 
 test("FFT, power spectrum and the scratch pool", () => {
@@ -962,7 +1174,8 @@ test("FFT, power spectrum and the scratch pool", () => {
   for (let i = 0; i < n; i++) spectral += re[i] * re[i] + im[i] * im[i];
   near(spectral / n, energy, 1e-8, "Parseval");
   fft(re, im, true);
-  for (let i = 0; i < n; i++) near(re[i] / n, original[i], 1e-12, "inverse FFT");
+  for (let i = 0; i < n; i++)
+    near(re[i] / n, original[i], 1e-12, "inverse FFT");
   re.fill(0);
   im.fill(0);
   for (let i = 0; i < n; i++) re[i] = Math.cos((TAU * 37 * i) / n);
@@ -971,7 +1184,9 @@ test("FFT, power spectrum and the scratch pool", () => {
   assert.ok(Math.hypot(re[36], im[36]) < 1e-8);
   assert.throws(() => fft(new Float64Array(12), new Float64Array(12)));
 
-  const sine = Float32Array.from({ length: 30000 }, (_, i) => Math.sin((TAU * 1234.5 * i) / SR));
+  const sine = Float32Array.from({ length: 30000 }, (_, i) =>
+    Math.sin((TAU * 1234.5 * i) / SR),
+  );
   const spectrum = powerSpectrum(sine, SR);
   let total = 0;
   for (const p of spectrum.power) total += p;
@@ -985,4 +1200,64 @@ test("FFT, power spectrum and the scratch pool", () => {
   assert.equal(second, first);
   assert.equal(second[10], 0);
   assert.ok(scratch(15, 5000).length >= 5000);
+});
+
+test("spectrum helpers: two measurements never share their numbers, also where V8 makes two object literals share theirs (LEFT-07)", async (t) => {
+  // what the tests rely on: numbers come back, and a second measurement leaves the first alone
+  const a = Float32Array.from(
+    { length: 4800 },
+    (_, i) => 0.9 * Math.cos((TAU * 440 * i) / SR + 0.2),
+  );
+  const b = Float32Array.from(
+    { length: 4800 },
+    (_, i) => 0.4 * Math.cos((TAU * 440 * i) / SR + 1.1),
+  );
+  const phaseA = phaseAt(a, 440, SR);
+  const amplitudeA = amplitudeAt(a, 440, SR);
+  const phaseB = phaseAt(b, 440, SR);
+  assert.equal(typeof phaseA, "number");
+  assert.equal(typeof amplitudeA, "number");
+  near(
+    phaseA,
+    0.2,
+    1e-6,
+    "phase of the first tone, read after the second was measured",
+  );
+  near(amplitudeA, 0.9, 1e-6, "amplitude of the first tone");
+  near(phaseB, 1.1, 1e-6, "phase of the second tone");
+  near(amplitudeAt(b, 440, SR), 0.4, 1e-6, "amplitude of the second tone");
+
+  // the runtime fault itself, without the timing it needs in the wild: tests/fixtures/literal-aliasing.check.ts
+  // drives the tiers of V8 by hand over a helper of the old shape ({ amplitude, phase }) and over measureLine
+  const { spawnSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const script = fileURLToPath(
+    new URL("./fixtures/literal-aliasing.check.ts", import.meta.url),
+  );
+  const run = spawnSync(
+    process.execPath,
+    ["--allow-natives-syntax", "--expose-gc", "--import", "tsx", script],
+    {
+      encoding: "utf8",
+      env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+    },
+  );
+  assert.equal(run.status, 0, `the check did not run: ${run.stderr}`);
+  const lines = run.stdout.trim().split("\n");
+  const report = JSON.parse(lines[lines.length - 1] || "{}") as {
+    v8: string;
+    literal: { first: number[]; second: number[]; correct: boolean };
+    helper: { first: number[]; second: number[]; correct: boolean };
+  };
+  // whatever the runtime does to object literals, the helper the tests use is right
+  assert.ok(
+    report.helper.correct,
+    `measureLine under on-stack replacement and deoptimisation: ${JSON.stringify(report.helper)}`,
+  );
+  // and this is how it went wrong (Node 24.18: the first result shows the numbers of the second)
+  t.diagnostic(
+    report.literal.correct
+      ? `V8 ${report.v8} keeps the numbers of two object literals apart`
+      : `V8 ${report.v8} shares the number boxes of two object literals after a deoptimisation: ${JSON.stringify(report.literal.first)} twice`,
+  );
 });

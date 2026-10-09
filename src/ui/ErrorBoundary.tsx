@@ -48,7 +48,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
         <div className="crash-card" role="alert">
           <h1>界面出了点问题</h1>
           <p>
-            你的作品库没有受影响。可以先导出当前的音频，再回到界面或重新加载；如果反复出现，请重新启动应用。
+            「我的作品」里的内容没有受影响。可以先导出当前的音频，再回到界面或重新加载。
           </p>
           <div className="crash-actions">
             {exportable && project && (

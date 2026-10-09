@@ -11,7 +11,7 @@
  *          the natural tail.
  */
 import type { MusicConfig } from "../types";
-import type { SectionType } from "./catalog";
+import { styleInfo, type SectionType } from "./catalog";
 import type { Section } from "./score";
 import type { StyleDef } from "./styles/types";
 import { clamp } from "./theory";
@@ -38,6 +38,21 @@ export interface Timing {
 const TEMPO_FIT_TOLERANCE = 0.06;
 /** From this tempo up a bar is so short that chords last two bars and phrases eight. */
 export const FAST_TEMPO = 152;
+/** How far a tempo has to move past FAST_TEMPO, away from the style's own side of it, to change sides. */
+const FAST_HYSTERESIS = 0.14;
+
+/**
+ * Whether a bar flies by at this tempo. The switch at FAST_TEMPO reshapes the
+ * whole piece (phrase length, harmonic rhythm), so it has a hysteresis band
+ * around it, and the side a style starts on is decided by the style's own
+ * tempo: a style that lives below FAST_TEMPO turns fast from 173 BPM, one
+ * that lives above it calms down below 131. Nudging the tempo by a tenth
+ * therefore never restructures a piece.
+ */
+export function isFastTempo(bpm: number, style: Pick<StyleDef, "id">): boolean {
+  const home = styleInfo(style.id).bpm >= FAST_TEMPO;
+  return bpm >= FAST_TEMPO * (home ? 1 - FAST_HYSTERESIS : 1 + FAST_HYSTERESIS);
+}
 
 export function planTiming(config: MusicConfig, style: StyleDef): Timing {
   const beatsPerBar = 4;
@@ -46,7 +61,10 @@ export function planTiming(config: MusicConfig, style: StyleDef): Timing {
     let fitted = (240 * bars) / config.duration;
     for (let candidate = 4; candidate <= 512; candidate += 4) {
       const bpm = (240 * candidate) / config.duration;
-      if (Math.abs(Math.log(bpm / config.bpm)) < Math.abs(Math.log(fitted / config.bpm))) {
+      if (
+        Math.abs(Math.log(bpm / config.bpm)) <
+        Math.abs(Math.log(fitted / config.bpm))
+      ) {
         bars = candidate;
         fitted = bpm;
       }
@@ -87,7 +105,10 @@ export function planTiming(config: MusicConfig, style: StyleDef): Timing {
   const endTime = duration - tail;
   // the final chord starts on a downbeat and is held for at least two beats
   const minimumHold = Math.max(beatSeconds * 2, 1.2);
-  const finalBar = Math.max(1, Math.floor((endTime - minimumHold) / barSeconds + 1e-9));
+  const finalBar = Math.max(
+    1,
+    Math.floor((endTime - minimumHold) / barSeconds + 1e-9),
+  );
   return {
     bpm,
     beatsPerBar,
@@ -145,6 +166,16 @@ const ENERGY_SHAPE: Record<SectionType, [number, number]> = {
   build: [0.85, 0.03],
   outro: [0.55, 0.02],
 };
+
+/** Energy of a section of this type in a piece of the given energy, before repeats and builds shape it. */
+export function sectionEnergy(
+  style: StyleDef,
+  type: SectionType,
+  energy: number,
+): number {
+  const [mul, add] = style.form.energy?.[type] ?? ENERGY_SHAPE[type];
+  return clamp(energy * mul + add, 0, 1);
+}
 
 type Block = { type: SectionType; bars: number; energy?: number };
 
@@ -252,9 +283,10 @@ function throughComposed(
   barSeconds: number,
   duration: number,
   style: StyleDef,
+  fast: boolean,
 ): Block[] {
-  const fast = 240 / barSeconds >= FAST_TEMPO;
-  const unitFor = (body: number) => (body >= 60 || (fast && body >= 16) ? 8 : 4);
+  const unitFor = (body: number) =>
+    body >= 60 || (fast && body >= 16) ? 8 : 4;
   if (playable <= 3)
     return playable > 1
       ? [
@@ -295,7 +327,8 @@ function throughComposed(
   else {
     const table = style.form.build ? BODY_BUILD : BODY;
     const template = table[Math.min(units, table.length - 1)];
-    const extraUnits = units - template.reduce((sum, [, count]) => sum + count, 0);
+    const extraUnits =
+      units - template.reduce((sum, [, count]) => sum + count, 0);
     template.forEach(([type, count], index) => {
       // anything beyond the largest template lengthens the last chorus
       const bonus = index === template.length - 1 ? extraUnits : 0;
@@ -313,12 +346,22 @@ function looped(bars: number, style: StyleDef, fast: boolean): Block[] {
   while (Math.floor(bars / unit) > 12) unit *= 2;
   const units = Math.floor(bars / unit);
   const pattern = (
-    style.form.build ? LOOP_BUILD : style.form.loop === "AABA" ? LOOP_AABA : LOOP_AB
+    style.form.build
+      ? LOOP_BUILD
+      : style.form.loop === "AABA"
+        ? LOOP_AABA
+        : LOOP_AB
   )[units];
   const blocks: Block[] = [];
   for (const letter of pattern) {
     const type: SectionType =
-      letter === "A" ? "verse" : letter === "B" ? "chorus" : letter === "U" ? "build" : "breakdown";
+      letter === "A"
+        ? "verse"
+        : letter === "B"
+          ? "chorus"
+          : letter === "U"
+            ? "build"
+            : "breakdown";
     const last = blocks[blocks.length - 1];
     if (last && last.type === type) last.bars += unit;
     else blocks.push({ type, bars: unit });
@@ -336,7 +379,13 @@ const isBody = (type: SectionType) =>
 /** Fewest bars a section can have and still be heard as a section of its own. */
 function shortest(item: Hint, total: number): number {
   const floor =
-    total >= 16 ? (isBody(item.type) ? 4 : 2) : total >= 6 && isBody(item.type) ? 2 : 1;
+    total >= 16
+      ? isBody(item.type)
+        ? 4
+        : 2
+      : total >= 6 && isBody(item.type)
+        ? 2
+        : 1;
   return Math.min(item.bars, floor);
 }
 
@@ -356,7 +405,9 @@ function shareBars(wants: number[], least: number[], total: number): number[] {
     const need = least.map((bars) => Math.max(1, Math.ceil(bars / unit)));
     if (sum(need) > units) continue;
     const ideal = wants.map((want) => (want * total) / wanted / unit);
-    const got = ideal.map((value, index) => Math.max(need[index], Math.floor(value)));
+    const got = ideal.map((value, index) =>
+      Math.max(need[index], Math.floor(value)),
+    );
     let used = sum(got);
     while (used < units) {
       let pick = 0;
@@ -398,12 +449,16 @@ function shareBars(wants: number[], least: number[], total: number): number[] {
 
 /** The section a form that does not fit can lose first. */
 function mostDispensable(cell: readonly Hint[]): number {
-  const lastOf = (type: SectionType) => cell.map((item) => item.type).lastIndexOf(type);
+  const lastOf = (type: SectionType) =>
+    cell.map((item) => item.type).lastIndexOf(type);
   for (const type of ["breakdown", "bridge", "build"] as const)
     if (lastOf(type) >= 0) return lastOf(type);
   // a later statement of a section that has been heard already
   for (let i = cell.length - 1; i > 0; i--)
-    if (isBody(cell[i].type) && cell.findIndex((item) => item.type === cell[i].type) < i)
+    if (
+      isBody(cell[i].type) &&
+      cell.findIndex((item) => item.type === cell[i].type) < i
+    )
       return i;
   for (const type of ["intro", "outro"] as const)
     if (lastOf(type) >= 0 && cell.length > 1) return lastOf(type);
@@ -439,7 +494,11 @@ export function fitForm(
 ): FormFit {
   const requested = sum(hinted.map((item) => item.bars));
   const asWritten = (cell: readonly Hint[], bars: number[]): Block[] =>
-    cell.map((item, index) => ({ type: item.type, bars: bars[index], energy: item.energy }));
+    cell.map((item, index) => ({
+      type: item.type,
+      bars: bars[index],
+      energy: item.energy,
+    }));
   if (requested === total)
     return {
       blocks: asWritten(
@@ -450,7 +509,11 @@ export function fitForm(
   const last = hinted[hinted.length - 1];
   // written for the whole length of a piece that ends: the final chord and
   // its tail come out of the last section, which owns them anyway
-  if (requested > total && requested <= shown && last.bars > requested - total) {
+  if (
+    requested > total &&
+    requested <= shown &&
+    last.bars > requested - total
+  ) {
     const bars = hinted.map((item) => item.bars);
     bars[bars.length - 1] -= requested - total;
     return { blocks: asWritten(hinted, bars) };
@@ -459,7 +522,10 @@ export function fitForm(
   if (requested > total) {
     const cell = hinted.map((item) => ({ ...item }));
     const dropped: SectionType[] = [];
-    while (cell.length > 1 && sum(cell.map((item) => shortest(item, total))) > total) {
+    while (
+      cell.length > 1 &&
+      sum(cell.map((item) => shortest(item, total))) > total
+    ) {
       const index = mostDispensable(cell);
       dropped.push(cell[index].type);
       cell.splice(index, 1);
@@ -486,8 +552,13 @@ export function fitForm(
           .map((type) => SECTION_LABELS[type]),
       ),
     ];
-    const repeats = dropped.some((type) => cell.some((item) => item.type === type));
-    const left = [...(gone.length ? [gone.join("、")] : []), ...(repeats ? ["部分反复"] : [])];
+    const repeats = dropped.some((type) =>
+      cell.some((item) => item.type === type),
+    );
+    const left = [
+      ...(gone.length ? [gone.join("、")] : []),
+      ...(repeats ? ["部分反复"] : []),
+    ];
     return {
       blocks: asWritten(cell, bars),
       note: `提示的曲式共 ${requested} 小节，这里只有 ${shown} 小节，已${
@@ -523,22 +594,31 @@ export function fitForm(
     for (const item of hinted)
       if (!energyOf.has(item.type)) energyOf.set(item.type, item.energy);
     return {
-      blocks: fallback().map((block) => ({ ...block, energy: energyOf.get(block.type) })),
+      blocks: fallback().map((block) => ({
+        ...block,
+        energy: energyOf.get(block.type),
+      })),
       note: `提示的曲式只有 ${requested} 小节的${
         SECTION_LABELS[body[0].type]
       }，撑不满全曲，已按本风格的常规曲式展开`,
     };
   }
-  const edges = sum(head.map((item) => item.bars)) + sum(tail.map((item) => item.bars));
+  const edges =
+    sum(head.map((item) => item.bars)) + sum(tail.map((item) => item.bars));
   const bodyBars = sum(body.map((item) => item.bars));
   const phrase = fast ? 8 : 4;
   const smallest = Math.min(...body.map((item) => item.bars));
   let grow = 1;
-  while (smallest * grow < phrase && edges + bodyBars * grow * 2 <= total) grow *= 2;
-  const repeatsAt = () => Math.max(1, Math.floor((total - edges) / (bodyBars * grow)));
+  while (smallest * grow < phrase && edges + bodyBars * grow * 2 <= total)
+    grow *= 2;
+  const repeatsAt = () =>
+    Math.max(1, Math.floor((total - edges) / (bodyBars * grow)));
   let repeats = repeatsAt();
   // more than sixteen sections is a list, not a form: longer phrases instead
-  while (repeats > 1 && head.length + tail.length + body.length * repeats > 16) {
+  while (
+    repeats > 1 &&
+    head.length + tail.length + body.length * repeats > 16
+  ) {
     grow *= 2;
     repeats = repeatsAt();
   }
@@ -589,11 +669,17 @@ export function planFormWithNote(
 ): FormPlan {
   const playable = timing.loop ? timing.bars : timing.finalBar;
   const hinted = config.arrangement?.form;
-  const fast = timing.bpm >= FAST_TEMPO;
+  const fast = isFastTempo(timing.bpm, style);
   const styleForm = (): Block[] =>
     timing.loop
       ? looped(playable, style, fast)
-      : throughComposed(playable, timing.barSeconds, timing.duration, style);
+      : throughComposed(
+          playable,
+          timing.barSeconds,
+          timing.duration,
+          style,
+          fast,
+        );
   let blocks: Block[];
   let note: string | undefined;
   if (hinted && hinted.length) {
@@ -616,11 +702,15 @@ export function planFormWithNote(
     seen.set(block.type, occurrence + 1);
     const ending = !timing.loop && index === blocks.length - 1;
     const bars = ending ? timing.bars - startBar : block.bars;
-    const [mul, add] = style.form.energy?.[block.type] ?? ENERGY_SHAPE[block.type];
+    const [mul, add] =
+      style.form.energy?.[block.type] ?? ENERGY_SHAPE[block.type];
     const lift =
-      occurrence > 0 && (block.type === "chorus" || block.type === "verse") ? 0.04 : 0;
+      occurrence > 0 && (block.type === "chorus" || block.type === "verse")
+        ? 0.04
+        : 0;
     const energy =
-      block.energy ?? clamp(config.energy * mul + add + lift * config.energy, 0, 1);
+      block.energy ??
+      clamp(config.energy * mul + add + lift * config.energy, 0, 1);
     const label =
       (timing.loop && !hinted ? LOOP_LABELS[block.type] : undefined) ??
       SECTION_LABELS[block.type];
@@ -649,8 +739,12 @@ export function planFormWithNote(
     if (section.type !== "build") continue;
     const before = sections[section.index - 1];
     const after = section.next >= 0 ? sections[section.next] : undefined;
-    section.energyFrom = before ? Math.min(section.energy, before.energy + 0.05) : section.energy * 0.7;
-    section.energyTo = after ? Math.max(section.energy, after.energy * 0.95) : section.energy;
+    section.energyFrom = before
+      ? Math.min(section.energy, before.energy + 0.05)
+      : section.energy * 0.7;
+    section.energyTo = after
+      ? Math.max(section.energy, after.energy * 0.95)
+      : section.energy;
     section.energy = (section.energyFrom + section.energyTo) / 2;
   }
   return { sections, note };
@@ -660,7 +754,9 @@ export function planFormWithNote(
 export function describeForm(sections: readonly Section[]): string {
   return sections
     .map((section, index) =>
-      index === 0 ? `${section.label} ${section.bars} 小节` : `${section.label} ${section.bars}`,
+      index === 0
+        ? `${section.label} ${section.bars} 小节`
+        : `${section.label} ${section.bars}`,
     )
     .join(" → ");
 }
@@ -669,6 +765,12 @@ export function describeForm(sections: readonly Section[]): string {
 export function energyAtBar(section: SectionPlan, bar: number): number {
   if (section.energyFrom === section.energyTo || section.playBars <= 1)
     return section.energyTo;
-  const progress = clamp((bar - section.startBar) / (section.playBars - 1), 0, 1);
-  return section.energyFrom + (section.energyTo - section.energyFrom) * progress;
+  const progress = clamp(
+    (bar - section.startBar) / (section.playBars - 1),
+    0,
+    1,
+  );
+  return (
+    section.energyFrom + (section.energyTo - section.energyFrom) * progress
+  );
 }

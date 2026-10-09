@@ -6,6 +6,8 @@
 import { memo, useRef, useState } from "react";
 import {
   ArrowUp,
+  CircleDollarSign,
+  History,
   LoaderCircle,
   MessageSquareText,
   SlidersHorizontal,
@@ -15,20 +17,21 @@ import {
 import type { AgentTurn } from "../../agent/types";
 import { LIMITS } from "../../music/catalog";
 import type { Platform } from "../../platform";
-import { REFINE_PLACEHOLDER } from "../../state/content";
+import { REFINE_PLACEHOLDER, THREAD_EXAMPLES } from "../../state/content";
 import type {
   AppActions,
   BrainOption,
   EngineOption,
   Job,
+  PaidNotice,
   TurnNote,
 } from "../../state/types";
-import { findVersion } from "../../state/works";
+import { versionOfTurn } from "../../state/works";
 import type { BrainKind } from "../../agent/types";
 import type { Project, Provider } from "../../types";
 import { useAutosize } from "../hooks/useAutosize";
 import { useRenderCount } from "../hooks/useRenderCount";
-import { LinkButton, classes } from "../primitives/Button";
+import { Button, LinkButton, classes } from "../primitives/Button";
 import { Badge, Chip, Progress } from "../primitives/Controls";
 import { BrainSelect, DesktopLink, EngineSelect } from "./ComposerOptions";
 
@@ -47,7 +50,10 @@ function brainName(turn: AgentTurn, note: TurnNote | undefined): string {
   return turn.brain === "llm" ? (note?.model ?? "大模型") : "离线规则";
 }
 
-const AgentMark = memo(function AgentMark(props: { busy?: boolean; error?: boolean }) {
+const AgentMark = memo(function AgentMark(props: {
+  busy?: boolean;
+  error?: boolean;
+}) {
   return (
     <span
       className={classes("turn-mark", props.error && "turn-mark-error")}
@@ -122,7 +128,7 @@ const Turn = memo(function Turn(props: {
                 data-testid="turn-version"
                 disabled={!version || busy}
                 data-tip={
-                  version ? "打开这个版本" : "这个版本已不在作品库中"
+                  version ? "打开这个版本" : "这个版本已经不在「我的作品」里"
                 }
                 onClick={() => version && void actions.openProject(version.id)}
               >
@@ -140,8 +146,12 @@ const Turn = memo(function Turn(props: {
 
 export interface ProducerThreadProps {
   project: Project;
-  /** newest first; used to resolve version tags */
-  projects: readonly Project[];
+  /** every version of this piece, newest first; resolves the version tags */
+  versions: readonly Project[];
+  /** the newest version of this piece (the loaded work when it is the newest) */
+  latest: Project;
+  /** the next generation is a paid request: said next to the send button */
+  paid: PaidNotice | null;
   thread: readonly AgentTurn[];
   pendingTurn: AgentTurn | null;
   turnNotes: Record<string, TurnNote>;
@@ -178,8 +188,17 @@ export const ProducerThread = memo(function ProducerThread(
   props: ProducerThreadProps,
 ) {
   useRenderCount("ProducerThread");
-  const { project, projects, thread, pendingTurn, job, turnNotes, actions } =
-    props;
+  const {
+    project,
+    versions,
+    latest,
+    thread,
+    pendingTurn,
+    job,
+    turnNotes,
+    actions,
+  } = props;
+  const { paid } = props;
   const busy = job !== null;
   const [showAll, setShowAll] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -206,6 +225,26 @@ export const ProducerThread = memo(function ProducerThread(
         </span>
       </div>
 
+      {latest.id !== project.id && (
+        // An earlier version is loaded: the conversation below goes on past
+        // it, and this is the way back.
+        <p className="notice thread-version" data-testid="thread-version-note">
+          <History size={15} aria-hidden />
+          <span className="grow">
+            正在听 v{project.revision}。这段对话之后还有更新的版本，最新的是 v
+            {latest.revision}；现在发送的修改会从 v{project.revision} 出发。
+          </span>
+          <Button
+            size="sm"
+            data-testid="thread-latest"
+            disabled={busy}
+            onClick={() => void actions.openProject(latest.id)}
+          >
+            回到最新版本
+          </Button>
+        </p>
+      )}
+
       {hidden > 0 && (
         <LinkButton
           className="thread-more"
@@ -219,14 +258,12 @@ export const ProducerThread = memo(function ProducerThread(
       <ol className="thread" data-testid="thread" aria-label="对话记录">
         {thread.length === 0 && !pendingTurn && (
           <li className="thread-empty">
-            这首作品还没有对话。告诉制作人想怎么改，比如「慢一点」「换成古筝」。
+            这首作品还没有对话。告诉制作人想怎么改，比如
+            {THREAD_EXAMPLES.map((text) => `「${text}」`).join("")}。
           </li>
         )}
         {visible.map((turn) => {
-          const version =
-            turn.revision !== undefined
-              ? findVersion(project, projects, turn.revision)
-              : undefined;
+          const version = versionOfTurn(turn, versions, project);
           return (
             <Turn
               key={turn.id}
@@ -267,6 +304,15 @@ export const ProducerThread = memo(function ProducerThread(
       </ol>
 
       <div className="refine">
+        {paid && (
+          <p
+            className="notice notice-warn paid-notice"
+            data-testid="paid-notice"
+          >
+            <CircleDollarSign size={15} aria-hidden />
+            <span>{paid.text}</span>
+          </p>
+        )}
         {props.suggestions.length > 0 && (
           <div className="refine-chips" role="group" aria-label="常用调整">
             {props.suggestions.map((text) => (
@@ -274,7 +320,10 @@ export const ProducerThread = memo(function ProducerThread(
                 key={text}
                 data-testid="suggestion-chip"
                 disabled={busy}
-                onClick={() => void actions.send(text)}
+                // With a cloud engine a chip only fills the input: one click
+                // is never a paid request.
+                data-tip={paid ? "填入输入框，不会直接发送" : undefined}
+                onClick={() => void actions.pickSuggestion(text)}
               >
                 {text}
               </Chip>
@@ -338,10 +387,9 @@ export const ProducerThread = memo(function ProducerThread(
             disabled={busy}
             actions={actions}
           />
-          {desktopOnly ? (
+          <span className="refine-hint">Enter 发送 · Shift+Enter 换行</span>
+          {desktopOnly && (
             <DesktopLink href={props.platform.downloadUrl} short />
-          ) : (
-            <span className="refine-hint">Enter 发送 · Shift+Enter 换行</span>
           )}
         </div>
       </div>

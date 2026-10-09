@@ -156,9 +156,7 @@ export class TiltShelf {
 
   /** Corner in Hz and linear gain of the top. */
   set(hz: number, gain: number, sampleRate: number): void {
-    this.g = Math.tan(
-      (Math.PI * clamp(hz, 1, sampleRate * 0.49)) / sampleRate,
-    );
+    this.g = Math.tan((Math.PI * clamp(hz, 1, sampleRate * 0.49)) / sampleRate);
     this.k = this.g / (1 + this.g);
     this.lift = gain - 1;
   }

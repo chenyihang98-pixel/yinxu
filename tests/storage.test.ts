@@ -87,7 +87,10 @@ function modernProject(): Project {
       }),
       turn(2, { role: "agent", error: true, brain: "rules" }),
     ],
-    cloud: { prompt: "Chinese guofeng, guzheng, instrumental", model: "music-v1" },
+    cloud: {
+      prompt: "Chinese guofeng, guzheng, instrumental",
+      model: "music-v1",
+    },
     config: {
       prompt: "江南烟雨，古筝与笛子",
       mood: "guofeng",
@@ -149,7 +152,10 @@ test("v2 round-trip keeps recipe, arrangement, chat, cloud info and parent", () 
 
   // A new work: importing can never overwrite the one it came from.
   assert.notEqual(imported.id, original.id);
-  assert.match(imported.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.match(
+    imported.id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
   assert.notEqual(importProject(json).id, imported.id);
   assert.notEqual(imported.createdAt, original.createdAt);
   assert.equal(imported.createdAt, imported.updatedAt);
@@ -180,11 +186,19 @@ test("a v0.2 file (schemaVersion 1) imports as an engine-1 work with its recipe 
 });
 
 test("a UTF-8 byte order mark in front of the JSON is tolerated", () => {
-  assert.equal(importProject(`\ufeff${asJson(legacyRecord())}`).title, "青春晴空");
+  assert.equal(
+    importProject(`\ufeff${asJson(legacyRecord())}`).title,
+    "青春晴空",
+  );
 });
 
 test("cloud works export without audio and cannot be imported on their own", () => {
-  for (const provider of ["elevenlabs", "tencent", "volcengine", "aliyun"] as const) {
+  for (const provider of [
+    "elevenlabs",
+    "tencent",
+    "volcengine",
+    "aliyun",
+  ] as const) {
     const project: Project = {
       ...modernProject(),
       provider,
@@ -245,7 +259,10 @@ test("the largest project the validator allows still fits an importable file", (
   const wide = "\ud83c\udfb5"; // 4 UTF-8 bytes per 2 UTF-16 units
   project.config.prompt = "青".repeat(2000);
   project.cloud = { prompt: "青".repeat(2000), model: "m".repeat(128) };
-  project.tags = Array.from({ length: 12 }, (_, i) => `${i}`.padStart(2, "0") + "青".repeat(30));
+  project.tags = Array.from(
+    { length: 12 },
+    (_, i) => `${i}`.padStart(2, "0") + "青".repeat(30),
+  );
   project.chat = Array.from({ length: 40 }, (_, i) =>
     turn(i, {
       text: wide.repeat(750),
@@ -304,14 +321,19 @@ test("engine 1 rejects values only engine 2 can play", () => {
       /工程文件格式不正确/,
     );
     // the very same value is fine once the record says engine 2
-    assert.doesNotThrow(() => normalizeProject(withConfig({ ...patch, engine: 2 })));
+    assert.doesNotThrow(() =>
+      normalizeProject(withConfig({ ...patch, engine: 2 })),
+    );
   }
 });
 
 test("engine 2 accepts the whole catalog", () => {
   const base = modernProject() as unknown as Loose;
   for (const mood of STYLE_IDS)
-    assert.equal(normalizeProject(withConfig({ mood }, base)).config.mood, mood);
+    assert.equal(
+      normalizeProject(withConfig({ mood }, base)).config.mood,
+      mood,
+    );
   for (const instrument of INSTRUMENT_IDS)
     assert.equal(
       normalizeProject(withConfig({ instrument }, base)).config.instrument,
@@ -324,10 +346,22 @@ test("engine 2 accepts the whole catalog", () => {
 test("tempo range follows the engine: 60-160 for engine 1, 50-200 for engine 2", () => {
   assert.equal(normalizeProject(withConfig({ bpm: 999 })).config.bpm, 160);
   assert.equal(normalizeProject(withConfig({ bpm: 10 })).config.bpm, 60);
-  assert.equal(normalizeProject(withConfig({ bpm: 999, engine: 2 })).config.bpm, 200);
-  assert.equal(normalizeProject(withConfig({ bpm: 10, engine: 2 })).config.bpm, 50);
-  assert.equal(normalizeProject(withConfig({ bpm: 180, engine: 2 })).config.bpm, 180);
-  assert.equal(normalizeProject(withConfig({ bpm: 111.6, engine: 2 })).config.bpm, 112);
+  assert.equal(
+    normalizeProject(withConfig({ bpm: 999, engine: 2 })).config.bpm,
+    200,
+  );
+  assert.equal(
+    normalizeProject(withConfig({ bpm: 10, engine: 2 })).config.bpm,
+    50,
+  );
+  assert.equal(
+    normalizeProject(withConfig({ bpm: 180, engine: 2 })).config.bpm,
+    180,
+  );
+  assert.equal(
+    normalizeProject(withConfig({ bpm: 111.6, engine: 2 })).config.bpm,
+    112,
+  );
 });
 
 test("values this build has never heard of are reported as a newer version, not coerced", () => {
@@ -353,30 +387,32 @@ test("values this build has never heard of are reported as a newer version, not 
   assert.equal(NEWER_VERSION_REASON, "由更新版本的音序创建，请升级后打开");
   // a newer build is recognised even when other details are also unfamiliar
   assert.throws(
-    () => normalizeProject({ ...withConfig({ mood: "lofi", bpm: "fast" }), title: 7 }),
+    () =>
+      normalizeProject({
+        ...withConfig({ mood: "lofi", bpm: "fast" }),
+        title: 7,
+      }),
     (error: Error) => error.message === NEWER_VERSION_REASON,
   );
 });
 
 test("arrangement hints pass through cleanArrangement and only exist for engine 2", () => {
-  const messy = withConfig(
-    {
-      engine: 2,
-      arrangement: {
-        progression: ["I", "not-a-chord", "V", 7, "vi"],
-        form: [
-          { type: "verse", bars: 400, energy: 9 },
-          { type: "nonsense", bars: 4, energy: 0.5 },
-        ],
-        drums: "auto",
-        bass: "walking",
-        swing: 5,
-        layers: { pad: "yes", perc: true },
-        melody: { density: 2, register: "sky", motion: "leaps" },
-        secret: "dropped",
-      },
+  const messy = withConfig({
+    engine: 2,
+    arrangement: {
+      progression: ["I", "not-a-chord", "V", 7, "vi"],
+      form: [
+        { type: "verse", bars: 400, energy: 9 },
+        { type: "nonsense", bars: 4, energy: 0.5 },
+      ],
+      drums: "auto",
+      bass: "walking",
+      swing: 5,
+      layers: { pad: "yes", perc: true },
+      melody: { density: 2, register: "sky", motion: "leaps" },
+      secret: "dropped",
     },
-  );
+  });
   assert.deepEqual(normalizeProject(messy).config.arrangement, {
     progression: ["I", "V", "vi"],
     form: [{ type: "verse", bars: 32, energy: 1 }],
@@ -386,10 +422,14 @@ test("arrangement hints pass through cleanArrangement and only exist for engine 
     melody: { density: 1, motion: "leaps" },
   });
   // nothing usable left: the field disappears instead of staying as {}
-  const empty = normalizeProject(withConfig({ engine: 2, arrangement: { drums: "auto" } }));
+  const empty = normalizeProject(
+    withConfig({ engine: 2, arrangement: { drums: "auto" } }),
+  );
   assert.equal("arrangement" in empty.config, false);
   // the frozen engine has no arrangement hints
-  const legacy = normalizeProject(withConfig({ arrangement: { bass: "walking" } }));
+  const legacy = normalizeProject(
+    withConfig({ arrangement: { bass: "walking" } }),
+  );
   assert.equal("arrangement" in legacy.config, false);
   // validating twice changes nothing (a saved work re-opens identically)
   const once = normalizeProject(modernProject());
@@ -415,12 +455,32 @@ test("finite numbers are clamped into the supported range", () => {
   assert.equal(config.complexity, 0);
   assert.equal(config.reverb, 1);
   assert.equal(config.seed, 0xffffffff);
-  assert.deepEqual(config.volumes, { melody: 1, chords: 0.5, bass: 0.25, drums: 0 });
-  assert.equal(normalizeProject(withConfig({ duration: 500, engine: 2 })).config.duration, 120);
-  assert.equal(normalizeProject({ ...legacyRecord(), revision: 0 }).revision, 1);
-  assert.equal(normalizeProject({ ...legacyRecord(), revision: 2.6 }).revision, 3);
-  assert.equal(normalizeProject({ ...legacyRecord(), audioDuration: 99999 }).audioDuration, 3600);
-  assert.equal(normalizeProject({ ...legacyRecord(), audioDuration: 0 }).audioDuration, 0.01);
+  assert.deepEqual(config.volumes, {
+    melody: 1,
+    chords: 0.5,
+    bass: 0.25,
+    drums: 0,
+  });
+  assert.equal(
+    normalizeProject(withConfig({ duration: 500, engine: 2 })).config.duration,
+    120,
+  );
+  assert.equal(
+    normalizeProject({ ...legacyRecord(), revision: 0 }).revision,
+    1,
+  );
+  assert.equal(
+    normalizeProject({ ...legacyRecord(), revision: 2.6 }).revision,
+    3,
+  );
+  assert.equal(
+    normalizeProject({ ...legacyRecord(), audioDuration: 99999 }).audioDuration,
+    3600,
+  );
+  assert.equal(
+    normalizeProject({ ...legacyRecord(), audioDuration: 0 }).audioDuration,
+    0.01,
+  );
 });
 
 test("wrong types and absent values are rejected, never guessed", () => {
@@ -520,13 +580,33 @@ test("a value that is no work at all is called that, not blamed for its first fi
   assert.equal(NOT_A_PROJECT_REASON, "不是音序的工程数据");
   // a work with a wrong detail still gets the detail
   // an engine this build does not know is a newer build's work, not a stray value
-  assert.throws(() => normalizeProject({ ...legacyRecord(), provider: "suno" }), new RegExp(NEWER_VERSION_REASON));
-  assert.throws(() => normalizeProject({ ...legacyRecord(), title: 5 }), /工程文件格式不正确：作品名称必须是文字/);
-  assert.throws(() => normalizeProject({ ...legacyRecord(), config: {} }), /工程文件格式不正确/);
+  assert.throws(
+    () => normalizeProject({ ...legacyRecord(), provider: "suno" }),
+    new RegExp(NEWER_VERSION_REASON),
+  );
+  assert.throws(
+    () => normalizeProject({ ...legacyRecord(), title: 5 }),
+    /工程文件格式不正确：作品名称必须是文字/,
+  );
+  assert.throws(
+    () => normalizeProject({ ...legacyRecord(), config: {} }),
+    /工程文件格式不正确/,
+  );
   // exporting and importing say the same in their own words
-  assert.throws(() => exportProject({ title: "x" } as unknown as Project), new RegExp(NOT_A_PROJECT_REASON));
-  for (const text of ['{"schemaVersion":2}', '{"schemaVersion":1,"title":"笔记","items":[1,2]}', '{"schemaVersion":2,"config":{"bpm":120}}'])
-    assert.throws(() => importProject(text), /这个文件不是音序的工程数据，请选择由音序导出的工程 JSON 文件。/, text);
+  assert.throws(
+    () => exportProject({ title: "x" } as unknown as Project),
+    new RegExp(NOT_A_PROJECT_REASON),
+  );
+  for (const text of [
+    '{"schemaVersion":2}',
+    '{"schemaVersion":1,"title":"笔记","items":[1,2]}',
+    '{"schemaVersion":2,"config":{"bpm":120}}',
+  ])
+    assert.throws(
+      () => importProject(text),
+      /这个文件不是音序的工程数据，请选择由音序导出的工程 JSON 文件。/,
+      text,
+    );
 });
 
 test("non-finite numbers fail before export can turn them into null", () => {
@@ -559,10 +639,18 @@ test("unknown properties are dropped and cannot alter prototypes", () => {
   assert.equal("polluted" in {}, false);
   assert.equal("extra" in imported, false);
   assert.equal("extra" in imported.config, false);
-  assert.deepEqual(Object.keys(imported.config.volumes), ["melody", "chords", "bass", "drums"]);
+  assert.deepEqual(Object.keys(imported.config.volumes), [
+    "melody",
+    "chords",
+    "bass",
+    "drums",
+  ]);
   assert.deepEqual(Object.keys(imported.cloud ?? {}), ["prompt", "model"]);
   assert.equal("html" in (imported.chat?.[0] ?? {}), false);
-  assert.equal(JSON.stringify(imported).includes("sk-should-never-be-kept"), false);
+  assert.equal(
+    JSON.stringify(imported).includes("sk-should-never-be-kept"),
+    false,
+  );
   assert.deepEqual(Object.keys(imported), [
     "id",
     "title",
@@ -599,7 +687,10 @@ test("title and tags are cleaned and bounded", () => {
   assert.equal(project.tags[1], "空格");
   assert.equal(project.tags[2].length, 32);
   // clipping never leaves half of an emoji behind
-  const emoji = normalizeProject({ ...legacyRecord(), title: "a" + "\ud83c\udfb5".repeat(60) });
+  const emoji = normalizeProject({
+    ...legacyRecord(),
+    title: "a" + "\ud83c\udfb5".repeat(60),
+  });
   assert.equal(emoji.title.length, 79);
   assert.equal(/[\ud800-\udbff]$/.test(emoji.title), false);
 });
@@ -627,7 +718,11 @@ test("chat is limited to the 40 most recent turns with bounded text and reasonin
   const chat = Array.from({ length: 45 }, (_, index) => turn(index));
   chat[44] = turn(44, {
     text: "长".repeat(4000),
-    reasoning: [...Array.from({ length: 12 }, (_, i) => `${i}`.repeat(400)), "", "  "],
+    reasoning: [
+      ...Array.from({ length: 12 }, (_, i) => `${i}`.repeat(400)),
+      "",
+      "  ",
+    ],
     brain: "rules",
     revision: 7.2,
     error: false,
@@ -644,9 +739,17 @@ test("chat is limited to the 40 most recent turns with bounded text and reasonin
   assert.equal(last?.revision, 7);
   assert.equal(last?.error, false);
   // optional fields stay absent rather than becoming undefined-valued keys
-  assert.deepEqual(Object.keys(project.chat?.[0] ?? {}), ["id", "role", "text", "at"]);
+  assert.deepEqual(Object.keys(project.chat?.[0] ?? {}), [
+    "id",
+    "role",
+    "text",
+    "at",
+  ]);
   // an empty thread is simply not stored
-  assert.equal("chat" in normalizeProject({ ...legacyRecord(), chat: [] }), false);
+  assert.equal(
+    "chat" in normalizeProject({ ...legacyRecord(), chat: [] }),
+    false,
+  );
 
   for (const [field, value] of [
     ["id", ""],
@@ -660,7 +763,11 @@ test("chat is limited to the 40 most recent turns with bounded text and reasonin
     ["brain", 2],
   ] as [string, unknown][])
     assert.throws(
-      () => normalizeProject({ ...legacyRecord(), chat: [{ ...turn(1), [field]: value }] }),
+      () =>
+        normalizeProject({
+          ...legacyRecord(),
+          chat: [{ ...turn(1), [field]: value }],
+        }),
       /工程文件格式不正确/,
       `${field}=${JSON.stringify(value)}`,
     );
@@ -674,7 +781,8 @@ test("cloud info is bounded and an empty model is omitted", () => {
   assert.equal(project.cloud?.prompt.length, 2000);
   assert.equal(project.cloud?.model?.length, 128);
   assert.deepEqual(
-    normalizeProject({ ...legacyRecord(), cloud: { prompt: "x", model: "  " } }).cloud,
+    normalizeProject({ ...legacyRecord(), cloud: { prompt: "x", model: "  " } })
+      .cloud,
     { prompt: "x" },
   );
 });
@@ -682,7 +790,10 @@ test("cloud info is bounded and an empty model is omitted", () => {
 /* ---------------- without IndexedDB ---------------- */
 
 test("cloud saves reject absent or empty audio before claiming success", async () => {
-  const cloud = { ...(modernProject() as unknown as Loose), provider: "elevenlabs" };
+  const cloud = {
+    ...(modernProject() as unknown as Loose),
+    provider: "elevenlabs",
+  };
   await assert.rejects(saveProject(cloud as unknown as Project), /缺少音频/);
   await assert.rejects(
     saveProject({ ...cloud, audioBlob: new Blob([]) } as unknown as Project),
@@ -692,10 +803,16 @@ test("cloud saves reject absent or empty audio before claiming success", async (
 
 test("an environment without IndexedDB clearly rejects every library operation", async () => {
   assert.equal(typeof indexedDB, "undefined");
-  await assert.rejects(listProjects(), /不支持本地作品库，请使用桌面版或较新的浏览器。$/);
-  await assert.rejects(saveProject(modernProject()), /不支持本地作品库.*本次作品尚未保存/);
-  await assert.rejects(deleteProject("original-id"), /不支持本地作品库/);
-  await assert.rejects(readRawRecord("original-id"), /不支持本地作品库/);
+  await assert.rejects(
+    listProjects(),
+    /不支持「我的作品」，请使用桌面版或较新的浏览器。$/,
+  );
+  await assert.rejects(
+    saveProject(modernProject()),
+    /不支持「我的作品」.*本次作品尚未保存/,
+  );
+  await assert.rejects(deleteProject("original-id"), /不支持「我的作品」/);
+  await assert.rejects(readRawRecord("original-id"), /不支持「我的作品」/);
   await assert.rejects(deleteProject(""), /工程编号无效/);
 });
 
@@ -707,7 +824,7 @@ test("a storage API that throws on access is reported, not crashed on", async ()
     },
   });
   try {
-    await assert.rejects(listProjects(), /不允许使用本地作品库/);
+    await assert.rejects(listProjects(), /不允许使用「我的作品」/);
   } finally {
     delete (globalThis as Loose).indexedDB;
   }
@@ -720,9 +837,12 @@ test("a storage API that throws on access is reported, not crashed on", async ()
     },
   });
   try {
-    await assert.rejects(saveProject(modernProject()), /不允许使用本地作品库.*本次作品尚未保存/);
+    await assert.rejects(
+      saveProject(modernProject()),
+      /不允许使用「我的作品」.*本次作品尚未保存/,
+    );
     // the failed open is not cached: the next call tries again
-    await assert.rejects(listProjects(), /不允许使用本地作品库/);
+    await assert.rejects(listProjects(), /不允许使用「我的作品」/);
   } finally {
     delete (globalThis as Loose).indexedDB;
   }
@@ -730,31 +850,121 @@ test("a storage API that throws on access is reported, not crashed on", async ()
 
 test("IndexedDB failures map to messages that say what happened", () => {
   const named = (name: string) => new DOMException("x", name);
-  assert.match(describeStorageError(named("QuotaExceededError"), "保存").message, /存储空间不足，作品未保存/);
-  assert.match(describeStorageError(named("QuotaExceededError"), "读取").message, /存储空间不足，无法读取/);
-  assert.match(describeStorageError(named("VersionError"), "读取", true).message, /更新版本的音序.*新版 App/);
-  assert.match(describeStorageError(named("SecurityError"), "读取", true).message, /隐私模式/);
+  assert.match(
+    describeStorageError(named("QuotaExceededError"), "保存").message,
+    /存储空间不足，作品未保存/,
+  );
+  assert.match(
+    describeStorageError(named("QuotaExceededError"), "读取").message,
+    /存储空间不足，无法读取/,
+  );
+  assert.match(
+    describeStorageError(named("VersionError"), "读取", true).message,
+    /更新版本的音序.*新版音序/,
+  );
+  assert.match(
+    describeStorageError(named("SecurityError"), "读取", true).message,
+    /隐私模式/,
+  );
   // while opening, InvalidStateError is how some private modes refuse storage
-  assert.match(describeStorageError(named("InvalidStateError"), "读取", true).message, /隐私模式/);
+  assert.match(
+    describeStorageError(named("InvalidStateError"), "读取", true).message,
+    /隐私模式/,
+  );
   // afterwards it is a closed connection, not "storage is forbidden"
-  const closed = describeStorageError(named("InvalidStateError"), "保存").message;
+  const closed = describeStorageError(
+    named("InvalidStateError"),
+    "保存",
+  ).message;
   assert.match(closed, /连接已断开/);
   assert.doesNotMatch(closed, /隐私|禁止|不允许/);
   assert.match(closed, /尚未保存/);
-  assert.match(describeStorageError(named("AbortError"), "删除").message, /删除作品库的操作被中断/);
-  assert.match(describeStorageError(named("UnknownError"), "读取").message, /内部错误/);
-  assert.match(describeStorageError(named("NotFoundError"), "读取").message, /结构不完整/);
-  assert.match(describeStorageError(named("DataCloneError"), "保存").message, /无法写入作品库.*尚未保存/);
-  assert.match(describeStorageError(null, "保存").message, /无法保存作品库，请重试。本次作品尚未保存。/);
-  assert.match(describeStorageError(new Error("boom"), "读取").message, /^无法读取作品库，请重试。$/);
+  assert.match(
+    describeStorageError(named("AbortError"), "删除").message,
+    /^删除「我的作品」里的作品的操作被中断/,
+  );
+  assert.match(
+    describeStorageError(named("UnknownError"), "读取").message,
+    /内部错误/,
+  );
+  assert.match(
+    describeStorageError(named("NotFoundError"), "读取").message,
+    /结构不完整/,
+  );
+  assert.match(
+    describeStorageError(named("DataCloneError"), "保存").message,
+    /无法写入「我的作品」的数据.*尚未保存/,
+  );
+  assert.match(
+    describeStorageError(null, "保存").message,
+    /^无法保存到「我的作品」，请重试。本次作品尚未保存。$/,
+  );
+  assert.match(
+    describeStorageError(new Error("boom"), "读取").message,
+    /^无法读取「我的作品」，请重试。$/,
+  );
   // internal details never leak into the message
-  assert.doesNotMatch(describeStorageError(new Error("C:\\secret\\path"), "读取").message, /secret/);
+  assert.doesNotMatch(
+    describeStorageError(new Error("C:\\secret\\path"), "读取").message,
+    /secret/,
+  );
   // only a failed save says the work is unsaved
-  for (const name of ["VersionError", "SecurityError", "InvalidStateError", "AbortError", "UnknownError", "NotFoundError", ""]) {
-    assert.match(describeStorageError(named(name), "保存").message, /本次作品尚未保存/, name);
-    assert.doesNotMatch(describeStorageError(named(name), "读取").message, /尚未保存/, name);
-    assert.doesNotMatch(describeStorageError(named(name), "删除").message, /尚未保存/, name);
+  for (const name of [
+    "VersionError",
+    "SecurityError",
+    "InvalidStateError",
+    "AbortError",
+    "UnknownError",
+    "NotFoundError",
+    "",
+  ]) {
+    assert.match(
+      describeStorageError(named(name), "保存").message,
+      /本次作品尚未保存/,
+      name,
+    );
+    assert.doesNotMatch(
+      describeStorageError(named(name), "读取").message,
+      /尚未保存/,
+      name,
+    );
+    assert.doesNotMatch(
+      describeStorageError(named(name), "删除").message,
+      /尚未保存/,
+      name,
+    );
   }
+  // RB-01: a failed save never advises a restart or a reload — what was just made (perhaps paid for)
+  // exists only in the open window, and following that advice would destroy it.
+  for (const name of [
+    "QuotaExceededError",
+    "VersionError",
+    "SecurityError",
+    "InvalidStateError",
+    "AbortError",
+    "UnknownError",
+    "NotFoundError",
+    "DataCloneError",
+    "",
+  ])
+    assert.doesNotMatch(
+      describeStorageError(named(name), "保存").message,
+      /重新启动|重启|刷新页面/,
+      name,
+    );
+  // Reading and deleting may still say it, in the words of the platform (a browser here).
+  assert.match(
+    describeStorageError(named("UnknownError"), "读取").message,
+    /请刷新页面/,
+  );
+  assert.match(
+    describeStorageError(named("NotFoundError"), "删除").message,
+    /请刷新页面后重试/,
+  );
+  assert.match(
+    describeStorageError(named("InvalidStateError"), "删除").message,
+    /如果反复出现，请刷新页面/,
+  );
 });
 
 test("storage usage and persistence degrade gracefully and report real values", async () => {
@@ -777,16 +987,28 @@ test("storage usage and persistence degrade gracefully and report real values", 
     value: fake,
   });
   try {
-    assert.deepEqual(await storageInfo(), { usage: 1234, quota: 5_000_000, persisted: false });
+    assert.deepEqual(await storageInfo(), {
+      usage: 1234,
+      quota: 5_000_000,
+      persisted: false,
+    });
     assert.equal(await requestPersistence(), true);
     assert.equal(asked, 1);
-    assert.deepEqual(await storageInfo(), { usage: 1234, quota: 5_000_000, persisted: true });
+    assert.deepEqual(await storageInfo(), {
+      usage: 1234,
+      quota: 5_000_000,
+      persisted: true,
+    });
     // already persistent: no second prompt
     assert.equal(await requestPersistence(), true);
     assert.equal(asked, 1);
 
     fake.estimate = async () => ({ usage: NaN, quota: undefined }) as never;
-    assert.deepEqual(await storageInfo(), { usage: 0, quota: 0, persisted: true });
+    assert.deepEqual(await storageInfo(), {
+      usage: 0,
+      quota: 0,
+      persisted: true,
+    });
     fake.estimate = async () => {
       throw new Error("denied");
     };

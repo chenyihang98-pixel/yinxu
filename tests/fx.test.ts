@@ -38,7 +38,12 @@ import {
   samplePeak,
   shortTermLoudness,
 } from "../src/audio/loudness";
-import { Biquad, Oversampler2x, createRng, powerSpectrum } from "../src/audio/dsp";
+import {
+  Biquad,
+  Oversampler2x,
+  createRng,
+  powerSpectrum,
+} from "../src/audio/dsp";
 
 const SR = 48000;
 
@@ -54,7 +59,12 @@ const rms = (data: Float32Array, from = 0, to = data.length) =>
   Math.sqrt(energy(data, from, to) / Math.max(1, to - from));
 const db = (ratio: number) => 20 * Math.log10(Math.max(ratio, 1e-12));
 
-function correlation(a: Float32Array, b: Float32Array, from = 0, to = a.length) {
+function correlation(
+  a: Float32Array,
+  b: Float32Array,
+  from = 0,
+  to = a.length,
+) {
   let ab = 0;
   let aa = 0;
   let bb = 0;
@@ -73,7 +83,12 @@ function noise(frames: number, seed: number, gain = 0.3): Float32Array {
   return data;
 }
 
-function sine(frames: number, hz: number, gain = 1, sampleRate = SR): Float32Array {
+function sine(
+  frames: number,
+  hz: number,
+  gain = 1,
+  sampleRate = SR,
+): Float32Array {
   const data = new Float32Array(frames);
   for (let i = 0; i < frames; i++)
     data[i] = gain * Math.sin((2 * Math.PI * hz * i) / sampleRate);
@@ -116,7 +131,11 @@ function rt60(impulse: Float32Array): number {
  * standard deviation in a window, relative to Gaussian noise. About 1 for a
  * dense, noise-like tail and near 0 for a few isolated echoes.
  */
-function echoDensity(data: Float32Array, centre: number, window = 0.02): number {
+function echoDensity(
+  data: Float32Array,
+  centre: number,
+  window = 0.02,
+): number {
   const half = Math.round((window * SR) / 2);
   const from = Math.max(0, Math.round(centre * SR) - half);
   const to = Math.min(data.length, Math.round(centre * SR) + half);
@@ -188,7 +207,10 @@ test("loudness: BS.1770 K-weighting and reference tones", () => {
     // -6 dB in level is -6 LU
     const half = Float32Array.from(tone, (v) => v * 0.5);
     const quieter = integratedLoudness(half, half, sampleRate);
-    assert.ok(Math.abs(both - quieter - 6.02) < 0.05, `6 dB step: ${both - quieter}`);
+    assert.ok(
+      Math.abs(both - quieter - 6.02) < 0.05,
+      `6 dB step: ${both - quieter}`,
+    );
   }
 });
 
@@ -199,12 +221,15 @@ test("loudness: gating, momentary, short-term and peak", () => {
   for (let i = frames / 2; i < frames; i++) data[i] *= 0.01;
   const meter = new LoudnessMeter(SR);
   // fed in uneven pieces: the result must not depend on the block size
-  for (let from = 0; from < frames; ) {
+  for (let from = 0; from < frames;) {
     const count = Math.min(frames - from, 1 + ((from * 7919) % 5000));
     meter.push(data, data, count, from);
     from += count;
   }
-  assert.ok(Math.abs(meter.integrated + 20) < 0.15, `gated: ${meter.integrated}`);
+  assert.ok(
+    Math.abs(meter.integrated + 20) < 0.15,
+    `gated: ${meter.integrated}`,
+  );
   assert.ok(
     Math.abs(meter.integrated - integratedLoudness(data, data, SR)) < 1e-9,
   );
@@ -218,7 +243,9 @@ test("loudness: gating, momentary, short-term and peak", () => {
   assert.ok(Math.abs(momentary[momentary.length - 1] + 60) < 0.1);
   assert.ok(Math.abs(meter.peak - 0.1) < 1e-4);
   assert.ok(Math.abs(meter.peakDb + 20) < 0.01);
-  assert.ok(Math.abs(samplePeak(data, Float32Array.of(-0.7, 0.2)) - 0.7) < 1e-6);
+  assert.ok(
+    Math.abs(samplePeak(data, Float32Array.of(-0.7, 0.2)) - 0.7) < 1e-6,
+  );
   // silence and anything shorter than one block have no loudness
   assert.equal(integratedLoudness(new Float32Array(SR), null, SR), -Infinity);
   assert.equal(integratedLoudness(sine(SR * 0.3, 997), null, SR), -Infinity);
@@ -338,11 +365,14 @@ test("drive: heavy settings are oversampled, report their latency and alias less
     for (let k = bin - 4; k <= bin + 4; k++) alias += spectrum.power[k];
     const fundamental = Math.round(13000 / spectrum.binHz);
     let tone = 0;
-    for (let k = fundamental - 4; k <= fundamental + 4; k++) tone += spectrum.power[k];
+    for (let k = fundamental - 4; k <= fundamental + 4; k++)
+      tone += spectrum.power[k];
     return 10 * Math.log10(alias / tone);
   };
   const base = aliasAt((l, r) => saturate(l, r, frames, 0.8));
-  const oversampled = aliasAt((l, r) => runInsert(new Drive(0.8), l, r, frames));
+  const oversampled = aliasAt((l, r) =>
+    runInsert(new Drive(0.8), l, r, frames),
+  );
   assert.ok(base > -30, `base-rate alias ${base} dB`);
   assert.ok(oversampled < base - 25, `oversampled alias ${oversampled} dB`);
 
@@ -385,30 +415,52 @@ test("width: mid/side scaling that never touches the mono sum", () => {
       const mid = (left[i] + right[i]) / 2;
       const side = (left[i] - right[i]) / 2;
       assert.ok(Math.abs((l[i] + r[i]) / 2 - mid) < 1e-6, "mono sum unchanged");
-      assert.ok(Math.abs((l[i] - r[i]) / 2 - side * width) < 1e-6, "side scaled");
+      assert.ok(
+        Math.abs((l[i] - r[i]) / 2 - side * width) < 1e-6,
+        "side scaled",
+      );
     }
-    if (width === 0) assert.ok(l.every((value, i) => value === r[i]), "width 0 is mono");
+    if (width === 0)
+      assert.ok(
+        l.every((value, i) => value === r[i]),
+        "width 0 is mono",
+      );
     if (width === 1)
-      assert.ok(l.every((value, i) => value === left[i]) && r.every((value, i) => value === right[i]));
+      assert.ok(
+        l.every((value, i) => value === left[i]) &&
+          r.every((value, i) => value === right[i]),
+      );
   }
 });
 
 test("pan: equal power, unity in the centre, hard sides are silent on the other side", () => {
-  assert.deepEqual(panGains(0).map((g) => Math.round(g * 1e9) / 1e9), [1, 1]);
+  assert.deepEqual(
+    panGains(0).map((g) => Math.round(g * 1e9) / 1e9),
+    [1, 1],
+  );
   for (let pan = -1; pan <= 1; pan += 0.125) {
     const [gl, gr] = panGains(pan);
     assert.ok(Math.abs(gl * gl + gr * gr - 2) < 1e-9, "constant total power");
     if (pan > 0) assert.ok(gr > gl);
   }
-  assert.ok(panGains(-1)[1] < 1e-9 && Math.abs(panGains(-1)[0] - Math.SQRT2) < 1e-9);
+  assert.ok(
+    panGains(-1)[1] < 1e-9 && Math.abs(panGains(-1)[0] - Math.SQRT2) < 1e-9,
+  );
   const frames = 1000;
   const left = noise(frames, 3);
   const right = Float32Array.from(left);
   setPan(left, right, frames, 0.5);
-  assert.ok(Math.abs(db(rms(right) / rms(left)) - db(panGains(0.5)[1] / panGains(0.5)[0])) < 1e-3);
+  assert.ok(
+    Math.abs(
+      db(rms(right) / rms(left)) - db(panGains(0.5)[1] / panGains(0.5)[0]),
+    ) < 1e-3,
+  );
   // width and pan compose into one matrix: mono first, then placed
   const m = stereoMatrix(0, -1);
-  assert.ok(Math.abs(m.ll - Math.SQRT2 / 2) < 1e-9 && Math.abs(m.lr - Math.SQRT2 / 2) < 1e-9);
+  assert.ok(
+    Math.abs(m.ll - Math.SQRT2 / 2) < 1e-9 &&
+      Math.abs(m.lr - Math.SQRT2 / 2) < 1e-9,
+  );
   assert.ok(Math.abs(m.rl) < 1e-9 && Math.abs(m.rr) < 1e-9);
 });
 
@@ -426,13 +478,24 @@ test("chorus: widens a mono source, keeps its power and survives a mono fold-dow
     runInsert(new Chorus(SR, amount), left, right, frames);
     const from = SR / 2;
     const inRms = rms(source, from);
-    const outRms = Math.sqrt((energy(left, from) + energy(right, from)) / (2 * (frames - from)));
-    assert.ok(Math.abs(db(outRms / inRms)) < 1, `power at ${amount}: ${db(outRms / inRms)}`);
+    const outRms = Math.sqrt(
+      (energy(left, from) + energy(right, from)) / (2 * (frames - from)),
+    );
+    assert.ok(
+      Math.abs(db(outRms / inRms)) < 1,
+      `power at ${amount}: ${db(outRms / inRms)}`,
+    );
     const mono = Float32Array.from(left, (value, i) => (value + right[i]) / 2);
     const monoDb = db(rms(mono, from) / inRms);
-    assert.ok(monoDb > -2.5 && monoDb < 1, `mono fold-down at ${amount}: ${monoDb} dB`);
+    assert.ok(
+      monoDb > -2.5 && monoDb < 1,
+      `mono fold-down at ${amount}: ${monoDb} dB`,
+    );
     const spread = correlation(left, right, from, frames);
-    assert.ok(spread < 1 - 0.15 * amount, `correlation at ${amount}: ${spread}`);
+    assert.ok(
+      spread < 1 - 0.15 * amount,
+      `correlation at ${amount}: ${spread}`,
+    );
     assert.ok(spread > 0.3, "still clearly one source");
   }
   // amount 0 is the dry signal
@@ -440,9 +503,12 @@ test("chorus: widens a mono source, keeps its power and survives a mono fold-dow
   const right = noise(2000, 6);
   const dryLeft = Float32Array.from(left);
   new Chorus(SR, 0).process(left, right, 2000);
-  for (let i = 0; i < 2000; i += 13) assert.ok(Math.abs(left[i] - dryLeft[i]) < 1e-6);
+  for (let i = 0; i < 2000; i += 13)
+    assert.ok(Math.abs(left[i] - dryLeft[i]) < 1e-6);
   const gains = chorusGains(1);
-  assert.ok(Math.abs(gains.dry * gains.dry + 2 * gains.wet * gains.wet - 1) < 1e-12);
+  assert.ok(
+    Math.abs(gains.dry * gains.dry + 2 * gains.wet * gains.wet - 1) < 1e-12,
+  );
 });
 
 test("chorus: pitch stays within a few cents of the note", () => {
@@ -480,14 +546,20 @@ test("ping-pong delay: echoes on time, alternating sides, each one quieter and d
 
   const window = (data: Float32Array, echo: number) =>
     energy(data, echo * 12000 - 200, echo * 12000 + 1500);
-  assert.ok(energy(left, 0, 11900) + energy(right, 0, 11900) < 1e-12, "nothing before the first echo");
+  assert.ok(
+    energy(left, 0, 11900) + energy(right, 0, 11900) < 1e-12,
+    "nothing before the first echo",
+  );
   let previous = Infinity;
   for (let echo = 1; echo <= 6; echo++) {
     const onSide = echo % 2 ? left : right;
     const offSide = echo % 2 ? right : left;
     const level = window(onSide, echo);
     assert.ok(level > 1e-6, `echo ${echo} present`);
-    assert.ok(window(offSide, echo) < level * 1e-6, `echo ${echo} only on its side`);
+    assert.ok(
+      window(offSide, echo) < level * 1e-6,
+      `echo ${echo} only on its side`,
+    );
     if (echo > 1) {
       const step = 10 * Math.log10(level / previous);
       // feedback 0.5 is -6 dB; the damping filter takes a little more
@@ -498,14 +570,18 @@ test("ping-pong delay: echoes on time, alternating sides, each one quieter and d
   // the echo lands exactly `delayFrames` after the click (peak position)
   const peakAt = (data: Float32Array, from: number, to: number) => {
     let best = from;
-    for (let i = from; i < to; i++) if (Math.abs(data[i]) > Math.abs(data[best])) best = i;
+    for (let i = from; i < to; i++)
+      if (Math.abs(data[i]) > Math.abs(data[best])) best = i;
     return best;
   };
   const first = peakAt(left, 11900, 13000);
   const third = peakAt(left, 35900, 37500);
   assert.ok(Math.abs(first - 12024) <= 12, `first echo at ${first}`);
   // the delay line is exact; the damping filters smear the click by under a millisecond per repeat
-  assert.ok(Math.abs(third - first - 24000) <= 48, `two delays later: ${third - first}`);
+  assert.ok(
+    Math.abs(third - first - 24000) <= 48,
+    `two delays later: ${third - first}`,
+  );
 
   // repeats get darker: share of energy above 3 kHz falls from echo to echo
   const bright = (data: Float32Array, echo: number) => {
@@ -566,19 +642,39 @@ test("reverb: damping shortens the highs, size does not change the decay", () =>
   );
   // roughly what the damping law promises
   assert.ok(Math.abs(dampedHigh / 2 / dampingRatio(0.8) - 1) < 0.5);
-  assert.ok(Math.abs(rt60(band(damped.left, 500)) / 2 - 1) < 0.2, "lows keep their time");
+  assert.ok(
+    Math.abs(rt60(band(damped.left, 500)) / 2 - 1) < 0.2,
+    "lows keep their time",
+  );
   for (const size of [0, 0.5, 1]) {
-    const response = impulseResponse({ size, decay: 2.5, damping: 0.3, preDelay: 0 }, 5);
-    assert.ok(Math.abs(rt60(band(response.left, 500)) / 2.5 - 1) < 0.2, `size ${size}`);
+    const response = impulseResponse(
+      { size, decay: 2.5, damping: 0.3, preDelay: 0 },
+      5,
+    );
+    assert.ok(
+      Math.abs(rt60(band(response.left, 500)) / 2.5 - 1) < 0.2,
+      `size ${size}`,
+    );
   }
   // a larger room has longer delay lines
-  const small = new Reverb(SR, { size: 0, decay: 3, damping: 0.3, preDelay: 0 });
-  const large = new Reverb(SR, { size: 1, decay: 3, damping: 0.3, preDelay: 0 });
+  const small = new Reverb(SR, {
+    size: 0,
+    decay: 3,
+    damping: 0.3,
+    preDelay: 0,
+  });
+  const large = new Reverb(SR, {
+    size: 1,
+    decay: 3,
+    damping: 0.3,
+    preDelay: 0,
+  });
   assert.ok(large.lengths[7] > small.lengths[7] * 2.5);
   // the eight lines are mutually prime
   const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
   for (let i = 0; i < 8; i++)
-    for (let j = i + 1; j < 8; j++) assert.equal(gcd(large.lengths[i], large.lengths[j]), 1);
+    for (let j = i + 1; j < 8; j++)
+      assert.equal(gcd(large.lengths[i], large.lengths[j]), 1);
 });
 
 test("reverb: dense and smooth — no discrete echoes, no ringing", () => {
@@ -589,24 +685,45 @@ test("reverb: dense and smooth — no discrete echoes, no ringing", () => {
       // echo density: noise-like from 50 ms after the onset
       for (const at of [0.05, 0.08, 0.12, 0.2]) {
         const density = echoDensity(data, start + at);
-        assert.ok(density > 0.75, `density ${density.toFixed(2)} at ${at} s, decay ${room.decay}`);
+        assert.ok(
+          density > 0.75,
+          `density ${density.toFixed(2)} at ${at} s, decay ${room.decay}`,
+        );
       }
-      assert.ok(echoDensity(data, start + 0.02) > 0.5, "already diffuse after 20 ms");
+      assert.ok(
+        echoDensity(data, start + 0.02) > 0.5,
+        "already diffuse after 20 ms",
+      );
       // no spike stands out of the tail: crest of each 20 ms window stays noise-like
       for (let at = 0.05; at < Math.min(0.5, room.decay * 0.8); at += 0.02) {
         const from = Math.round((start + at) * SR);
         const to = from + 960;
         let peak = 0;
-        for (let i = from; i < to; i++) peak = Math.max(peak, Math.abs(data[i]));
-        assert.ok(peak / rms(data, from, to) < 6.5, `spike at ${at.toFixed(2)} s`);
+        for (let i = from; i < to; i++)
+          peak = Math.max(peak, Math.abs(data[i]));
+        assert.ok(
+          peak / rms(data, from, to) < 6.5,
+          `spike at ${at.toFixed(2)} s`,
+        );
       }
     }
     // the build-up is fast and the decay smooth: 10 ms energy steps never
     // jump up by more than a few dB once the tail has started
-    let previous = energy(left, Math.round((start + 0.06) * SR), Math.round((start + 0.07) * SR));
+    let previous = energy(
+      left,
+      Math.round((start + 0.06) * SR),
+      Math.round((start + 0.07) * SR),
+    );
     for (let at = 0.07; at < Math.min(room.decay * 0.7, 1.5); at += 0.01) {
-      const now = energy(left, Math.round((start + at) * SR), Math.round((start + at + 0.01) * SR));
-      assert.ok(10 * Math.log10(now / previous) < 4.5, `energy bump at ${at.toFixed(2)} s`);
+      const now = energy(
+        left,
+        Math.round((start + at) * SR),
+        Math.round((start + at + 0.01) * SR),
+      );
+      assert.ok(
+        10 * Math.log10(now / previous) < 4.5,
+        `energy bump at ${at.toFixed(2)} s`,
+      );
       previous = now;
     }
   }
@@ -626,7 +743,10 @@ test("reverb: dense and smooth — no discrete echoes, no ringing", () => {
     }
     for (let i = 1; i < smooth.length - 1; i++) {
       const neighbours = (smooth[i - 1] + smooth[i + 1]) / 2;
-      assert.ok(Math.abs(smooth[i] - neighbours) < 5, `spectral bump of ${(smooth[i] - neighbours).toFixed(1)} dB`);
+      assert.ok(
+        Math.abs(smooth[i] - neighbours) < 5,
+        `spectral bump of ${(smooth[i] - neighbours).toFixed(1)} dB`,
+      );
     }
   }
 });
@@ -638,7 +758,12 @@ test("reverb: left and right are decorrelated, also for a one-sided source", () 
       Math.abs(correlation(centred.left, centred.right)) < 0.12,
       `centred source, decay ${room.decay}: ${correlation(centred.left, centred.right)}`,
     );
-    const sided = impulseResponse(room, room.decay + 0.5, { lowCutHz: 0 }, "left");
+    const sided = impulseResponse(
+      room,
+      room.decay + 0.5,
+      { lowCutHz: 0 },
+      "left",
+    );
     assert.ok(Math.abs(correlation(sided.left, sided.right)) < 0.15);
     // a source on one side still fills both sides of the room
     const balance = db(Math.sqrt(energy(sided.right) / energy(sided.left)));
@@ -658,12 +783,18 @@ test("reverb: unity level for any room, stable, and silent after its tail", () =
     reverb.process(source, source, left, right, frames);
     const from = Math.round(Math.min(frames - 2 * SR, room.decay * 1.5 * SR));
     const gain = db(rms(left, from) / rms(source, from));
-    assert.ok(Math.abs(gain) < 2, `steady-state gain for decay ${room.decay}: ${gain.toFixed(2)} dB`);
+    assert.ok(
+      Math.abs(gain) < 2,
+      `steady-state gain for decay ${room.decay}: ${gain.toFixed(2)} dB`,
+    );
     assert.ok(Math.abs(db(rms(right, from) / rms(left, from))) < 1.5);
     let peak = 0;
-    for (let i = 0; i < frames; i++) peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
+    for (let i = 0; i < frames; i++)
+      peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
     assert.ok(Number.isFinite(peak) && peak < 3);
-    assert.ok(reverb.tailSeconds >= room.decay && reverb.tailSeconds < room.decay + 0.3);
+    assert.ok(
+      reverb.tailSeconds >= room.decay && reverb.tailSeconds < room.decay + 0.3,
+    );
   }
   // after three decay times nothing is left (-80 dB under the first 100 ms)
   const room = ROOMS[1];
@@ -680,13 +811,11 @@ test("reverb: unity level for any room, stable, and silent after its tail", () =
   const wet = (lowCutHz: number | undefined) => {
     const left = new Float32Array(bass.length);
     const right = new Float32Array(bass.length);
-    new Reverb(SR, ROOMS[2], lowCutHz === undefined ? {} : { lowCutHz }).process(
-      bass,
-      bass,
-      left,
-      right,
-      bass.length,
-    );
+    new Reverb(
+      SR,
+      ROOMS[2],
+      lowCutHz === undefined ? {} : { lowCutHz },
+    ).process(bass, bass, left, right, bass.length);
     return rms(left, SR * 3);
   };
   const cut = db(wet(undefined) / wet(0));
@@ -697,11 +826,23 @@ test("reverb: deterministic, block-size independent, pre-delay is exact", () => 
   const frames = 30000;
   const inLeft = noise(frames, 41, 0.2);
   const inRight = noise(frames, 42, 0.2);
-  const whole = { left: new Float32Array(frames), right: new Float32Array(frames) };
-  new Reverb(SR, ROOMS[2]).process(inLeft, inRight, whole.left, whole.right, frames);
-  const pieces = { left: new Float32Array(frames), right: new Float32Array(frames) };
+  const whole = {
+    left: new Float32Array(frames),
+    right: new Float32Array(frames),
+  };
+  new Reverb(SR, ROOMS[2]).process(
+    inLeft,
+    inRight,
+    whole.left,
+    whole.right,
+    frames,
+  );
+  const pieces = {
+    left: new Float32Array(frames),
+    right: new Float32Array(frames),
+  };
   const reverb = new Reverb(SR, ROOMS[2]);
-  for (let from = 0; from < frames; ) {
+  for (let from = 0; from < frames;) {
     const count = Math.min(frames - from, 1 + ((from * 31) % 700));
     reverb.process(
       inLeft.subarray(from, from + count),
@@ -716,12 +857,18 @@ test("reverb: deterministic, block-size independent, pre-delay is exact", () => 
   assert.deepEqual(pieces.right, whole.right);
   // reset() returns to the initial state
   reverb.reset();
-  const again = { left: new Float32Array(frames), right: new Float32Array(frames) };
+  const again = {
+    left: new Float32Array(frames),
+    right: new Float32Array(frames),
+  };
   reverb.process(inLeft, inRight, again.left, again.right, frames);
   assert.deepEqual(again.left, whole.left);
 
   // nothing comes out before the pre-delay has passed
-  const response = impulseResponse({ size: 0.5, decay: 1.5, damping: 0.4, preDelay: 0.05 }, 1);
+  const response = impulseResponse(
+    { size: 0.5, decay: 1.5, damping: 0.4, preDelay: 0.05 },
+    1,
+  );
   assert.ok(energy(response.left, 0, 2399) < 1e-20);
   assert.ok(energy(response.left, 2400, 4800) > 1e-6);
   // in place: output buffers may be the input buffers
@@ -778,7 +925,9 @@ function loopSource(frames: number): [Float32Array, Float32Array] {
     const hz = 220 * Math.pow(2, index / 5);
     for (let i = 0; i < 20000; i++) {
       const value =
-        0.4 * Math.sin((2 * Math.PI * hz * i) / SR) * Math.exp(-i / 4000) *
+        0.4 *
+        Math.sin((2 * Math.PI * hz * i) / SR) *
+        Math.exp(-i / 4000) *
         Math.min(1, i / 48);
       const at = (start + i) % frames;
       left[at] += value * (index % 2 ? 0.4 : 1);
@@ -790,7 +939,8 @@ function loopSource(frames: number): [Float32Array, Float32Array] {
 
 function maxDifference(a: Float32Array, b: Float32Array): number {
   let worst = 0;
-  for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]));
+  for (let i = 0; i < a.length; i++)
+    worst = Math.max(worst, Math.abs(a[i] - b[i]));
   return worst;
 }
 
@@ -798,7 +948,11 @@ test("loop mode: inserts warmed over the tail equal the endlessly repeated loop"
   const frames = SR * 2;
   const loopSeconds = frames / SR;
   const [srcLeft, srcRight] = loopSource(frames);
-  const cases: [string, () => { process(l: Float32Array, r: Float32Array, n: number): void }, number][] = [
+  const cases: [
+    string,
+    () => { process(l: Float32Array, r: Float32Array, n: number): void },
+    number,
+  ][] = [
     ["filter", () => cutFilter(SR, 120, 4000)!, 0.3],
     ["chorus", () => new Chorus(SR, 0.7, { loopSeconds }), 0.3],
     ["oversampled drive", () => new Drive(0.8), 0.05],
@@ -821,14 +975,20 @@ test("loop mode: inserts warmed over the tail equal the endlessly repeated loop"
         refRight.set(workRight.subarray(0, count), from);
       }
     });
-    assert.ok(maxDifference(left, refLeft) < 1e-4, `${name}: ${maxDifference(left, refLeft)}`);
+    assert.ok(
+      maxDifference(left, refLeft) < 1e-4,
+      `${name}: ${maxDifference(left, refLeft)}`,
+    );
     assert.ok(maxDifference(right, refRight) < 1e-4, `${name} (right)`);
     // and without the warm-up the start of the buffer is audibly different
     if (name !== "oversampled drive") {
       const cold = Float32Array.from(srcLeft);
       const coldRight = Float32Array.from(srcRight);
       runInsert(make(), cold, coldRight, frames);
-      assert.ok(maxDifference(cold, refLeft) > 1e-3, `${name}: warm-up matters`);
+      assert.ok(
+        maxDifference(cold, refLeft) > 1e-3,
+        `${name}: warm-up matters`,
+      );
     }
   }
 });
@@ -845,7 +1005,10 @@ test("loop mode: reverb and delay tails wrap seamlessly", () => {
   for (const [name, make] of cases) {
     const fx = make();
     const warm = Math.ceil(fx.tailSeconds * 1.4 * SR);
-    assert.ok(warm > frames, "the tail is longer than the loop: several laps of warm-up");
+    assert.ok(
+      warm > frames,
+      "the tail is longer than the loop: several laps of warm-up",
+    );
     const left = new Float32Array(frames);
     const right = new Float32Array(frames);
     runSend(fx, srcLeft, srcRight, left, right, frames, 1, warm);
@@ -882,19 +1045,29 @@ test("loop mode: reverb and delay tails wrap seamlessly", () => {
       let step = 0;
       for (let i = frames - 480; i < frames - 1; i++)
         step = Math.max(step, Math.abs(data[i + 1] - data[i]));
-      for (let i = 0; i < 480; i++) step = Math.max(step, Math.abs(data[i + 1] - data[i]));
-      assert.ok(Math.abs(data[0] - data[frames - 1]) <= step * 1.5, `${name}: seam step`);
+      for (let i = 0; i < 480; i++)
+        step = Math.max(step, Math.abs(data[i + 1] - data[i]));
+      assert.ok(
+        Math.abs(data[0] - data[frames - 1]) <= step * 1.5,
+        `${name}: seam step`,
+      );
       // no cliff either way (a lost tail would be a drop of tens of dB; the
       // few dB allowed here are the notes themselves decaying and entering)
       const before = rms(data, frames - 1200, frames);
       const after = rms(data, 0, 1200);
-      assert.ok(Math.abs(db(after / before)) < 6, `${name}: level across the seam ${db(after / before)} dB`);
+      assert.ok(
+        Math.abs(db(after / before)) < 6,
+        `${name}: level across the seam ${db(after / before)} dB`,
+      );
     }
     // the start of the buffer carries the tail of the end: a cold run is quiet there
     const coldLeft = new Float32Array(frames);
     const coldRight = new Float32Array(frames);
     runSend(make(), srcLeft, srcRight, coldLeft, coldRight, frames);
-    assert.ok(rms(left, 0, 2400) > rms(coldLeft, 0, 2400) * 5, `${name}: tail present at the start`);
+    assert.ok(
+      rms(left, 0, 2400) > rms(coldLeft, 0, 2400) * 5,
+      `${name}: tail present at the start`,
+    );
   }
 });
 
@@ -902,19 +1075,35 @@ test("loop mode: reverb and delay tails wrap seamlessly", () => {
 
 test("duck envelope: fast attack just ahead of the kick, hold, smooth release", () => {
   const frames = SR * 2;
-  const options = { attack: 0.005, lookahead: 0.003, hold: 0.025, release: 0.2, step: 1 };
+  const options = {
+    attack: 0.005,
+    lookahead: 0.003,
+    hold: 0.025,
+    release: 0.2,
+    step: 1,
+  };
   const curve = duckCurve([{ t: 0.5, vel: 1 }], frames, SR, options);
   const at = (seconds: number) => curve[Math.round(seconds * SR)];
   assert.equal(at(0.4), 0, "untouched before the hit");
   assert.equal(at(0.4969), 0, "attack starts 3 ms ahead");
-  assert.ok(at(0.4995) > 0.4 && at(0.4995) < 0.6, "half way down at the middle of the attack");
+  assert.ok(
+    at(0.4995) > 0.4 && at(0.4995) < 0.6,
+    "half way down at the middle of the attack",
+  );
   assert.ok(at(0.502) > 0.999, "fully ducked 2 ms after the hit");
   assert.ok(at(0.52) > 0.999, "held");
-  assert.ok(Math.abs(at(0.527 + 0.1) - 0.5) < 0.02, "half recovered at the middle of the release");
-  assert.ok(at(0.527 + 0.199) < 0.001 && at(0.75) === 0, "back to unity after the release");
+  assert.ok(
+    Math.abs(at(0.527 + 0.1) - 0.5) < 0.02,
+    "half recovered at the middle of the release",
+  );
+  assert.ok(
+    at(0.527 + 0.199) < 0.001 && at(0.75) === 0,
+    "back to unity after the release",
+  );
   // smooth: no step larger than the steepest part of the 5 ms attack
   let step = 0;
-  for (let i = 1; i < curve.length; i++) step = Math.max(step, Math.abs(curve[i] - curve[i - 1]));
+  for (let i = 1; i < curve.length; i++)
+    step = Math.max(step, Math.abs(curve[i] - curve[i - 1]));
   assert.ok(step < (Math.PI / 2 / (0.005 * SR)) * 1.05);
   // monotonic recovery
   for (let i = Math.round(0.53 * SR); i < Math.round(0.72 * SR); i++)
@@ -933,7 +1122,15 @@ test("duck envelope: fast attack just ahead of the kick, hold, smooth release", 
     options,
   );
   for (let i = 0; i < frames; i += 50)
-    assert.ok(Math.abs(pair[i] - Math.max(curve[i], duckCurve([{ t: 0.6, vel: 0.25 }], frames, SR, options)[i])) < 1e-6);
+    assert.ok(
+      Math.abs(
+        pair[i] -
+          Math.max(
+            curve[i],
+            duckCurve([{ t: 0.6, vel: 0.25 }], frames, SR, options)[i],
+          ),
+      ) < 1e-6,
+    );
   assert.ok(duckRelease(120) >= 0.12 && duckRelease(120) <= 0.25);
   assert.ok(duckRelease(60) === 0.25 && duckRelease(240) === 0.12);
 });
@@ -944,12 +1141,21 @@ test("duck envelope: wraps around a loop and is applied as an interpolated gain"
   // a kick 50 ms before the end keeps ducking at the start, and a kick on the
   // downbeat starts its attack at the very end
   const late = duckCurve([{ t: 0.95, vel: 1 }], frames, SR, options);
-  assert.ok(late[Math.round(0.05 * SR)] > 0.3, "release continues after the wrap");
-  assert.ok(Math.abs(late[0] - late[frames - 1]) < 0.01, "continuous across the seam");
+  assert.ok(
+    late[Math.round(0.05 * SR)] > 0.3,
+    "release continues after the wrap",
+  );
+  assert.ok(
+    Math.abs(late[0] - late[frames - 1]) < 0.01,
+    "continuous across the seam",
+  );
   const downbeat = duckCurve([{ t: 0, vel: 1 }], frames, SR, options);
   assert.ok(downbeat[frames - 48] > 0.3, "attack begins before the end");
   assert.ok(Math.abs(downbeat[0] - downbeat[frames - 1]) < 0.12);
-  const oneShot = duckCurve([{ t: 0.95, vel: 1 }], frames, SR, { release: 0.2, step: 1 });
+  const oneShot = duckCurve([{ t: 0.95, vel: 1 }], frames, SR, {
+    release: 0.2,
+    step: 1,
+  });
   assert.equal(oneShot[Math.round(0.05 * SR)], 0, "no wrap without loop");
 
   // control-rate curve + interpolation reproduces the full-rate curve
@@ -972,10 +1178,16 @@ test("duck envelope: wraps around a loop and is applied as an interpolated gain"
   fillDuckGains(gains, 3000, coarse, 3777, 0.8);
   for (let i = 0; i < 3000; i += 11) {
     const expected = duckGainAt(coarse, 3777 + i, 0.8);
-    assert.ok(Math.abs(left[i] - expected) < 1e-5 && Math.abs(right[i] - expected) < 1e-5);
+    assert.ok(
+      Math.abs(left[i] - expected) < 1e-5 &&
+        Math.abs(right[i] - expected) < 1e-5,
+    );
     assert.ok(Math.abs(gains[i] - expected) < 1e-5);
   }
   // full duck under a full kick leaves 1 - DUCK_DEPTH of the signal
-  assert.ok(Math.abs(duckGainAt(coarse, Math.round(0.11 * SR), 1) - (1 - DUCK_DEPTH)) < 0.01);
+  assert.ok(
+    Math.abs(duckGainAt(coarse, Math.round(0.11 * SR), 1) - (1 - DUCK_DEPTH)) <
+      0.01,
+  );
   assert.equal(duckGainAt(coarse, Math.round(0.9 * SR), 1), 1);
 });

@@ -185,8 +185,7 @@ export const brass: Voice = {
       spectrumLeft += p * gl * gl;
       spectrumRight += p * gr * gr;
     }
-    const power =
-      0.5 * (spectrumLeft * powerLeft + spectrumRight * powerRight);
+    const power = 0.5 * (spectrumLeft * powerLeft + spectrumRight * powerRight);
     const gain = (REFERENCE_RMS * velocityGain(vel) * 1.03) / Math.sqrt(power);
 
     // --- amplitude envelope ---

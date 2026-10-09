@@ -251,12 +251,7 @@ function strike(h: Hit, p: Membrane): void {
 }
 
 export type MembraneKind =
-  | "kick"
-  | "tomLow"
-  | "tomMid"
-  | "tomHigh"
-  | "taiko"
-  | "subBoom";
+  "kick" | "tomLow" | "tomMid" | "tomHigh" | "taiko" | "subBoom";
 
 function recipe(kind: MembraneKind, kit: Kit): Membrane {
   switch (kind) {

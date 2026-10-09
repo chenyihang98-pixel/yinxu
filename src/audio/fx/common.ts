@@ -39,6 +39,8 @@ export interface SendFx {
   ): void;
   /** See InsertFx.seek. */
   seek?(frame: number): void;
+  /** Give large internal buffers back at once (see dsp/memory.ts); the effect is finished. */
+  release?(): void;
 }
 
 /**

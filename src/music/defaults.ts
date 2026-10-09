@@ -145,7 +145,11 @@ export function cleanArrangement(input: unknown): ArrangementHints | undefined {
       raw.density >= 0
     )
       melody.density = clamp(raw.density, 0, 1);
-    if (raw.register === "low" || raw.register === "mid" || raw.register === "high")
+    if (
+      raw.register === "low" ||
+      raw.register === "mid" ||
+      raw.register === "high"
+    )
       melody.register = raw.register;
     if (
       raw.motion === "stepwise" ||
@@ -174,10 +178,10 @@ export function clampConfig(
     volumes[track] = unit(input.volumes?.[track], volumes[track]);
   const arrangement = cleanArrangement(input.arrangement);
   return {
-    prompt: (typeof input.prompt === "string" ? input.prompt : base.prompt).slice(
-      0,
-      2000,
-    ),
+    prompt: (typeof input.prompt === "string"
+      ? input.prompt
+      : base.prompt
+    ).slice(0, 2000),
     mood: isStyleId(input.mood) ? input.mood : base.mood,
     bpm: Math.round(clamp(number(input.bpm, base.bpm), ...LIMITS.bpm)),
     duration: Math.round(

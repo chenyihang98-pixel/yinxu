@@ -52,7 +52,8 @@ export function seededRandom(seed: number): Rng {
   const weightedIndex = (weights: readonly number[]) => {
     let total = 0;
     for (const weight of weights) total += Math.max(0, weight);
-    if (!(total > 0)) return Math.min(weights.length - 1, Math.floor(next() * weights.length));
+    if (!(total > 0))
+      return Math.min(weights.length - 1, Math.floor(next() * weights.length));
     let target = next() * total;
     for (let i = 0; i < weights.length; i++) {
       target -= Math.max(0, weights[i]);
@@ -66,7 +67,8 @@ export function seededRandom(seed: number): Rng {
     range: (low, high) => low + (high - low) * next(),
     int: (low, high) => low + Math.floor(next() * (high - low + 1)),
     chance: (probability) => next() < probability,
-    pick: (items) => items[Math.min(items.length - 1, Math.floor(next() * items.length))],
+    pick: (items) =>
+      items[Math.min(items.length - 1, Math.floor(next() * items.length))],
     weightedIndex,
     weighted: (items, weights) => items[weightedIndex(weights)],
     shuffle: (items) => {

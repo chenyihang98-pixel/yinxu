@@ -5,8 +5,18 @@
  * and pad) with voice leading.
  */
 import type { MusicConfig } from "../types";
-import type { SectionType } from "./catalog";
-import { FAST_TEMPO, energyAtBar, type SectionPlan, type Timing } from "./form";
+import {
+  parseKey,
+  styleInfo,
+  type InstrumentId,
+  type SectionType,
+} from "./catalog";
+import {
+  energyAtBar,
+  isFastTempo,
+  type SectionPlan,
+  type Timing,
+} from "./form";
 import { hashUnit, type Rng } from "./random";
 import type { ChordSpan, PartRole, VoiceId } from "./score";
 import type {
@@ -22,6 +32,7 @@ import type {
 } from "./styles/types";
 import {
   LEAD_TRAITS,
+  SCALES,
   VOICE_RANGES,
   clamp,
   lerp,
@@ -35,6 +46,7 @@ import {
   type BeatNote,
   type Chord,
   type KeyContext,
+  type ScaleName,
   type VoicingStyle,
 } from "./theory";
 
@@ -46,6 +58,12 @@ export interface ChordSlot {
   beat: number;
   beats: number;
   chord: Chord;
+  /**
+   * The chord as the progression has it, before the complexity control adds
+   * sevenths and ninths. The tune rests on these notes, so colouring the
+   * harmony never moves the melody.
+   */
+  plain: Chord;
   /** index of the section the chord belongs to */
   section: number;
 }
@@ -60,6 +78,8 @@ export interface HarmonyPlan {
   outline: Partial<Record<SectionType, string[]>>;
   /** true when config.arrangement.progression replaced the style bank */
   overridden: boolean;
+  /** true when the last bar of a loop was rewritten to lead back into bar 1 */
+  turnaround: boolean;
 }
 
 /** Everything a part generator needs to know about the piece. */
@@ -81,31 +101,99 @@ export const tierOf = (energy: number): keyof Tier<unknown> =>
   energy < 0.36 ? "low" : energy < 0.7 ? "mid" : "high";
 
 /** Sections that sit above the verse: they take the busier half of a pattern list. */
-export const isLifted = (type: SectionType) => type === "chorus" || type === "build";
+export const isLifted = (type: SectionType) =>
+  type === "chorus" || type === "build";
 
 /**
  * Pick from a list written from calm to busy: verses draw from the first half,
  * lifted sections from the second, so two sections in the same tier contrast.
  */
-export function pickRanked<T>(list: readonly T[], lifted: boolean, rng: Rng): T {
+export function pickRanked<T>(
+  list: readonly T[],
+  lifted: boolean,
+  rng: Rng,
+): T {
   if (list.length <= 1) return list[0];
   const half = Math.ceil(list.length / 2);
   return rng.pick(lifted ? list.slice(half) : list.slice(0, half));
 }
 
-/**
- * Where the tune sits, so the accompaniment can keep out of its way: the lead
- * instrument's natural centre moved by the style and by a register hint.
- */
-export function leadCentre(ctx: Pick<Ctx, "config" | "style">): number {
-  const trait = LEAD_TRAITS[ctx.config.instrument];
-  const hint = ctx.config.arrangement?.melody?.register;
+/** The instrument's sweet spot, lifted by the style as far as the instrument has room above it. */
+function naturalCentre(instrument: InstrumentId, style: StyleDef): number {
+  const trait = LEAD_TRAITS[instrument];
   // a style lifts its tune to clear the accompaniment; instruments that
   // already sing high (flute, bells, music box) need little or none of it
-  const wanted = ctx.style.melody.register ?? 0;
-  const lift = wanted > 0 ? wanted * clamp((78 - trait.centre) / 9, 0, 1) : wanted;
-  const shift = lift + (hint === "low" ? -5 : hint === "high" ? 5 : 0);
-  return clamp(trait.centre + shift, trait.low + 7, trait.high - 7);
+  const wanted = style.melody.register ?? 0;
+  const lift =
+    wanted > 0 ? wanted * clamp((78 - trait.centre) / 9, 0, 1) : wanted;
+  return clamp(trait.centre + lift, trait.low + 7, trait.high - 7);
+}
+
+/** Where the lead instrument would put a tune of this style if the key left it free. */
+export const sweetSpot = (ctx: Pick<Ctx, "config" | "style">) =>
+  naturalCentre(ctx.config.instrument, ctx.style);
+
+/** semitones folded into [-6, 6): the shorter way round the octave */
+const nearestOctave = (semitones: number) => mod(semitones + 6, 12) - 6;
+
+/**
+ * The compass of a tune around its centre, in semitones: the verse lives in
+ * about a tenth, the chorus up to a fifth above it, a breakdown a third
+ * below. The compass is measured from the tune's centre and the centre from
+ * the tonic, so in every key the tune has the same notes to choose from; an
+ * instrument too narrow to hold the whole compass in some key cuts it off at
+ * its own range there, which only the highest and lowest notes can notice.
+ */
+export const TUNE_BELOW = 10;
+export const TUNE_ABOVE = 15;
+/** the verse's own tenth inside that compass: beyond it lie the peaks of the chorus and the ends of cadence walks */
+const VERSE_BELOW = 8;
+const VERSE_ABOVE = 9;
+
+/**
+ * Where the tune sits, so the accompaniment can keep out of its way.
+ *
+ * The tune is anchored to the TONIC, not to the instrument: its centre lies a
+ * fixed interval from the tonic (the interval the style's own key and lead
+ * give, where the centre is the instrument's sweet spot), and the tonic is
+ * taken in the octave that brings this centre closest to the sweet spot of
+ * the instrument in use. Another key therefore moves the whole tune by the
+ * shorter way round instead of re-drawing it around a fixed pitch, and
+ * another lead instrument moves it by octaves only. The shorter way is not
+ * taken at any price: every semitone of the tune's compass that an octave
+ * would push out of the instrument's range counts against it (those of the
+ * verse far more than the peaks of the chorus), and an instrument that
+ * already sings high (bells, a music box, a flute) is rather taken down than
+ * up. A register hint slides the centre along the scale by a fourth.
+ */
+export function leadCentre(ctx: Pick<Ctx, "config" | "style" | "key">): number {
+  const home = styleInfo(ctx.style.id);
+  const homeCentre = naturalCentre(home.instrument, ctx.style);
+  const offset = nearestOctave(homeCentre - parseKey(home.key).tonic);
+  const trait = LEAD_TRAITS[ctx.config.instrument];
+  const wanted = naturalCentre(ctx.config.instrument, ctx.style) - offset;
+  const near = wanted + nearestOctave(ctx.key.tonic - wanted);
+  // going up costs more the higher the instrument already sits
+  const shrill = 1 + clamp((trait.centre - 72) / 4, 0, 2);
+  const cost = (tonic: number) => {
+    const centre = tonic + offset;
+    const compass =
+      Math.max(0, centre + TUNE_ABOVE - trait.high) +
+      Math.max(0, trait.low - (centre - TUNE_BELOW));
+    const verse =
+      Math.max(0, centre + VERSE_ABOVE - trait.high) +
+      Math.max(0, trait.low - (centre - VERSE_BELOW));
+    const away = tonic - wanted;
+    return (
+      (away > 0 ? away * shrill : -away) + 1.5 * (compass - verse) + 4 * verse
+    );
+  };
+  let tonic = near;
+  for (const other of [near - 12, near + 12])
+    if (cost(other) < cost(tonic)) tonic = other;
+  const hint = ctx.config.arrangement?.melody?.register;
+  const shift = hint === "low" ? -5 : hint === "high" ? 5 : 0;
+  return clamp(tonic + offset + shift, trait.low + 7, trait.high - 7);
 }
 
 const DEFAULT_EXTENSIONS: ExtensionTable = {
@@ -141,7 +229,31 @@ const SUBSTITUTES: Record<"major" | "minor", Record<string, string>> = {
   minor: { iv: "bVI", bVI: "iv" },
 };
 
-const pitchDistance = (a: number, b: number) => Math.min(mod(a - b, 12), mod(b - a, 12));
+const pitchDistance = (a: number, b: number) =>
+  Math.min(mod(a - b, 12), mod(b - a, 12));
+
+/**
+ * Cadences and turnarounds for the modes whose colour is one altered degree.
+ * They are used whenever the style's own tables (written for major and minor)
+ * would bring back the unaltered degree: the natural fourth in lydian, the
+ * flat sixth in dorian, the natural second in phrygian, the leading tone in
+ * mixolydian.
+ */
+const MODAL_CADENCES: Partial<Record<ScaleName, Progression[]>> = {
+  lydian: [["II"], ["vii", "II"]],
+  dorian: [
+    ["IV", "bVII"],
+    ["ii", "bVII"],
+  ],
+  phrygian: [["bII"], ["bvii", "bII"]],
+  mixolydian: [["bVII"], ["v", "bVII"]],
+};
+const MODAL_TURNAROUNDS: Partial<Record<ScaleName, string[]>> = {
+  lydian: ["V", "II"],
+  dorian: ["bVII", "v"],
+  phrygian: ["bII", "bvii"],
+  mixolydian: ["bVII", "v"],
+};
 
 export function planHarmony(input: {
   config: MusicConfig;
@@ -182,17 +294,53 @@ export function planHarmony(input: {
     return parse(tokens[tokens.length - 1] ?? tonicRoman);
   };
 
+  /* ---- the mode's own colour ---- */
+  // notes of plain major / natural minor that this mode has replaced
+  const foreign = SCALES[key.minor ? "naturalMinor" : "major"]
+    .map((interval) => mod(key.tonic + interval, 12))
+    .filter((pitch) => !key.parent[pitch]);
+  /** true when no chord of the bar brings back a degree the mode has altered */
+  const modal = (bar: string) =>
+    !foreign.length ||
+    splitBar(bar).every(
+      (token) =>
+        !parse(token).pitchClasses.some((pitch) => foreign.includes(pitch)),
+    );
+  const turnarounds = (mode.turnaround ?? def.turnaround[tonality]).filter(
+    modal,
+  );
+  if (!turnarounds.length && def.turnaround[tonality].length)
+    turnarounds.push(...(MODAL_TURNAROUNDS[key.scaleName] ?? []).filter(modal));
+  /** a plain chord that leads to the tonic without leaving the mode */
+  const dominant =
+    (key.minor ? ["v", "bVII", "bvii", "bII"] : ["V", "v", "bVII", "II"]).find(
+      modal,
+    ) ?? "V";
+
   /* ---- colour: triads → sevenths → ninths as the level rises ---- */
   const colourLevel = lerp(def.colour[0], def.colour[1], complexity);
-  const extensions: ExtensionTable = { ...DEFAULT_EXTENSIONS, ...def.extensions };
+  const extensions: ExtensionTable = {
+    ...DEFAULT_EXTENSIONS,
+    ...def.extensions,
+  };
   const colourise = (roman: string): string => {
     const chord = parse(roman);
-    const level = chord.suffix === "" ? 0 : ["7", "maj7", "m7"].includes(chord.suffix) ? 1 : -1;
+    const level =
+      chord.suffix === ""
+        ? 0
+        : ["7", "maj7", "m7"].includes(chord.suffix)
+          ? 1
+          : -1;
     if (level < 0 || !chord.intervals.includes(7)) return roman;
     const lowerCase = chord.head === chord.head.toLowerCase();
     if (chord.minor !== lowerCase) return roman;
     const draw = hashUnit(rng.seed, `colour:${chord.head}`);
-    const target = colourLevel > 0.55 + 0.45 * draw ? 2 : colourLevel > 0.12 + 0.5 * draw ? 1 : 0;
+    const target =
+      colourLevel > 0.55 + 0.45 * draw
+        ? 2
+        : colourLevel > 0.12 + 0.5 * draw
+          ? 1
+          : 0;
     if (target <= level) return roman;
     let category: keyof ExtensionTable;
     if (chord.minor) category = "minor";
@@ -203,7 +351,10 @@ export function planHarmony(input: {
     const table = extensions[category];
     let suffix = table[target - 1];
     const ninthFits = key.parent[mod(chord.root + 2, 12)] && !chord.applied;
-    if (target === 2 && (suffix === "" || (NINTH_SUFFIXES.has(suffix) && !ninthFits)))
+    if (
+      target === 2 &&
+      (suffix === "" || (NINTH_SUFFIXES.has(suffix) && !ninthFits))
+    )
       suffix = level < 1 ? table[0] : "";
     if (NINTH_SUFFIXES.has(suffix) && !ninthFits) suffix = "";
     if (!suffix || suffix === chord.suffix) return roman;
@@ -214,14 +365,19 @@ export function planHarmony(input: {
   const vary = (progression: Progression, type: SectionType): Progression => {
     const bars = progression.slice();
     const count = bars.length;
-    const dice = rng.fork(`vary:${type}`);
+    // every decision has a draw of its own, held against a threshold that
+    // moves with the complexity: turning the control flips the decisions one
+    // by one instead of re-rolling the whole progression
+    const takes = (name: string, probability: number) =>
+      hashUnit(rng.seed, `vary:${type}:${name}`) < probability;
     const plain = (chord: Chord | null): chord is Chord =>
       !!chord && chord.suffix === "" && !chord.slash;
     // same-function swaps in the middle of the phrase
     for (let i = 1; i < count - 1; i++) {
       const chord = single(bars[i]);
       const swap = plain(chord) ? SUBSTITUTES[tonality][chord.head] : undefined;
-      if (swap && dice.chance(def.variation * 0.3 * (0.4 + complexity))) bars[i] = swap;
+      if (swap && takes(`swap:${i}`, def.variation * 0.3 * (0.4 + complexity)))
+        bars[i] = swap;
     }
     // first inversions that turn a leaping bass into a line
     for (let i = 1; i < count - 1; i++) {
@@ -235,7 +391,10 @@ export function planHarmony(input: {
         third !== after &&
         pitchDistance(third, before) <= 2 &&
         pitchDistance(third, after) <= 2;
-      if (smooth && dice.chance(def.variation * (0.25 + 0.6 * complexity)))
+      if (
+        smooth &&
+        takes(`invert:${i}`, def.variation * (0.25 + 0.6 * complexity))
+      )
         bars[i] = `${chord.roman}/${numeralForPitch(third, key)}`;
     }
     // secondary dominants into diatonic chords other than the tonic
@@ -245,13 +404,24 @@ export function planHarmony(input: {
     for (let i = 0; i < count - 1 && applied < appliedLimit; i++) {
       const chord = single(bars[i]);
       const target = firstChord(bars[(i + 1) % count]);
-      if (!chord || chord.fn === "D" || target.applied || target.slash) continue;
+      if (!chord || chord.fn === "D" || target.applied || target.slash)
+        continue;
       if (target.root === key.tonic || target.root === chord.root) continue;
       if (!target.intervals.includes(7) || !key.parent[target.root]) continue;
       // as a plain triad the dominant of IV is just the tonic again
-      if (colourLevel <= 0.3 && !key.minor && mod(target.root + 7, 12) === key.tonic) continue;
-      if (colourLevel <= 0.3 && mod(target.root + 7, 12) === chord.root) continue;
-      if (!chromatic || !dice.chance(def.secondary * ramp(0.3, 0.9, complexity))) continue;
+      if (
+        colourLevel <= 0.3 &&
+        !key.minor &&
+        mod(target.root + 7, 12) === key.tonic
+      )
+        continue;
+      if (colourLevel <= 0.3 && mod(target.root + 7, 12) === chord.root)
+        continue;
+      if (
+        !chromatic ||
+        !takes(`applied:${i}`, def.secondary * ramp(0.3, 0.9, complexity))
+      )
+        continue;
       bars[i] = `${bars[i]} ${colourLevel > 0.3 ? "V7" : "V"}/${target.head}`;
       applied++;
     }
@@ -261,7 +431,8 @@ export function planHarmony(input: {
         const chord = single(bars[i]);
         if (!plain(chord) || chord.head !== "IV") continue;
         if (firstChord(bars[(i + 1) % count]).head !== "I") continue;
-        if (dice.chance(def.borrowed * ramp(0.45, 1, complexity))) bars[i] = "IV iv";
+        if (takes("borrowed", def.borrowed * ramp(0.45, 1, complexity)))
+          bars[i] = "IV iv";
         break;
       }
     // suspended dominant resolving inside the last bar
@@ -271,9 +442,10 @@ export function planHarmony(input: {
       closing.head === "V" &&
       !closing.slash &&
       (closing.suffix === "" || closing.suffix === "7") &&
-      dice.chance(def.sus * ramp(0.3, 0.9, complexity))
+      takes("sus", def.sus * ramp(0.3, 0.9, complexity))
     )
-      bars[count - 1] = `${closing.suffix === "7" ? "V7sus4" : "Vsus4"} ${closing.roman}`;
+      bars[count - 1] =
+        `${closing.suffix === "7" ? "V7sus4" : "Vsus4"} ${closing.roman}`;
     return bars;
   };
 
@@ -285,19 +457,24 @@ export function planHarmony(input: {
     const dice = rng.fork(`progression:${type}`);
     let result: Progression;
     if (type === "intro" || type === "outro")
-      result = bank[type] ? vary(dice.pick(bank[type]!), type) : progressionFor("verse");
+      result = bank[type]
+        ? vary(dice.pick(bank[type]!), type)
+        : progressionFor("verse");
     else {
       let options: Progression[];
       if (type === "verse") options = bank.verse;
       else if (type === "chorus") options = bank.chorus ?? bank.verse;
       else if (type === "bridge")
         options = bank.bridge ?? [functionalProgression(key.minor, dice)];
-      else if (type === "breakdown") options = bank.breakdown ?? bank.bridge ?? bank.verse;
+      else if (type === "breakdown")
+        options = bank.breakdown ?? bank.bridge ?? bank.verse;
       else options = bank.build ?? bank.chorus ?? bank.verse;
       if (type !== "verse" && options.length > 1) {
         // contrast: avoid the progression the verse already uses
         const verse = progressionFor("verse").join("|");
-        const others = options.filter((option) => vary(option, "verse").join("|") !== verse);
+        const others = options.filter(
+          (option) => vary(option, "verse").join("|") !== verse,
+        );
         if (others.length) options = others;
       }
       result = vary(dice.pick(options.length ? options : [[tonicRoman]]), type);
@@ -309,9 +486,11 @@ export function planHarmony(input: {
 
   /* ---- one entry per bar ---- */
   const scoredBars = timing.loop ? timing.bars : timing.finalBar + 1;
-  const entries: { bar: string; group: string }[] = [];
+  /** `home`: the chord the bar would hold if the applied chord spread into it were dropped */
+  const entries: { bar: string; group: string; home?: string }[] = [];
   if (overridden) {
-    const anchor = sections.find((section) => section.type !== "intro")?.startBar ?? 0;
+    const anchor =
+      sections.find((section) => section.type !== "intro")?.startBar ?? 0;
     for (let bar = 0; bar < scoredBars; bar++)
       entries.push({
         bar: override![mod(bar - anchor, override!.length)],
@@ -321,16 +500,19 @@ export function planHarmony(input: {
     for (const section of sections) {
       const progression = progressionFor(section.type);
       const length = progression.length;
-      const step =
-        def.barsPerChord?.({ bpm: timing.bpm, section: section.type }) ??
-        (timing.bpm >= FAST_TEMPO ? 2 : 1);
+      const step = barsPerChord(style, timing.bpm, section.type);
       const pass = length * step;
       const count = section.playBars;
       const remainder = count % 4;
       for (let b = 0; b < count; b++) {
         let aligned = b;
         if (section.type === "intro") aligned = b + mod(-count, pass);
-        else if (count >= 4 && remainder > 0 && remainder <= 2 && b >= count - remainder)
+        else if (
+          count >= 4 &&
+          remainder > 0 &&
+          remainder <= 2 &&
+          b >= count - remainder
+        )
           aligned = pass - remainder + (b - (count - remainder));
         const position = Math.floor(aligned / step);
         const entry = progression[mod(position, length)];
@@ -339,7 +521,11 @@ export function planHarmony(input: {
         const spread = step === 2 && tokens.length >= 2;
         entries[section.startBar + b] = {
           bar: spread ? tokens[mod(aligned, 2)] : entry,
-          group: step === 1 || spread ? `s${section.index}b${b}` : `s${section.index}p${position}`,
+          group:
+            step === 1 || spread
+              ? `s${section.index}b${b}`
+              : `s${section.index}p${position}`,
+          home: spread && mod(aligned, 2) === 1 ? tokens[0] : undefined,
         };
       }
     }
@@ -347,15 +533,24 @@ export function planHarmony(input: {
   for (let bar = 0; bar < scoredBars; bar++)
     if (!entries[bar]) entries[bar] = { bar: tonicRoman, group: `f${bar}` };
 
+  /** bars whose chord was replaced after the progressions were laid out */
+  const rewritten = new Set<number>();
+  const rewrite = (bar: number, roman: string, group: string) => {
+    entries[bar] = { bar: roman, group };
+    rewritten.add(bar);
+  };
+
   // a build must end unresolved: its last bar is a dominant
   if (!overridden)
     for (const section of sections) {
-      if (section.type !== "build" || section.ending || section.playBars < 2) continue;
+      if (section.type !== "build" || section.ending || section.playBars < 2)
+        continue;
       const bar = section.startBar + section.playBars - 1;
       if (lastChord(entries[bar].bar).fn !== "D")
-        entries[bar] = { bar: def.turnaround[tonality][0] ?? "V", group: `b${bar}` };
+        rewrite(bar, turnarounds[0] ?? dominant, `b${bar}`);
     }
 
+  let turned = false;
   if (!timing.loop) {
     /* ---- ending: cadence bars, then the held tonic ---- */
     const ending = sections[sections.length - 1];
@@ -366,14 +561,26 @@ export function planHarmony(input: {
         entries[before] = { bar: "V", group: `c${before}` };
       entries[finalBar] = { bar: tonicRoman, group: "final" };
     } else {
-      const cadence = rng.fork("cadence").pick(def.cadence[tonality]);
+      // the style's cadences, as far as they keep to the mode; otherwise the mode's own
+      let cadences = (mode.cadence ?? def.cadence[tonality]).filter((option) =>
+        option.every(modal),
+      );
+      if (!cadences.length)
+        cadences = (MODAL_CADENCES[key.scaleName] ?? []).filter((option) =>
+          option.every(modal),
+        );
+      if (!cadences.length) cadences = [[dominant]];
+      const cadence = rng.fork("cadence").pick(cadences);
       const room = Math.min(cadence.length, ending.playBars, finalBar);
       for (let i = 0; i < room; i++)
-        entries[finalBar - room + i] = {
-          bar: cadence[cadence.length - room + i],
-          group: `c${i}`,
-        };
-      entries[finalBar] = { bar: def.final[tonality], group: "final" };
+        rewrite(
+          finalBar - room + i,
+          cadence[cadence.length - room + i],
+          `c${i}`,
+        );
+      // a last chord that would deny the mode is played plain; the colour pass may dress it again
+      const final = mode.final ?? def.final[tonality];
+      rewrite(finalBar, modal(final) ? final : tonicRoman, "final");
     }
   } else if (!overridden && def.turnaround[tonality].length) {
     /* ---- loop: the last bar must lead back into bar 1 ---- */
@@ -381,38 +588,100 @@ export function planHarmony(input: {
     const home = firstChord(entries[0].bar);
     const closing = lastChord(entries[lastBar].bar);
     const pull = mod(closing.root - home.root, 12);
-    const leadsHome = closing.fn === "D" && (pull === 7 || pull === 10 || pull === 11 || pull === 1);
+    const leadsHome =
+      closing.fn === "D" &&
+      (pull === 7 || pull === 10 || pull === 11 || pull === 1);
     if (!leadsHome) {
       // only turnarounds that really move towards the first chord
       const pulls = (bar: string) =>
         [7, 10, 11, 1, 5, 2].includes(mod(lastChord(bar).root - home.root, 12));
-      const options = def.turnaround[tonality].filter(pulls);
-      const applicable = home.root !== key.tonic && home.intervals.includes(7) && !home.slash;
+      const options = turnarounds.filter(pulls);
+      const applicable =
+        home.root !== key.tonic &&
+        home.intervals.includes(7) &&
+        !home.slash &&
+        modal(`V/${home.head}`);
       let turnaround = options.length
         ? rng.fork("turnaround").pick(options)
         : applicable
           ? `V/${home.head}`
-          : key.minor
-            ? "v"
-            : "V";
+          : dominant;
       if (applicable && chromatic && def.secondary > 0 && complexity >= 0.45)
         turnaround = `${colourLevel > 0.3 ? "V7" : "V"}/${home.head}`;
       const tokens = splitBar(turnaround);
       const opening = splitBar(entries[lastBar].bar)[0];
-      entries[lastBar] = {
-        bar:
-          tokens.length >= 2 || lastBar === 0 || parse(opening).root === parse(tokens[0]).root
-            ? turnaround
-            : `${opening} ${tokens[0]}`,
-        group: "turnaround",
-      };
+      rewrite(
+        lastBar,
+        tokens.length >= 2 ||
+          lastBar === 0 ||
+          parse(opening).root === parse(tokens[0]).root
+          ? turnaround
+          : `${opening} ${tokens[0]}`,
+        "turnaround",
+      );
+      turned = true;
     }
   }
+
+  /* ---- an applied dominant keeps its target ---- */
+  // vary() aims "V7/x" at the chord of the next bar; where the form cuts the
+  // progression short, or a cadence, a turnaround or a build's dominant has
+  // replaced that bar, the dominant would resolve to nothing
+  if (!overridden)
+    for (let bar = 0; bar < scoredBars; bar++) {
+      const after = bar + 1 < scoredBars ? bar + 1 : timing.loop ? 0 : -1;
+      const tokens = splitBar(entries[bar].bar);
+      const kept: string[] = [];
+      tokens.forEach((token, k) => {
+        const chord = parse(token);
+        const next =
+          k + 1 < tokens.length
+            ? parse(tokens[k + 1])
+            : after >= 0
+              ? firstChord(entries[after].bar)
+              : undefined;
+        const aims = mod(chord.root + (chord.head === "V" ? 5 : 1), 12);
+        if (!chord.applied || !next || next.root === aims) {
+          kept.push(token);
+          return;
+        }
+        // one of two chords in the bar (added by vary(), or left over in front
+        // of a turnaround): the bar keeps its other chord
+        if (tokens.length >= 2) return;
+        // spread over a bar of its own at two bars per chord: the chord before it stays
+        if (entries[bar].home) {
+          kept.push(entries[bar].home!);
+          return;
+        }
+        // written in the bank, and what it led to has been replaced: it leads to the new chord
+        if (rewritten.has(after)) {
+          const seventh = chord.suffix === "7" ? "V7" : "V";
+          const diatonic =
+            next.root !== key.tonic &&
+            key.parent[next.root] &&
+            next.intervals.includes(7) &&
+            !next.slash;
+          if (diatonic) kept.push(`${seventh}/${next.head}`);
+          else if (next.root === key.tonic)
+            kept.push(dominant === "V" ? seventh : dominant);
+          else kept.push(token);
+          return;
+        }
+        // written in the bank at the end of a section: a deceptive turn the style asked for
+        kept.push(token);
+      });
+      if (kept.join(" ") !== tokens.join(" "))
+        entries[bar] = {
+          ...entries[bar],
+          bar: kept.length ? kept.join(" ") : tonicRoman,
+        };
+    }
 
   /* ---- slots ---- */
   const sectionOfBar: number[] = [];
   for (const section of sections)
-    for (let b = 0; b < section.bars; b++) sectionOfBar[section.startBar + b] = section.index;
+    for (let b = 0; b < section.bars; b++)
+      sectionOfBar[section.startBar + b] = section.index;
   const finish = (roman: string) => (overridden ? roman : colourise(roman));
   const slots: ChordSlot[] = [];
   const push = (bar: number, beat: number, beats: number, roman: string) =>
@@ -422,10 +691,11 @@ export function planHarmony(input: {
       beat,
       beats,
       chord: parse(finish(roman)),
+      plain: parse(roman),
       section: sectionOfBar[bar] ?? sections.length - 1,
     });
   const beatsPerBar = timing.beatsPerBar;
-  for (let bar = 0; bar < scoredBars; ) {
+  for (let bar = 0; bar < scoredBars;) {
     const entry = entries[bar];
     const tokens = splitBar(entry.bar);
     if (tokens.length >= 2) {
@@ -452,7 +722,8 @@ export function planHarmony(input: {
 
   const byBeat: ChordSlot[] = [];
   for (const slot of slots)
-    for (let beat = slot.beat; beat < slot.beat + slot.beats; beat++) byBeat[beat] = slot;
+    for (let beat = slot.beat; beat < slot.beat + slot.beats; beat++)
+      byBeat[beat] = slot;
 
   const outline: HarmonyPlan["outline"] = {};
   for (const section of sections) {
@@ -467,12 +738,27 @@ export function planHarmony(input: {
     slots,
     at: (beat) => {
       const index = Math.floor(beat);
-      return byBeat[timing.loop ? mod(index, totalBeats) : clamp(index, 0, totalBeats - 1)];
+      return byBeat[
+        timing.loop ? mod(index, totalBeats) : clamp(index, 0, totalBeats - 1)
+      ];
     },
     after: (slot) => slots[slot.index + 1] ?? (timing.loop ? slots[0] : slot),
     outline,
     overridden,
+    turnaround: turned,
   };
+}
+
+/** Bars each entry of a progression lasts in a section of this type at this tempo. */
+export function barsPerChord(
+  style: StyleDef,
+  bpm: number,
+  section: SectionType,
+): 1 | 2 {
+  return (
+    style.harmony.barsPerChord?.({ bpm, section }) ??
+    (isFastTempo(bpm, style) ? 2 : 1)
+  );
 }
 
 export function chordSpans(plan: HarmonyPlan, timing: Timing): ChordSpan[] {
@@ -483,7 +769,10 @@ export function chordSpans(plan: HarmonyPlan, timing: Timing): ChordSpan[] {
     end:
       index === last
         ? timing.duration
-        : Math.min((slot.beat + slot.beats) * timing.beatSeconds, timing.duration),
+        : Math.min(
+            (slot.beat + slot.beats) * timing.beatSeconds,
+            timing.duration,
+          ),
     bar: slot.bar,
     symbol: slot.chord.symbol,
     roman: slot.chord.roman,
@@ -516,7 +805,12 @@ export function voiceLead(
  * work like two hands: "low" / "1" is the chord's bass note at or below the
  * voicing, the other rows are the voicing above it.
  */
-function rowNotes(voicing: number[], row: CompRow, bassPc: number, floor: number): number[] {
+function rowNotes(
+  voicing: number[],
+  row: CompRow,
+  bassPc: number,
+  floor: number,
+): number[] {
   // `floor`: lowest note the left hand may take (it stays out of a playing bass's octave)
   if (row === "all") return voicing;
   let bass = voicing[0] - mod(voicing[0] - bassPc, 12);
@@ -554,12 +848,21 @@ function pickPattern<T>(
   lifted: boolean,
 ): T | undefined {
   const order: (keyof Tier<T[]>)[] =
-    tier === "low" ? ["low", "mid", "high"] : tier === "mid" ? ["mid", "low", "high"] : ["high", "mid", "low"];
-  for (const name of order) if (tiers[name]?.length) return pickRanked(tiers[name], lifted, rng);
+    tier === "low"
+      ? ["low", "mid", "high"]
+      : tier === "mid"
+        ? ["mid", "low", "high"]
+        : ["high", "mid", "low"];
+  for (const name of order)
+    if (tiers[name]?.length) return pickRanked(tiers[name], lifted, rng);
   return undefined;
 }
 
-export function composeComp(ctx: Ctx, def: CompDef, voice: VoiceId): BeatNote[] {
+export function composeComp(
+  ctx: Ctx,
+  def: CompDef,
+  voice: VoiceId,
+): BeatNote[] {
   const { harmony, timing, style, sections } = ctx;
   const range = VOICE_RANGES[voice];
   // the accompaniment keeps underneath the tune: its top is capped a little
@@ -567,7 +870,10 @@ export function composeComp(ctx: Ctx, def: CompDef, voice: VoiceId): BeatNote[] 
   const [windowLow, windowHigh] = style.harmony.register;
   const low = Math.max(windowLow, range[0]);
   const room = style.harmony.voicing === "open" ? 17 : 13;
-  const high = Math.min(range[1], Math.max(low + room, Math.min(windowHigh, leadCentre(ctx) - 5)));
+  const high = Math.min(
+    range[1],
+    Math.max(low + room, Math.min(windowHigh, leadCentre(ctx) - 5)),
+  );
   const voicings = voiceLead(harmony, {
     style: style.harmony.voicing,
     voices: style.harmony.voices,
@@ -593,8 +899,12 @@ export function composeComp(ctx: Ctx, def: CompDef, voice: VoiceId): BeatNote[] 
     const floor = Math.max(range[0], bassless ? 36 : 50);
     for (let b = 0; b < section.playBars; b++) {
       const bar = section.startBar + b;
-      const level = (0.62 + 0.38 * energyAtBar(section, bar)) * (pattern.level ?? 1);
-      for (const [row, text] of Object.entries(pattern.rows) as [CompRow, string][]) {
+      const level =
+        (0.62 + 0.38 * energyAtBar(section, bar)) * (pattern.level ?? 1);
+      for (const [row, text] of Object.entries(pattern.rows) as [
+        CompRow,
+        string,
+      ][]) {
         const parsed = parseSteps(text);
         const offset = (b % (parsed.steps / 16)) * 16;
         for (const hit of parsed.hits) {
@@ -604,15 +914,32 @@ export function composeComp(ctx: Ctx, def: CompDef, voice: VoiceId): BeatNote[] 
           const beat = bar * beatsPerBar + step / 4;
           let slot = harmony.at(beat);
           const pushed = !!pattern.push && step >= 14;
-          if (pushed) slot = harmony.after(harmony.at(bar * beatsPerBar + beatsPerBar - 0.01));
+          if (pushed)
+            slot = harmony.after(
+              harmony.at(bar * beatsPerBar + beatsPerBar - 0.01),
+            );
           let length = hit.length / 4;
           if (!pushed) length = Math.min(length, slot.beat + slot.beats - beat);
           length = Math.max(0.2, length * (pattern.gate ?? 1));
-          let pitches = rowNotes(voicings[slot.index], row, slot.chord.bass, floor);
+          let pitches = rowNotes(
+            voicings[slot.index],
+            row,
+            slot.chord.bass,
+            floor,
+          );
           // nobody else plays the bass here: a block chord gets its own bass note
           // underneath, or an inverted voicing would change what the chord is
-          if (row === "all" && bassless && mod(pitches[0], 12) !== slot.chord.bass) {
-            const under = rowNotes(voicings[slot.index], "low", slot.chord.bass, floor)[0];
+          if (
+            row === "all" &&
+            bassless &&
+            mod(pitches[0], 12) !== slot.chord.bass
+          ) {
+            const under = rowNotes(
+              voicings[slot.index],
+              "low",
+              slot.chord.bass,
+              floor,
+            )[0];
             if (under < pitches[0]) pitches = [under, ...pitches];
           }
           const upstroke = !!pattern.strumAlternate && step % 4 === 2;
@@ -622,7 +949,11 @@ export function composeComp(ctx: Ctx, def: CompDef, voice: VoiceId): BeatNote[] 
               beat,
               len: length,
               midi,
-              vel: clamp(hit.vel * level * (row === "all" && index > 0 ? 0.94 : 1), 0.06, 1),
+              vel: clamp(
+                hit.vel * level * (row === "all" && index > 0 ? 0.94 : 1),
+                0.06,
+                1,
+              ),
               late: pattern.strum ? order * pattern.strum : undefined,
             });
           });
@@ -636,8 +967,16 @@ export function composeComp(ctx: Ctx, def: CompDef, voice: VoiceId): BeatNote[] 
     const slot = harmony.at(beat);
     let voicing = voicings[slot.index];
     // without a bass under it the last chord rests on its own root
-    if (!ctx.plays.bass[ending.index] && mod(voicing[0], 12) !== slot.chord.bass) {
-      const under = rowNotes(voicing, "low", slot.chord.bass, Math.max(range[0], 36))[0];
+    if (
+      !ctx.plays.bass[ending.index] &&
+      mod(voicing[0], 12) !== slot.chord.bass
+    ) {
+      const under = rowNotes(
+        voicing,
+        "low",
+        slot.chord.bass,
+        Math.max(range[0], 36),
+      )[0];
       if (under < voicing[0]) voicing = [under, ...voicing];
     }
     voicing.forEach((midi, index) =>

@@ -16,8 +16,10 @@ import { classes } from "./Button";
 
 /* ---------------- slider ---------------- */
 
-export interface SliderProps
-  extends Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "value" | "onChange"> {
+export interface SliderProps extends Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  "type" | "value" | "onChange"
+> {
   value: number;
   min?: number;
   max?: number;
@@ -84,9 +86,7 @@ export interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
 export function Select(props: SelectProps) {
   const { prefix, block, wrapClassName, children, ref, ...rest } = props;
   return (
-    <span
-      className={classes("select", block && "select-block", wrapClassName)}
-    >
+    <span className={classes("select", block && "select-block", wrapClassName)}>
       {prefix && (
         <span className="select-prefix" aria-hidden>
           {prefix}
@@ -123,8 +123,16 @@ export interface SegmentedProps<T extends string | number> {
 
 /** A radio group drawn as one control; arrow keys move the choice. */
 export function Segmented<T extends string | number>(props: SegmentedProps<T>) {
-  const { label, value, options, onChange, block, disabled, testId, className } =
-    props;
+  const {
+    label,
+    value,
+    options,
+    onChange,
+    block,
+    disabled,
+    testId,
+    className,
+  } = props;
   const group = useRef<HTMLDivElement>(null);
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const enabled = options.filter((option) => !option.disabled);
@@ -174,8 +182,10 @@ export function Segmented<T extends string | number>(props: SegmentedProps<T>) {
 
 /* ---------------- chip ---------------- */
 
-export interface ChipProps
-  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "type"> {
+export interface ChipProps extends Omit<
+  ButtonHTMLAttributes<HTMLButtonElement>,
+  "type"
+> {
   /** toggle chips expose aria-pressed and show a tick when on */
   pressed?: boolean;
   /** small colour swatch before the label (hidden while pressed) */
@@ -199,7 +209,11 @@ export function Chip(props: ChipProps) {
         <Check size={13} strokeWidth={2.6} aria-hidden />
       ) : (
         swatch && (
-          <span className="chip-dot" style={{ background: swatch }} aria-hidden />
+          <span
+            className="chip-dot"
+            style={{ background: swatch }}
+            aria-hidden
+          />
         )
       )}
       {children}

@@ -129,7 +129,10 @@ function snare(h: Hit, p: Snare): void {
     mix(out, crack, short, p.crack * (0.2 + 1.25 * vel * vel));
   }
   // a light stroke has no edge: the whole drum eases in
-  const ease = Math.min(n, Math.round((0.0003 + 0.004 * (1 - vel) * (1 - vel)) * sr));
+  const ease = Math.min(
+    n,
+    Math.round((0.0003 + 0.004 * (1 - vel) * (1 - vel)) * sr),
+  );
   for (let i = 0; i < ease; i++)
     out[i] *= 0.5 - 0.5 * Math.cos((Math.PI * i) / ease);
   saturate(out, n, p.drive * byVel(h, 0.6, 1.1));
@@ -214,7 +217,8 @@ function brush(h: Hit, p: Brush): void {
   }
   // unit RMS for the band at its mean centre
   const centre = Math.sqrt(p.from * p.to) * bright;
-  const norm = h.nd / (q * 0.5774 * Math.sqrt((Math.PI * centre) / (48000 * q)));
+  const norm =
+    h.nd / (q * 0.5774 * Math.sqrt((Math.PI * centre) / (48000 * q)));
   for (let i = 0; i < n; i++) out[i] *= norm;
 
   if (p.width > 0) {
@@ -294,7 +298,9 @@ function clap(h: Hit, p: Clap): void {
   for (let b = 0; b < p.bursts; b++) {
     starts[b] = Math.round(t * sr);
     const last = b === p.bursts - 1;
-    levels[b] = last ? 1 : 0.6 + 0.3 * (b / p.bursts) + p.jitter * 0.4 * h.dice.next();
+    levels[b] = last
+      ? 1
+      : 0.6 + 0.3 * (b / p.bursts) + p.jitter * 0.4 * h.dice.next();
     t += p.gap * (1 + p.jitter * h.dice.next());
   }
   const ramp = Math.max(2, Math.round(0.0003 * sr));
@@ -368,7 +374,11 @@ const TICK_BASE: Tick = {
 /** The length follows from the longest mode (at full velocity) and the room. */
 const tk = (p: Partial<Tick>): Tick => {
   const longest = Math.max(...(p.modes ?? []).map((mode) => mode[2]));
-  return { ...TICK_BASE, ...p, len: longest * 1.15 + 0.008 + (p.room ? 0.042 : 0) };
+  return {
+    ...TICK_BASE,
+    ...p,
+    len: longest * 1.15 + 0.008 + (p.room ? 0.042 : 0),
+  };
 };
 
 // prettier-ignore
@@ -488,8 +498,12 @@ function fingerSnap(h: Hit, p: Snap): void {
   shape(noise, count, sr, 0.0003, decay * 0.55);
   mix(body, noise, count, 0.4 * p.mix2 * byVel(h, 0.4, 1.15));
   // softer snaps come off the palm more slowly
-  const attack = Math.min(count, Math.round((0.0002 + p.soft * (1.5 - vel)) * sr));
-  for (let i = 0; i < attack; i++) body[i] *= 0.5 - 0.5 * Math.cos((Math.PI * i) / attack);
+  const attack = Math.min(
+    count,
+    Math.round((0.0002 + p.soft * (1.5 - vel)) * sr),
+  );
+  for (let i = 0; i < attack; i++)
+    body[i] *= 0.5 - 0.5 * Math.cos((Math.PI * i) / attack);
   mixDelayed(out, body, count, 1, gap, n);
   if (p.width > 0) {
     bandNoise(h, noise, count, p.hz2 * bright, p.q, h.noise2);
@@ -514,12 +528,7 @@ function fingerSnap(h: Hit, p: Snap): void {
 /* ------------------------------------------------------------------ */
 
 export type SnareKind =
-  | "snare"
-  | "brushSnare"
-  | "clap"
-  | "rim"
-  | "woodblock"
-  | "fingerSnap";
+  "snare" | "brushSnare" | "clap" | "rim" | "woodblock" | "fingerSnap";
 
 export const SNARES: Engine<SnareKind> = {
   length(kind, kit) {

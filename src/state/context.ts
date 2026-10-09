@@ -36,27 +36,39 @@ export function AppProvider(props: AppProviderProps) {
   const core = props.core ?? appCore;
   const platform = props.platform ?? browserPlatform;
   const player = usePlayer(core.onPlayerError);
-  const { load, unload, play, pause, setMix, unlock } = player;
+  const { load, unload, play, pause, setMix, unlock, setLoop } = player;
 
   useEffect(() => {
     // Player methods are stable, so this runs once per mount.
-    core.attachPlayer({ load, unload, play, pause, setMix, unlock });
+    core.attachPlayer({ load, unload, play, pause, setMix, unlock, setLoop });
     void core.start();
     return () => core.detachPlayer();
-  }, [core, load, unload, play, pause, setMix, unlock]);
+  }, [core, load, unload, play, pause, setMix, unlock, setLoop]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const hidden = () => {
       if (document.visibilityState === "hidden") core.flush();
     };
+    // Leaving with paid audio that exists only here (or with a paid request
+    // on its way): the browser asks before the tab closes or reloads. In the
+    // desktop app a cancelled unload would silently keep the window open, so
+    // there the shell asks instead — the core reports the risk to it through
+    // the bridge (AppCore.reportRisk → museDesktop.setUnsavedWork).
+    const leaving = (event: BeforeUnloadEvent) => {
+      if (!platform.isWeb || !core.closeRisk()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", leaving);
     window.addEventListener("pagehide", core.close);
     document.addEventListener("visibilitychange", hidden);
     return () => {
+      window.removeEventListener("beforeunload", leaving);
       window.removeEventListener("pagehide", core.close);
       document.removeEventListener("visibilitychange", hidden);
     };
-  }, [core]);
+  }, [core, platform]);
 
   const ui = useSyncExternalStore(core.subscribe, () => core.getState().ui);
   const studio = useStudio(core, platform);

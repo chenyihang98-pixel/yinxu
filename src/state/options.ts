@@ -4,11 +4,7 @@
  */
 import type { BrainKind } from "../agent/types";
 import type { Platform } from "../platform";
-import {
-  CLOUD_PROVIDERS,
-  cloudProviderInfo,
-  providerName,
-} from "../providers";
+import { CLOUD_PROVIDERS, cloudProviderInfo, providerName } from "../providers";
 import type { CloudProvider, MusicConfig, Provider } from "../types";
 import { joinText } from "./logic";
 import type {
@@ -20,6 +16,8 @@ import type {
 } from "./types";
 
 export const DESKTOP_ONLY = "桌面版可用";
+/** Said with every usable cloud engine in the selector. */
+export const PAID_LABEL = "按服务商计费";
 
 type Capabilities = Pick<Platform, "canUseCloud" | "canUseLlm">;
 
@@ -39,7 +37,7 @@ export function engineOptions(
       if (!platform.canUseCloud)
         return {
           id: info.id,
-          label: info.shortName,
+          label: info.name,
           available: false,
           hint: DESKTOP_ONLY,
           desktopOnly: true,
@@ -48,18 +46,23 @@ export function engineOptions(
       if (status?.damaged)
         return {
           id: info.id,
-          label: info.shortName,
+          label: info.name,
           available: false,
           hint: "凭据需重新保存",
         };
       if (!status?.configured)
         return {
           id: info.id,
-          label: info.shortName,
+          label: info.name,
           available: false,
           hint: "需先在设置中配置",
         };
-      return { id: info.id, label: info.shortName, available: true };
+      return {
+        id: info.id,
+        label: info.name,
+        billing: PAID_LABEL,
+        available: true,
+      };
     }),
   ];
 }
@@ -69,7 +72,11 @@ export function brainOptions(
   platform: Capabilities,
   settings: Pick<SettingsState, "llm">,
 ): BrainOption[] {
-  const rules: BrainOption = { id: "rules", label: "离线规则", available: true };
+  const rules: BrainOption = {
+    id: "rules",
+    label: "离线规则",
+    available: true,
+  };
   if (!platform.canUseLlm)
     return [
       rules,
@@ -90,7 +97,12 @@ export function brainOptions(
   if (!llm.configured)
     return [
       rules,
-      { id: "llm", label: "大模型", available: false, hint: "需先在设置中配置" },
+      {
+        id: "llm",
+        label: "大模型",
+        available: false,
+        hint: "需先在设置中配置",
+      },
     ];
   return [
     rules,
@@ -130,7 +142,7 @@ export function engineProblem(
   const option = options.find((item) => item.id === provider);
   const name = providerName(provider);
   if (!option || option.desktopOnly)
-    return { message: "云端 AI 音乐服务只在 Windows 桌面版中可用。" };
+    return { message: "云端生成只在 Windows 桌面版中可用。" };
   if (option.available) return null;
   return {
     message:
@@ -168,6 +180,12 @@ export function configProblem(
 /* job wording                                                         */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Shown instead of "正在作曲与合成 · 0%" while the local engine's render
+ * worker has been started and has not answered yet.
+ */
+export const ENGINE_STARTING = "正在启动作曲引擎";
+
 export function phaseText(
   stage: JobStage,
   job: Pick<Job, "kind" | "provider" | "brain">,
@@ -177,6 +195,8 @@ export function phaseText(
       return job.brain === "llm"
         ? "制作人（大模型）正在理解你的想法，本机模型可能需要一两分钟"
         : "制作人正在理解你的想法";
+    case "asking":
+      return "等待你的选择";
     case "rendering":
       return job.kind === "open" ? "正在重建这首作品" : "正在作曲与合成";
     case "cloud":
@@ -184,8 +204,10 @@ export function phaseText(
         providerName(job.provider),
         "正在创作，通常需要几十秒到几分钟",
       );
+    case "downloading":
+      return "正在重新下载已经生成的音乐，不会再次计费";
     case "saving":
-      return "正在把生成的音频保存到作品库";
+      return "正在把生成的音频保存到「我的作品」";
     case "decoding":
       return job.kind === "open" ? "正在打开作品" : "正在解码音频";
     case "cancelling":
@@ -202,6 +224,8 @@ export function cancelText(job: Pick<Job, "kind" | "stage">): string {
   switch (job.stage) {
     case "cloud":
       return "已取消等待。已提交的云端生成可能仍会计费。";
+    case "downloading":
+      return "已取消下载，没有发送新的生成请求。";
     case "planning":
       return "已取消本次编排";
     default:

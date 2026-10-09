@@ -26,12 +26,12 @@ function bridge(extra: Loose = {}): Loose {
   const noop = async () => undefined;
   return {
     getSettings: noop,
-    saveApiKey: noop,
-    deleteApiKey: noop,
     saveProviderCredentials: noop,
     deleteProviderCredentials: noop,
     generateMusic: noop,
     cancelGeneration: noop,
+    retryLastDownload: noop,
+    setUnsavedWork: noop,
     saveAudio: async () => ({ saved: true, path: "C:\\Music\\a.wav" }),
     openExternal: noop,
     saveLlmSettings: noop,
@@ -48,7 +48,11 @@ function define(values: Loose): () => void {
     (key) => [key, Object.getOwnPropertyDescriptor(scope, key)] as const,
   );
   for (const [key, value] of Object.entries(values))
-    Object.defineProperty(scope, key, { value, configurable: true, writable: true });
+    Object.defineProperty(scope, key, {
+      value,
+      configurable: true,
+      writable: true,
+    });
   return () => {
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(scope, key, descriptor);
@@ -57,7 +61,8 @@ function define(values: Loose): () => void {
   };
 }
 
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /* ---------------- detection ---------------- */
 
@@ -78,7 +83,11 @@ test("outside a browser the adapter is an offline web page with safe defaults", 
 
 test("the desktop build with its bridge can use cloud music and the LLM", () => {
   const api = bridge();
-  const host = { museDesktop: api, self: null as unknown, top: null as unknown };
+  const host = {
+    museDesktop: api,
+    self: null as unknown,
+    top: null as unknown,
+  };
   host.self = host.top = host;
   const result = createPlatform({ web: false, version: "0.3.0", host });
   assert.equal(result.desktop, api);
@@ -95,14 +104,22 @@ test("the desktop build with its bridge can use cloud music and the LLM", () => 
 
 test("an older preload without the agent still allows cloud music", () => {
   const { agentPlan: _agentPlan, ...old } = bridge();
-  const result = createPlatform({ web: false, version: "0.3.0", host: { museDesktop: old } });
+  const result = createPlatform({
+    web: false,
+    version: "0.3.0",
+    host: { museDesktop: old },
+  });
   assert.equal(result.platform.isDesktop, true);
   assert.equal(result.platform.canUseCloud, true);
   assert.equal(result.platform.canUseLlm, false);
 });
 
 test("the web build never has cloud or LLM, whatever is called museDesktop", () => {
-  const result = createPlatform({ web: true, version: "0.3.0", host: { museDesktop: bridge() } });
+  const result = createPlatform({
+    web: true,
+    version: "0.3.0",
+    host: { museDesktop: bridge() },
+  });
   assert.equal(result.desktop, undefined);
   assert.equal(result.platform.isDesktop, false);
   assert.equal(result.platform.isWeb, true);
@@ -122,7 +139,11 @@ test("things that are not the real bridge are ignored", () => {
     { generateMusic: () => 1, agentPlan: () => 1 },
   ];
   for (const museDesktop of candidates) {
-    const result = createPlatform({ web: false, version: "1", host: { museDesktop } });
+    const result = createPlatform({
+      web: false,
+      version: "1",
+      host: { museDesktop },
+    });
     assert.equal(result.desktop, undefined, String(museDesktop));
     assert.equal(result.platform.canUseCloud, false);
     assert.equal(result.platform.canUseLlm, false);
@@ -132,33 +153,59 @@ test("things that are not the real bridge are ignored", () => {
       throw new Error("no access");
     },
   };
-  assert.equal(createPlatform({ web: false, version: "1", host: hostile }).desktop, undefined);
-  assert.equal(createPlatform({ web: false, version: "1", host: undefined }).platform.isWeb, true);
+  assert.equal(
+    createPlatform({ web: false, version: "1", host: hostile }).desktop,
+    undefined,
+  );
+  assert.equal(
+    createPlatform({ web: false, version: "1", host: undefined }).platform
+      .isWeb,
+    true,
+  );
 });
 
 test("an iframe is detected, including when the parent cannot be read", () => {
   const top = {};
   const framed = { self: null as unknown, top };
   framed.self = framed;
-  assert.equal(createPlatform({ web: true, version: "1", host: framed }).platform.isEmbedded, true);
+  assert.equal(
+    createPlatform({ web: true, version: "1", host: framed }).platform
+      .isEmbedded,
+    true,
+  );
   const alone = { self: null as unknown, top: null as unknown };
   alone.self = alone.top = alone;
-  assert.equal(createPlatform({ web: true, version: "1", host: alone }).platform.isEmbedded, false);
+  assert.equal(
+    createPlatform({ web: true, version: "1", host: alone }).platform
+      .isEmbedded,
+    false,
+  );
   const sandboxed = {
     self: {},
     get top(): unknown {
       throw new DOMException("cross-origin", "SecurityError");
     },
   };
-  assert.equal(createPlatform({ web: true, version: "1", host: sandboxed }).platform.isEmbedded, true);
-  assert.equal(createPlatform({ web: true, version: "", host: alone }).platform.version, "dev");
+  assert.equal(
+    createPlatform({ web: true, version: "1", host: sandboxed }).platform
+      .isEmbedded,
+    true,
+  );
+  assert.equal(
+    createPlatform({ web: true, version: "", host: alone }).platform.version,
+    "dev",
+  );
 });
 
 test("the build constants decide the module's own answer", async () => {
   const api = bridge();
   const host: Loose = { museDesktop: api };
   host.self = host.top = host;
-  let restore = define({ window: host, __APP_VERSION__: "0.3.0", __MUSE_WEB__: false });
+  let restore = define({
+    window: host,
+    __APP_VERSION__: "0.3.0",
+    __MUSE_WEB__: false,
+  });
   try {
     const desktopBuild = await freshModule();
     assert.equal(desktopBuild.desktop, api);
@@ -168,7 +215,11 @@ test("the build constants decide the module's own answer", async () => {
   } finally {
     restore();
   }
-  restore = define({ window: host, __APP_VERSION__: "0.3.0", __MUSE_WEB__: true });
+  restore = define({
+    window: host,
+    __APP_VERSION__: "0.3.0",
+    __MUSE_WEB__: true,
+  });
   try {
     const webBuild = await freshModule();
     assert.equal(webBuild.desktop, undefined);
@@ -185,9 +236,18 @@ test("the build constants decide the module's own answer", async () => {
 
 test("file names are valid on every desktop system", () => {
   assert.equal(safeFileName("青春晴空", "wav"), "青春晴空.wav");
-  assert.equal(safeFileName('a<b>c:d"e/f\\g|h?i*j', "mp3"), "a_b_c_d_e_f_g_h_i_j.mp3");
-  assert.equal(safeFileName("../../etc/passwd", "json"), ".._.._etc_passwd.json");
-  assert.equal(safeFileName("line\nbreak\u0000tab\t", "wav"), "line_break_tab_.wav");
+  assert.equal(
+    safeFileName('a<b>c:d"e/f\\g|h?i*j', "mp3"),
+    "a_b_c_d_e_f_g_h_i_j.mp3",
+  );
+  assert.equal(
+    safeFileName("../../etc/passwd", "json"),
+    ".._.._etc_passwd.json",
+  );
+  assert.equal(
+    safeFileName("line\nbreak\u0000tab\t", "wav"),
+    "line_break_tab_.wav",
+  );
   assert.equal(safeFileName("  spaced  ", "flac"), "spaced.flac");
   assert.equal(safeFileName("trailing dots...  ", "wav"), "trailing dots.wav");
   // an extension typed by the user is not doubled
@@ -195,8 +255,24 @@ test("file names are valid on every desktop system", () => {
   assert.equal(safeFileName("song.mp3", "wav"), "song.wav");
   assert.equal(safeFileName("v1.2 final", "wav"), "v1.2 final.wav");
   // Windows device names and empty names fall back
-  for (const reserved of ["CON", "nul", "com1", "LPT9", "aux.txt", "", "   ", "...", null, undefined, 42])
-    assert.equal(safeFileName(reserved, "m4a"), "Muse-BGM.m4a", String(reserved));
+  for (const reserved of [
+    "CON",
+    "nul",
+    "com1",
+    "LPT9",
+    "aux.txt",
+    "",
+    "   ",
+    "...",
+    null,
+    undefined,
+    42,
+  ])
+    assert.equal(
+      safeFileName(reserved, "m4a"),
+      "Muse-BGM.m4a",
+      String(reserved),
+    );
   assert.equal(safeFileName("console", "wav"), "console.wav");
   // full-width look-alikes of forbidden characters are normalised first
   assert.equal(safeFileName("a／b：c", "wav"), "a_b_c.wav");
@@ -334,14 +410,24 @@ test("on the web a file is offered as a download with a safe name and the right 
       assert.ok(anchor);
       assert.equal(anchor.download, `夏日_海边_ 第1版.${format}`);
       assert.equal(anchor.clicks, 1);
-      assert.equal(anchor.connected, false, "the helper element is removed again");
+      assert.equal(
+        anchor.connected,
+        false,
+        "the helper element is removed again",
+      );
       assert.equal(anchor.style.display, "none");
       const blob = dom.blobs.get(anchor.href);
       assert.ok(blob);
       assert.equal(blob.type, mime);
-      assert.deepEqual(new Uint8Array(await blob.arrayBuffer()), new Uint8Array(data));
+      assert.deepEqual(
+        new Uint8Array(await blob.arrayBuffer()),
+        new Uint8Array(data),
+      );
     }
-    assert.ok(dom.connectedAtClick.every(Boolean), "clicked while attached to the document");
+    assert.ok(
+      dom.connectedAtClick.every(Boolean),
+      "clicked while attached to the document",
+    );
     // the object URL must outlive the click, then be released
     assert.deepEqual(dom.revoked, []);
     mock.timers.tick(5_000);
@@ -357,12 +443,20 @@ test("on the web a file is offered as a download with a safe name and the right 
 test("saved is false when the download could not even be requested", async () => {
   const data = new Uint8Array([1]).buffer;
   // no document at all (this test process)
-  assert.deepEqual(await saveFile({ name: "a", data, format: "wav" }), { saved: false });
+  assert.deepEqual(await saveFile({ name: "a", data, format: "wav" }), {
+    saved: false,
+  });
   const dom = fakeDom({ clickThrows: true });
   try {
-    assert.deepEqual(await saveFile({ name: "a", data, format: "wav" }), { saved: false });
+    assert.deepEqual(await saveFile({ name: "a", data, format: "wav" }), {
+      saved: false,
+    });
     assert.equal(dom.anchors[0].connected, false);
-    assert.deepEqual(dom.revoked, [dom.anchors[0].href], "nothing is left behind");
+    assert.deepEqual(
+      dom.revoked,
+      [dom.anchors[0].href],
+      "nothing is left behind",
+    );
   } finally {
     dom.restore();
   }
@@ -370,13 +464,26 @@ test("saved is false when the download could not even be requested", async () =>
 
 test("empty data and unknown formats are refused with a clear message", async () => {
   const data = new Uint8Array([1]).buffer;
-  await assert.rejects(saveFile({ name: "a", data: new ArrayBuffer(0), format: "wav" }), /导出数据为空/);
   await assert.rejects(
-    saveFile({ name: "a", data: new Uint8Array([1]) as unknown as ArrayBuffer, format: "wav" }),
+    saveFile({ name: "a", data: new ArrayBuffer(0), format: "wav" }),
     /导出数据为空/,
   );
-  await assert.rejects(saveFile({ name: "a", data, format: "exe" as never }), /不支持的导出格式/);
-  await assert.rejects(saveFile({ name: "a", data, format: "toString" as never }), /不支持的导出格式/);
+  await assert.rejects(
+    saveFile({
+      name: "a",
+      data: new Uint8Array([1]) as unknown as ArrayBuffer,
+      format: "wav",
+    }),
+    /导出数据为空/,
+  );
+  await assert.rejects(
+    saveFile({ name: "a", data, format: "exe" as never }),
+    /不支持的导出格式/,
+  );
+  await assert.rejects(
+    saveFile({ name: "a", data, format: "toString" as never }),
+    /不支持的导出格式/,
+  );
 });
 
 test("on the desktop saving goes through the native dialog", async () => {
@@ -394,10 +501,13 @@ test("on the desktop saving goes through the native dialog", async () => {
   try {
     const module = await freshModule();
     const data = new Uint8Array([1, 2, 3]).buffer;
-    assert.deepEqual(await module.saveFile({ name: "夏日", data, format: "wav" }), {
-      saved: true,
-      path: "D:\\Music\\夏日.wav",
-    });
+    assert.deepEqual(
+      await module.saveFile({ name: "夏日", data, format: "wav" }),
+      {
+        saved: true,
+        path: "D:\\Music\\夏日.wav",
+      },
+    );
     assert.equal(calls.length, 1);
     assert.equal(calls[0].name, "夏日");
     assert.equal(calls[0].format, "wav");
@@ -405,13 +515,29 @@ test("on the desktop saving goes through the native dialog", async () => {
     assert.equal(dom.anchors.length, 0, "no browser download on the desktop");
 
     answer = { saved: false };
-    assert.deepEqual(await module.saveFile({ name: "夏日", data, format: "json" }), { saved: false });
+    assert.deepEqual(
+      await module.saveFile({ name: "夏日", data, format: "json" }),
+      { saved: false },
+    );
     answer = undefined;
-    assert.deepEqual(await module.saveFile({ name: "夏日", data, format: "json" }), { saved: false });
+    assert.deepEqual(
+      await module.saveFile({ name: "夏日", data, format: "json" }),
+      { saved: false },
+    );
     // the main process explains failures in Chinese; they reach the caller unchanged
     answer = new Error("无法写入所选文件，请选择可写的位置后重试。");
-    await assert.rejects(module.saveFile({ name: "夏日", data, format: "wav" }), /无法写入所选文件/);
-    await assert.rejects(module.saveFile({ name: "夏日", data: new ArrayBuffer(0), format: "wav" }), /导出数据为空/);
+    await assert.rejects(
+      module.saveFile({ name: "夏日", data, format: "wav" }),
+      /无法写入所选文件/,
+    );
+    await assert.rejects(
+      module.saveFile({
+        name: "夏日",
+        data: new ArrayBuffer(0),
+        format: "wav",
+      }),
+      /导出数据为空/,
+    );
     assert.equal(calls.length, 4);
   } finally {
     restore();
@@ -432,9 +558,16 @@ test("on the web a link opens in a new tab without handing over the opener", asy
     },
   });
   try {
-    assert.equal(await openExternal("https://starwright.xyz/tools/yinxu/#download"), true);
+    assert.equal(
+      await openExternal("https://starwright.xyz/tools/yinxu/#download"),
+      true,
+    );
     assert.deepEqual(opened, [
-      ["https://starwright.xyz/tools/yinxu/#download", "_blank", "noopener,noreferrer"],
+      [
+        "https://starwright.xyz/tools/yinxu/#download",
+        "_blank",
+        "noopener,noreferrer",
+      ],
     ]);
     // only web links: never script, file or data URLs
     for (const url of [
@@ -482,16 +615,25 @@ test("on the desktop a link goes to the main process and failures become false",
   });
   const opened: unknown[] = [];
   const restore = define({
-    window: { museDesktop: api, open: (...args: unknown[]) => opened.push(args) },
+    window: {
+      museDesktop: api,
+      open: (...args: unknown[]) => opened.push(args),
+    },
     __MUSE_WEB__: false,
   });
   try {
     const module = await freshModule();
     // the allow-list in the main process compares exact strings: no normalisation
-    assert.equal(await module.openExternal("https://bailian.console.aliyun.com"), true);
+    assert.equal(
+      await module.openExternal("https://bailian.console.aliyun.com"),
+      true,
+    );
     assert.deepEqual(calls, ["https://bailian.console.aliyun.com"]);
     fail = "reject";
-    assert.equal(await module.openExternal("https://example.com/not-allowed"), false);
+    assert.equal(
+      await module.openExternal("https://example.com/not-allowed"),
+      false,
+    );
     fail = "throw";
     assert.equal(await module.openExternal("https://example.com/"), false);
     assert.equal(await module.openExternal("javascript:alert(1)"), false);

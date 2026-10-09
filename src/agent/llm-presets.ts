@@ -123,7 +123,7 @@ export const LLM_PRESETS: readonly LlmPreset[] = [
     models: [],
     modelPlaceholder: CONSOLE_MODEL,
     keyHint: "该服务提供的 API Key",
-    note: "填写以 https:// 开头的公网接口地址（通常以 /v1 结尾），不支持 http://、本机或内网地址；本机模型请改选“本机 Ollama”。",
+    note: "填写以 https:// 开头的公网接口地址（通常以 /v1 结尾），不支持 http://、本机或内网地址；本机模型请改选「本机 Ollama」。",
   },
 ];
 

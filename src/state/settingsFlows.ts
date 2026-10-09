@@ -32,7 +32,7 @@ export class SettingsFlows {
     } catch (error) {
       this.kernel.dispatch({
         type: "settings/failed",
-        error: errorText(error, "无法读取设置，请重新启动后再试。"),
+        error: errorText(error, "无法读取设置，请重新启动应用后再试。"),
       });
     }
   };
@@ -55,10 +55,7 @@ export class SettingsFlows {
     return ok;
   }
 
-  readonly saveProvider: AppActions["saveProvider"] = (
-    provider,
-    credentials,
-  ) =>
+  readonly saveProvider: AppActions["saveProvider"] = (provider, credentials) =>
     this.setting(
       (desktop) => desktop.saveProviderCredentials(provider, credentials),
       "凭据已加密保存；尚未验证服务商账号权限。",

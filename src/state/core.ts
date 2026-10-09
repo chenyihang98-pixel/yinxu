@@ -16,6 +16,8 @@ import type { CoreDeps, PlayerPort } from "./ports";
 import type { AppState } from "./reducer";
 import { SettingsFlows } from "./settingsFlows";
 import { StudioFlows } from "./studioFlows";
+import { NO_SYNC } from "./sync";
+import type { DesktopAPI } from "../types";
 import type { AppActions } from "./types";
 
 export type { CoreDeps, PlayerPort, StoragePort, Timers } from "./ports";
@@ -28,6 +30,9 @@ export class AppCore {
   private started: Promise<void> | null = null;
   /** `load` of the player that last received the current work */
   private attachedLoad: PlayerPort["load"] | null = null;
+  private stopSync: (() => void) | null = null;
+  /** what the desktop shell was last told about paid work at risk */
+  private reportedRisk = false;
 
   readonly actions: AppActions;
   readonly getState: () => AppState;
@@ -46,6 +51,10 @@ export class AppCore {
     this.settings = settings;
     this.getState = kernel.getState;
     this.subscribe = kernel.subscribe;
+    // The desktop shell asks before it closes the window while the page
+    // holds paid audio that is not stored (or is still receiving it).
+    kernel.riskChanged = this.reportRisk;
+    kernel.subscribe(this.reportRisk);
     this.onPlayerError = studio.onPlayerError;
     this.actions = {
       navigate: this.navigate,
@@ -60,6 +69,8 @@ export class AppCore {
       setProvider: studio.setProvider,
       setBrain: studio.setBrain,
       send: studio.send,
+      pickSuggestion: studio.pickSuggestion,
+      answerDialog: kernel.answer,
       newPiece: studio.newPiece,
       chooseInspiration: studio.chooseInspiration,
       setDraft: studio.setDraft,
@@ -71,8 +82,10 @@ export class AppCore {
       commitMix: studio.commitMix,
       toggleMute: studio.toggleMute,
       toggleSolo: studio.toggleSolo,
+      setLoopAudition: studio.setLoopAudition,
       openProject: studio.openProject,
       exportWork: studio.exportWork,
+      retrySave: studio.retrySave,
 
       rename: library.rename,
       toggleFavourite: library.toggleFavourite,
@@ -80,6 +93,7 @@ export class AppCore {
       undoRemove: library.undoRemove,
       importFile: library.importFile,
       exportDamaged: library.exportDamaged,
+      exportDamagedAudio: library.exportDamagedAudio,
       removeDamaged: library.removeDamaged,
       refreshLibrary: library.refreshLibrary,
 
@@ -122,8 +136,14 @@ export class AppCore {
   start(): Promise<void> {
     this.started ??= (async () => {
       const { kernel } = this;
-      // First what the last session left unfinished, then the list.
+      // What other tabs do to the library from now on is heard here.
+      this.stopSync ??= (kernel.deps.sync ?? NO_SYNC).subscribe(
+        this.library.onSync,
+      );
+      // First what the last session left unfinished — deletions that were
+      // asked for, fader moves that were not written — then the list.
       await this.library.finishInterrupted();
+      await this.studio.applyNotedMixes();
       await Promise.all([
         this.library.refreshLibrary(),
         this.settings.refreshSettings(),
@@ -145,10 +165,42 @@ export class AppCore {
     return this.started;
   }
 
-  /** The page is being hidden: write what is still pending. */
+  /**
+   * The page is being hidden: write what is still pending. Fader positions
+   * the library has not confirmed go into the session first (a synchronous
+   * write) — the database write started here may never finish.
+   */
   readonly flush = (): void => {
-    this.studio.flushMix();
+    this.studio.noteMixes();
     this.kernel.writeSession();
+    this.studio.flushMix();
+  };
+
+  /**
+   * Why closing the page right now would lose something that was paid for
+   * (an unsaved cloud result, a cloud request on its way), ready to show —
+   * or null when it is safe. The page asks the browser to confirm
+   * (beforeunload); the desktop shell can ask the same question before it
+   * closes the window.
+   */
+  readonly closeRisk = (): string | null => this.studio.closeRisk();
+
+  /**
+   * Tell the desktop shell whenever "closing now would lose paid work"
+   * starts or stops being true (DesktopAPI.setUnsavedWork). On the web there
+   * is no shell; the page's own beforeunload asks instead.
+   */
+  private readonly reportRisk = (): void => {
+    const risk = this.studio.closeRisk() !== null;
+    if (risk === this.reportedRisk) return;
+    this.reportedRisk = risk;
+    try {
+      // `?.` on the method: a stand-in bridge may not implement it.
+      const bridge: Partial<DesktopAPI> | undefined = this.kernel.deps.desktop;
+      void Promise.resolve(bridge?.setUnsavedWork?.(risk)).catch(() => {});
+    } catch {
+      /* the bridge is gone */
+    }
   };
 
   /**

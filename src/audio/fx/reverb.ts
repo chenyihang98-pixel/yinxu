@@ -12,7 +12,7 @@
  * energy at low and mid frequencies), whatever the decay and size. The caller
  * sets the wet level.
  */
-import { Biquad, TAU, clamp, nextPow2 } from "../dsp";
+import { Biquad, TAU, clamp, freeBuffer, nextPow2 } from "../dsp";
 import { ANTI_DENORMAL, loopSyncedRate, nextPrime } from "./common";
 import type { SendFx } from "./common";
 
@@ -346,26 +346,22 @@ export class Reverb implements SendFx {
       let whole = delay | 0;
       let near = lines[o1 + ((w - whole) & mask)];
       const t1 =
-        near +
-        (lines[o1 + ((w - whole - 1) & mask)] - near) * (delay - whole);
+        near + (lines[o1 + ((w - whole - 1) & mask)] - near) * (delay - whole);
       delay = n3 + depth * s3;
       whole = delay | 0;
       near = lines[o3 + ((w - whole) & mask)];
       const t3 =
-        near +
-        (lines[o3 + ((w - whole - 1) & mask)] - near) * (delay - whole);
+        near + (lines[o3 + ((w - whole - 1) & mask)] - near) * (delay - whole);
       delay = n5 + depth * s5;
       whole = delay | 0;
       near = lines[o5 + ((w - whole) & mask)];
       const t5 =
-        near +
-        (lines[o5 + ((w - whole - 1) & mask)] - near) * (delay - whole);
+        near + (lines[o5 + ((w - whole - 1) & mask)] - near) * (delay - whole);
       delay = n7 + depth * s7;
       whole = delay | 0;
       near = lines[o7 + ((w - whole) & mask)];
       const t7 =
-        near +
-        (lines[o7 + ((w - whole - 1) & mask)] - near) * (delay - whole);
+        near + (lines[o7 + ((w - whole - 1) & mask)] - near) * (delay - whole);
 
       let next = s1 * sc1 + q1 * ss1;
       q1 = q1 * sc1 - s1 * ss1;
@@ -452,6 +448,14 @@ export class Reverb implements SendFx {
     modSin[3] = s7;
     modCos[3] = q7;
     this.position = w;
+  }
+
+  /** Give the delay lines (a megabyte) back at once; the reverb must not be used afterwards. */
+  release(): void {
+    freeBuffer(this.lines);
+    freeBuffer(this.diffusers);
+    freeBuffer(this.preLeft);
+    freeBuffer(this.preRight);
   }
 
   seek(frame: number): void {

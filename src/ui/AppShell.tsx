@@ -17,12 +17,14 @@ import { HelpModal } from "./modals/HelpModal";
 import { SettingsModal } from "./modals/SettingsModal";
 import { TooltipLayer } from "./primitives/Tooltip";
 import { BottomBar } from "./shell/BottomBar";
+import { CoreDialog } from "./shell/CoreDialog";
 import { ShellNav } from "./shell/ShellNav";
 import { Toasts } from "./shell/Toasts";
+import { UnsavedBanner } from "./shell/UnsavedBanner";
 import { StudioPage } from "./studio/StudioPage";
 import "./styles/index.css";
 
-const BASE_TITLE = "音序 Muse · BGM 创作工作台";
+const BASE_TITLE = "音序 Muse · BGM 创作";
 
 export function AppShell() {
   useRenderCount("AppShell");
@@ -73,6 +75,13 @@ export function AppShell() {
           actions={actions}
         />
         <div className="shell-main">
+          {studio.unsaved && project && (
+            <UnsavedBanner
+              project={project}
+              exporting={studio.exporting}
+              actions={actions}
+            />
+          )}
           <main ref={main} className="page-host" tabIndex={-1}>
             {ui.page === "studio" && <StudioPage />}
             {ui.page === "library" && <LibraryPage />}
@@ -88,6 +97,9 @@ export function AppShell() {
       {ui.modal === "settings" && <SettingsModal />}
       {ui.modal === "export" && <ExportModal />}
       {ui.modal === "help" && <HelpModal />}
+      {ui.dialog && (
+        <CoreDialog key={ui.dialog.id} dialog={ui.dialog} actions={actions} />
+      )}
       <Toasts toasts={ui.toasts} raised={barShown} actions={actions} />
       <TooltipLayer />
     </div>

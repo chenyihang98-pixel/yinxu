@@ -7,6 +7,7 @@ import { memo, useCallback, useEffect, useRef } from "react";
 import {
   ArrowRight,
   AudioLines,
+  CircleDollarSign,
   CircleHelp,
   Sparkles,
   WandSparkles,
@@ -19,15 +20,14 @@ import {
   COMPOSER_PLACEHOLDER_SHORT,
   QUICK_PROMPTS,
   scenarioInspiration,
-  styleInspiration,
 } from "../../state/content";
-import { DURATION_CHOICES } from "../../state/plan";
+import { joinText } from "../../state/logic";
+import { DURATION_CHOICES, canSendPinsOnly } from "../../state/plan";
 import type { AppActions, StudioView } from "../../state/types";
 import { usePlanPreview } from "../../state/usePlanPreview";
 import { useAutosize } from "../hooks/useAutosize";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useRenderCount } from "../hooks/useRenderCount";
-import { promptMood } from "../logic/promptMood";
 import { Cover } from "../primitives/Art";
 import { Button, LinkButton } from "../primitives/Button";
 import { Progress, Select } from "../primitives/Controls";
@@ -61,9 +61,11 @@ const QuickPrompts = memo(function QuickPrompts(props: {
               className="prompt-card"
               data-testid="quick-prompt"
               disabled={props.disabled}
-              onClick={() => actions.chooseInspiration(scenarioInspiration(item))}
+              onClick={() =>
+                actions.chooseInspiration(scenarioInspiration(item))
+              }
             >
-              <Cover mood={promptMood(item.prompt)} className="prompt-art" />
+              <Cover mood={item.style} className="prompt-art" />
               <span className="prompt-text">
                 <strong>{item.title}</strong>
                 <span>{item.prompt}</span>
@@ -102,16 +104,21 @@ export function ComposerHero(props: {
     node.setSelectionRange(node.value.length, node.value.length);
   }, []);
 
-  // A pinned style is enough to start from: its description stands in for
-  // an empty composer.
-  const fallback = pins.mood ? styleInspiration(styleInfo(pins.mood)).text : "";
-  const effective = text.trim() ? text : fallback;
-  const preview = usePlanPreview(effective, pins);
+  // A pinned style alone is enough to start from. Nothing is written into
+  // the description for it: only the pin is sent, and the style's own blurb
+  // is shown for reading, never parsed as the user's words.
+  const pinsOnly = canSendPinsOnly(text, pins);
+  const pinned = pinsOnly && pins.mood ? styleInfo(pins.mood) : null;
+  const preview = usePlanPreview(
+    text,
+    pins,
+    studio.provider,
+    studio.activeBrain,
+  );
   const creating = job?.kind === "generate";
-  const canSend = !busy && !!effective.trim();
+  const canSend = !busy && (!!text.trim() || pinsOnly);
   const send = () => {
-    if (!canSend) return;
-    void actions.send(text.trim() ? undefined : fallback);
+    if (canSend) void actions.send();
   };
   const pickStyle = useCallback(
     (mood: StyleId | undefined) => actions.setPin("mood", mood),
@@ -123,12 +130,20 @@ export function ComposerHero(props: {
     <div className="page" data-testid="studio-empty">
       <div className="page-inner hero">
         <header className="hero-head">
-          <p className="eyebrow">YOUR IDEAS · YOUR SOUND</p>
+          <p className="eyebrow">一句描述 · 一首配乐</p>
           <h1 id="composer-title">你想听见什么？</h1>
-          <p className="page-lede">
-            写下画面、情绪或想要的乐器，制作人替你编曲并在
-            {platform.isDesktop ? "本机" : "浏览器里"}
-            合成。本地作曲不联网、不需要账号。
+          <p className="page-lede" data-testid="hero-lede">
+            {studio.paid
+              ? // The words follow the engine that is selected: nothing here
+                // may promise "offline, on this computer" for a cloud request.
+                joinText(
+                  "写下画面、情绪或想要的乐器，制作人把它整理成描述，交给",
+                  studio.paid.name,
+                  "云端生成，按服务商计费。",
+                )
+              : `写下画面、情绪或想要的乐器，制作人替你编曲并在${
+                  platform.isDesktop ? "本机" : "浏览器里"
+                }合成。本地作曲不联网、不需要账号。`}
           </p>
         </header>
 
@@ -166,10 +181,12 @@ export function ComposerHero(props: {
                 }
                 value={text}
                 disabled={busy}
-                onChange={(event) => actions.setComposerText(event.target.value)}
+                onChange={(event) =>
+                  actions.setComposerText(event.target.value)
+                }
                 onKeyDown={(event) => {
                   // Ctrl+Enter is a global shortcut; handled here as well so
-                  // a pinned style can stand in for an empty description.
+                  // it works while the description has the focus.
                   if (
                     event.key !== "Enter" ||
                     !(event.ctrlKey || event.metaKey) ||
@@ -206,6 +223,12 @@ export function ComposerHero(props: {
                   {text.length} / {LIMITS.promptChars}
                 </span>
               </div>
+              {pinned && (
+                <p className="style-hint" data-testid="style-hint">
+                  已选「{pinned.label}」：{pinned.description}
+                  可以直接生成，也可以再写几句想要的画面。
+                </p>
+              )}
             </div>
           )}
 
@@ -238,12 +261,16 @@ export function ComposerHero(props: {
               wrapClassName="option-select"
               data-testid="composer-structure"
               aria-label="结构"
-              value={pins.loop === undefined ? "" : pins.loop ? "loop" : "ending"}
+              value={
+                pins.loop === undefined ? "" : pins.loop ? "loop" : "ending"
+              }
               disabled={busy}
               onChange={(event) =>
                 actions.setPin(
                   "loop",
-                  event.target.value ? event.target.value === "loop" : undefined,
+                  event.target.value
+                    ? event.target.value === "loop"
+                    : undefined,
                 )
               }
             >
@@ -277,6 +304,16 @@ export function ComposerHero(props: {
               {!creating && <kbd aria-hidden>Ctrl ↵</kbd>}
             </Button>
           </div>
+
+          {studio.paid && (
+            <p
+              className="notice notice-warn paid-notice"
+              data-testid="paid-notice"
+            >
+              <CircleDollarSign size={15} aria-hidden />
+              <span>{studio.paid.text}</span>
+            </p>
+          )}
 
           {desktopOnly && (
             <p className="composer-foot">

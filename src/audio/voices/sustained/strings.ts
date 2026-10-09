@@ -167,8 +167,7 @@ export const strings: Voice = {
       spectrumLeft += p * gl * gl;
       spectrumRight += p * gr * gr;
     }
-    const power =
-      0.5 * (spectrumLeft * powerLeft + spectrumRight * powerRight);
+    const power = 0.5 * (spectrumLeft * powerLeft + spectrumRight * powerRight);
     // the loudest 400 ms of a beating unison sit a little above its mean power
     const gain = (REFERENCE_RMS * velocityGain(vel) * 0.89) / Math.sqrt(power);
 

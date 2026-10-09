@@ -14,7 +14,16 @@
  *
  * Full-length buffers: 4 stereo stems + 1 stereo part bus + 1 stereo reverb
  * send + 1 mono delay send (6.5 stereo buffers; 300 MB for 120 s at 48 kHz).
- * Everything else works in blocks of a few thousand frames.
+ * On top of them come the scratch pair one note is rendered into and the
+ * work buffers of the voices, each as long as the longest note (a drone that
+ * spans a two-minute piece adds 46 MB for the pair and 23 MB per work buffer
+ * its voice uses). Everything else works in blocks of a few thousand frames.
+ *
+ * None of it outlives the render: the sends, the scratch and the long work
+ * buffers are released before the master runs, the rest when it is done, by
+ * detaching (freeBuffer) rather than by waiting for a collection that an idle
+ * worker never has. RenderReport.bufferBytes is the most that was held at
+ * one time.
  *
  * The async function only orchestrates; all sample loops live in the
  * synchronous Mixer below (V8 runs loops inside an async function, whose
@@ -47,7 +56,17 @@ import type {
 } from "./voices/types";
 import { VOICES } from "./voices";
 import { DRUMS } from "./drums";
-import { clamp, clamp01, createRng, hashSeed } from "./dsp";
+import {
+  MemoryLedger,
+  SCRATCH_KEEP,
+  clamp,
+  clamp01,
+  createRng,
+  freeBuffer,
+  hashSeed,
+  scratchBytes,
+  trimScratch,
+} from "./dsp";
 import {
   Chorus,
   Drive,
@@ -64,6 +83,8 @@ import {
 import type { BiquadCascade, DuckHit, SendFx } from "./fx";
 import { masterStems, measureMix } from "./master";
 import type { MasterReport } from "./master";
+
+export { freeBuffer } from "./dsp";
 
 export interface RenderBanks {
   voices: VoiceBank;
@@ -89,7 +110,11 @@ export interface RenderReport {
   };
   /** full-length Float32Arrays allocated, counted in stereo pairs */
   fullLengthStereoBuffers: number;
-  /** bytes of those buffers */
+  /**
+   * The most sample memory the render held at one time, in bytes: the
+   * full-length buffers, the note scratch pair, the work buffers of the
+   * voices, the duck curve and the control-rate curves of the master.
+   */
   bufferBytes: number;
   master: MasterReport;
   /** only with RenderWithOptions.measureAmbience */
@@ -139,16 +164,17 @@ export const REVERB_LOW_CUT_DRUMS = 100;
  * one before (a drum machine voice, a hand on the head), and a closing hi-hat
  * silences an open one. [kinds that choke it, fade in seconds].
  */
-const CHOKES: Partial<Record<DrumKind, readonly [readonly DrumKind[], number]>> =
-  {
-    hatOpen: [["hatClosed", "hatOpen"], 0.02],
-    kick: [["kick"], 0.02],
-    tomLow: [["tomLow"], 0.04],
-    tomMid: [["tomMid"], 0.04],
-    tomHigh: [["tomHigh"], 0.04],
-    taiko: [["taiko"], 0.07],
-    subBoom: [["subBoom"], 0.1],
-  };
+const CHOKES: Partial<
+  Record<DrumKind, readonly [readonly DrumKind[], number]>
+> = {
+  hatOpen: [["hatClosed", "hatOpen"], 0.02],
+  kick: [["kick"], 0.02],
+  tomLow: [["tomLow"], 0.04],
+  tomMid: [["tomMid"], 0.04],
+  tomHigh: [["tomHigh"], 0.04],
+  taiko: [["taiko"], 0.07],
+  subBoom: [["subBoom"], 0.1],
+};
 /**
  * Seconds over which the last bass note of a piece that ends is let ring
  * (-60 dB at the end of it) instead of being released with the chord: bass
@@ -335,6 +361,8 @@ class Mixer {
   duck: Float32Array | null = null;
   /** full-length Float32Arrays allocated so far */
   allocated = 0;
+  /** the sample memory of this render: held now, and the most held at once */
+  readonly memory = new MemoryLedger();
   /** when set, mixBlock adds the energy it puts into the stem and sendBlock returns its own */
   energy: AmbienceEnergy | null = null;
   private noteLeft: Float32Array;
@@ -361,11 +389,26 @@ class Mixer {
     this.busRight = withBus ? this.allocate() : new Float32Array(0);
     this.noteLeft = new Float32Array(sampleRate);
     this.noteRight = new Float32Array(sampleRate);
+    this.memory.add(this.noteLeft.byteLength * 2);
   }
 
   allocate(): Float32Array {
     this.allocated++;
+    this.memory.add(this.frames * 4);
     return new Float32Array(this.frames);
+  }
+
+  /** The kick-keyed ducking curve of this render. */
+  setDuck(curve: Float32Array): void {
+    this.duck = curve;
+    this.memory.add(curve.byteLength);
+  }
+
+  /** Detach a buffer of this render and take it off the books. */
+  private free(buffer: Float32Array | null): void {
+    if (!buffer || buffer.byteLength === 0) return;
+    this.memory.drop(buffer.byteLength);
+    freeBuffer(buffer);
   }
 
   clearBus(): void {
@@ -374,29 +417,48 @@ class Mixer {
   }
 
   /**
-   * Give the memory of the work buffers (everything but the stems) back at
-   * once. They are garbage when a render ends, but a collector only frees
-   * them when it next runs — and an idle worker never does: a hundred
-   * megabytes per two-minute render would linger.
+   * The mixing is done: give back, at once, everything only the mixing
+   * needed — the sends, the duck curve, the note scratch pair, the long work
+   * buffers of the voices and one half of the part bus (the other half is
+   * the work space of the master). They are garbage from here on, but a
+   * collector only frees garbage when it next runs, and an idle worker never
+   * does: more than a hundred megabytes of a two-minute render would linger.
    */
+  releaseMixing(): void {
+    this.free(this.busRight);
+    this.free(this.reverbLeft);
+    this.free(this.reverbRight);
+    this.free(this.delaySend);
+    this.free(this.duck);
+    this.free(this.noteLeft);
+    this.free(this.noteRight);
+    this.reverbLeft = this.reverbRight = this.delaySend = this.duck = null;
+    trimScratch();
+  }
+
+  /** The render is over: give back what is left of the work buffers (everything but the stems). */
   release(): void {
-    for (const buffer of [
-      this.busLeft,
-      this.busRight,
-      this.reverbLeft,
-      this.reverbRight,
-      this.delaySend,
-    ])
-      if (buffer) freeBuffer(buffer);
-    this.reverbLeft = this.reverbRight = this.delaySend = null;
+    this.releaseMixing();
+    this.free(this.busLeft);
+  }
+
+  /** The render failed or was cancelled: nobody will come for the stems either. */
+  discard(): void {
+    this.release();
+    for (const track of TRACKS)
+      for (const channel of this.stems[track]) this.free(channel);
   }
 
   /** Zeroed scratch pair of at least `count` frames. */
   private scratch(count: number): void {
     if (this.noteLeft.length < count) {
-      const size = Math.ceil(count * 1.25);
+      // room to grow for ordinary notes; a long drone gets its own length
+      const size = count > SCRATCH_KEEP ? count : Math.ceil(count * 1.25);
+      this.free(this.noteLeft);
+      this.free(this.noteRight);
       this.noteLeft = new Float32Array(size);
       this.noteRight = new Float32Array(size);
+      this.memory.add(size * 8);
     } else {
       this.noteLeft.fill(0, 0, count);
       this.noteRight.fill(0, 0, count);
@@ -471,6 +533,8 @@ class Mixer {
     if (!this.loop && (start >= this.frames || start + count <= 0)) return -1;
     this.scratch(count);
     voice.render(this.noteLeft, this.noteRight, count, note, context);
+    // the work buffers of the voice are as long as the note: held right now
+    this.memory.sample(scratchBytes());
     if (ring > 0) {
       const from = Math.min(count, Math.round(held * this.sampleRate));
       // ln(1000) per ring: 60 dB down where the voice's own release begins
@@ -519,6 +583,7 @@ class Mixer {
       clamp01(event.vel),
       context,
     );
+    this.memory.sample(scratchBytes());
     const chokeAt = Math.round(choke * this.sampleRate);
     if (chokeAt < count) {
       const from = Math.max(0, chokeAt);
@@ -553,16 +618,11 @@ class Mixer {
     if (!this.loop || !chain.stateful) return;
     const warm = Math.round(PART_WARM_SECONDS * this.sampleRate);
     chain.chorus?.seek(-warm);
-    forLoopTail(
-      this.frames,
-      warm,
-      FX_BLOCK,
-      (from, count) => {
-        this.workLeft.set(this.busLeft.subarray(from, from + count));
-        this.workRight.set(this.busRight.subarray(from, from + count));
-        chain.inserts(this.workLeft, this.workRight, count);
-      },
-    );
+    forLoopTail(this.frames, warm, FX_BLOCK, (from, count) => {
+      this.workLeft.set(this.busLeft.subarray(from, from + count));
+      this.workRight.set(this.busRight.subarray(from, from + count));
+      chain.inserts(this.workLeft, this.workRight, count);
+    });
   }
 
   /**
@@ -661,7 +721,10 @@ class Mixer {
    * seek it there and return the blocks to feed it, in order, with
    * warmSendBlock (a long hall takes a while, so the caller paces them).
    */
-  warmSendBlocks(fx: SendFx, warmFrames: number): [from: number, count: number][] {
+  warmSendBlocks(
+    fx: SendFx,
+    warmFrames: number,
+  ): [from: number, count: number][] {
     const blocks: [number, number][] = [];
     if (!this.loop || warmFrames <= 0) return blocks;
     fx.seek?.(-warmFrames);
@@ -726,23 +789,6 @@ function squares(left: Float32Array, right: Float32Array, n: number): number {
 }
 
 /**
- * Detach `array` and free its memory immediately (ArrayBuffer.transfer, where
- * the runtime has it; otherwise the collector gets to it in its own time).
- * The array must not be used afterwards.
- */
-export function freeBuffer(array: Float32Array): void {
-  const buffer = array.buffer as ArrayBuffer & {
-    transfer?: (length?: number) => ArrayBuffer;
-  };
-  try {
-    if (typeof buffer.transfer === "function" && buffer.byteLength > 0)
-      buffer.transfer(0);
-  } catch {
-    // a buffer that cannot be detached is simply left to the collector
-  }
-}
-
-/**
  * For every hit, seconds until a later hit of the part chokes it (Infinity:
  * never). `loopSeconds` > 0: the part repeats, so the search wraps around.
  */
@@ -792,13 +838,35 @@ export async function renderScoreWith(
   if (!(sampleRate >= 8000 && sampleRate <= 192000))
     throw new RangeError(`renderScore: unsupported sample rate ${sampleRate}`);
   const frames = Math.max(0, Math.round(score.duration * sampleRate));
-  const loop = score.loop;
-  const started = now();
   const parts = score.parts.filter(
     (part) => eventCount(part) > 0 && TRACKS.includes(part.track),
   );
+  const mixer = new Mixer(
+    frames,
+    sampleRate,
+    score.loop,
+    frames > 0 && parts.length > 0,
+  );
+  try {
+    return await renderInto(mixer, score, parts, banks, options);
+  } catch (error) {
+    // failed or cancelled: every buffer of this render goes back now
+    mixer.discard();
+    throw error;
+  }
+}
+
+/** The render itself, into the buffers of `mixer`. */
+async function renderInto(
+  mixer: Mixer,
+  score: Score,
+  parts: Part[],
+  banks: RenderBanks,
+  options: RenderWithOptions,
+): Promise<RenderedAudio> {
+  const { frames, sampleRate, loop } = mixer;
+  const started = now();
   const active = frames > 0 && parts.length > 0;
-  const mixer = new Mixer(frames, sampleRate, loop, active);
   const stems = mixer.stems;
   const seconds = { voices: 0, parts: 0, sends: 0, master: 0, total: 0 };
   let noteCount = 0;
@@ -821,6 +889,8 @@ export async function renderScoreWith(
         ...measureMix(stems, undefined, sampleRate),
         shortfallLu: 0,
         gainDb: 0,
+        startFaded: false,
+        workBytes: 0,
         compressor: { thresholdDb: 0, maxReductionDb: 0, meanReductionDb: 0 },
         limiter: { ceiling: 1, maxReductionDb: 0, activeRatio: 0 },
       };
@@ -888,10 +958,12 @@ export async function renderScoreWith(
         for (const hit of part.hits)
           if (hit.kind === "kick") kicks.push({ t: hit.t, vel: hit.vel });
     if (kicks.length && parts.some((part) => chainOf(part).duck > 0))
-      mixer.duck = duckCurve(kicks, frames, sampleRate, {
-        release: duckRelease(score.bpm),
-        loop,
-      });
+      mixer.setDuck(
+        duckCurve(kicks, frames, sampleRate, {
+          release: duckRelease(score.bpm),
+          loop,
+        }),
+      );
 
     for (const track of TRACKS) {
       const trackParts = parts.filter((part) => part.track === track);
@@ -1014,6 +1086,7 @@ export async function renderScoreWith(
           const pending = pacer.maybe();
           if (pending) await pending;
         }
+        reverb.release();
       }
       if (delaySend) {
         const delay = new PingPongDelay(
@@ -1052,10 +1125,13 @@ export async function renderScoreWith(
 
     const mark = now();
     const masterFrom = pacer.fraction;
-    // the part bus has done its job; the master may use it as work space
+    // the mixing buffers have done their job: only the stems stay, and one
+    // half of the part bus, which the master may use as work space
+    mixer.releaseMixing();
     master = await finish(mixer.busLeft, (fraction) =>
       pacer.maybe(masterFrom + (0.999 - masterFrom) * fraction),
     );
+    mixer.memory.sample(master.workBytes);
     seconds.master = now() - mark;
     pacer.finish();
   }
@@ -1074,7 +1150,7 @@ export async function renderScoreWith(
       total: seconds.total / 1000,
     },
     fullLengthStereoBuffers: mixer.allocated / 2,
-    bufferBytes: mixer.allocated * frames * 4,
+    bufferBytes: mixer.memory.peak,
     master,
     ...(ambience ? { ambience } : {}),
   });

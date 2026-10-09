@@ -23,10 +23,7 @@ export function hashSeed(...parts: number[]): number {
   for (const part of parts) {
     const whole = Math.floor(part);
     hash = Math.imul(hash ^ (whole | 0), 0x01000193);
-    hash = Math.imul(
-      hash ^ (((part - whole) * 4294967296) | 0),
-      0x01000193,
-    );
+    hash = Math.imul(hash ^ (((part - whole) * 4294967296) | 0), 0x01000193);
     hash ^= hash >>> 15;
   }
   return hash >>> 0;

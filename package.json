@@ -14,7 +14,10 @@
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "npm run build && electron .",
     "typecheck": "node scripts/typecheck.mjs",
-    "test": "tsx --test tests/*.test.ts && node --test tests/*.test.cjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "tsx --no-maglev-escape-analysis --test tests/*.test.ts && node --test tests/*.test.cjs",
+    "test:fast": "tsx --no-maglev-escape-analysis --test tests/agent-*.test.ts tests/app-*.test.ts tests/catalog.test.ts tests/platform.test.ts tests/player-*.test.ts tests/storage*.test.ts tests/ui-logic.test.ts tests/wav.test.ts && node --test tests/*.test.cjs",
     "test:ui": "node scripts/ui-smoke.cjs",
     "test:desktop": "node scripts/ui-smoke.cjs",
     "test:web": "node scripts/web-smoke.cjs",
@@ -39,6 +42,7 @@
     "fake-indexeddb": "^6.2.5",
     "lucide-react": "^0.577.0",
     "playwright": "^1.58.0",
+    "prettier": "^3.9.9",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tsx": "^4.21.0",
@@ -57,7 +61,10 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "!**/node_modules/**/*.{map,ts,mts,cts}",
+      "!**/node_modules/**/{README,readme,Readme}{,.md,.markdown,.txt}",
+      "!**/node_modules/@anthropic-ai/sdk/src/**/{tsconfig.json,.keep}"
     ],
     "asar": true,
     "npmRebuild": false,

@@ -15,7 +15,7 @@ import {
 import { LIMITS, isInstrumentId, isKey, isStyleId } from "./music/catalog";
 import { cleanArrangement } from "./music/defaults";
 import { TRACKS } from "./music/score";
-import { newId } from "./platform";
+import { newId, platform } from "./platform";
 import type {
   CloudMeta,
   Instrument,
@@ -32,6 +32,27 @@ export interface DamagedRecord {
   title: string;
   /** why this build cannot open it, ready to show */
   reason: string;
+  /**
+   * The raw record carries audio bytes (a cloud result): `readRawAudio` can
+   * hand them over. The JSON of `readRawRecord` never contains audio.
+   */
+  audio?: { type: string; size: number };
+  /** the record says it came from a cloud service: its audio was paid for */
+  paid?: boolean;
+}
+
+/**
+ * The fields of a stored work that change after it was made. Only what is
+ * listed is written; everything else stays as it is in the library.
+ */
+export interface ProjectPatch {
+  title?: string;
+  favorite?: boolean;
+  /** only the listed faders change */
+  volumes?: Partial<Record<TrackName, number>>;
+  audioDuration?: number;
+  /** ISO timestamp; the later of this and the stored one is kept */
+  updatedAt?: string;
 }
 
 /** DamagedRecord.reason of a work saved by a newer build (unknown style, key…). */
@@ -272,7 +293,8 @@ function normalizeTurn(value: unknown): AgentTurn {
       : choice(source.brain, ["rules", "llm"] as const, "对话来源");
   let reasoning: string[] | undefined;
   if (source.reasoning !== undefined) {
-    if (!Array.isArray(source.reasoning)) return invalid("对话说明必须是列表。");
+    if (!Array.isArray(source.reasoning))
+      return invalid("对话说明必须是列表。");
     reasoning = source.reasoning
       .map((item) => textValue(item, "对话说明", 160, true))
       .filter(Boolean)
@@ -346,7 +368,7 @@ function normalize(value: unknown, requireAudio: boolean): Project {
     return invalid("音频数据为空或已损坏。");
   if (requireAudio && provider !== "local" && !isBlob(audioBlob))
     throw new Error(
-      "此 AI 工程缺少音频文件，无法恢复。请在原作品库中打开，或重新生成音乐。",
+      "这个云端作品的工程缺少音频文件，无法恢复。请在原来的「我的作品」中打开，或重新生成音乐。",
     );
   const chat = source.chat === undefined ? [] : normalizeChat(source.chat);
   return {
@@ -409,6 +431,13 @@ export function normalizeProject(value: unknown): Project {
 
 export type StorageAction = "读取" | "保存" | "删除";
 
+/** The action as a phrase about the library, which the interface calls 「我的作品」. */
+const ACTION_WORDS: Record<StorageAction, string> = {
+  读取: "读取「我的作品」",
+  保存: "保存到「我的作品」",
+  删除: "删除「我的作品」里的作品",
+};
+
 function errorName(error: unknown): string {
   const name = (error as { name?: unknown } | null | undefined)?.name;
   return typeof name === "string" ? name : "";
@@ -423,18 +452,23 @@ export function describeStorageError(
   action: StorageAction,
   opening = false,
 ): Error {
-  const unsaved = action === "保存" ? "本次作品尚未保存。" : "";
-  const forbidden = `当前环境不允许使用本地作品库（隐私模式、受限的内嵌页面或已禁用网站数据）。请允许此页面保存数据，或使用桌面版。${unsaved}`;
+  const saving = action === "保存";
+  const unsaved = saving ? "本次作品尚未保存。" : "";
+  const doing = ACTION_WORDS[action];
+  // Never told for a save: what was just made lives only in this window, and
+  // restarting would destroy it.
+  const restart = platform.isDesktop ? "请重新启动应用" : "请刷新页面";
+  const forbidden = `当前环境不允许使用「我的作品」（隐私模式、受限的内嵌页面或已禁用网站数据）。请允许此页面保存数据，或使用桌面版。${unsaved}`;
   switch (errorName(error)) {
     case "QuotaExceededError":
       return new Error(
         action === "保存"
           ? "本地存储空间不足，作品未保存。请导出已有作品并删除不需要的作品后重试。"
-          : `本地存储空间不足，无法${action}作品库。请清理磁盘空间后重试。`,
+          : `本地存储空间不足，无法${doing}。请清理磁盘空间后重试。`,
       );
     case "VersionError":
       return new Error(
-        `作品库已被更新版本的音序升级，当前版本无法${action}。请使用新版 App 打开。${unsaved}`,
+        `「我的作品」已被更新版本的音序升级，当前版本无法${action}。请使用新版音序打开。${unsaved}`,
       );
     case "SecurityError":
       return new Error(forbidden);
@@ -444,22 +478,28 @@ export function describeStorageError(
       return new Error(
         opening
           ? forbidden
-          : `作品库连接已断开，无法${action}。请重试；如果反复出现，请重新启动 App。${unsaved}`,
+          : saving
+            ? `「我的作品」的连接已断开，无法保存。请重试。${unsaved}`
+            : `「我的作品」的连接已断开，无法${action}。请重试；如果反复出现，${restart}。`,
       );
     case "AbortError":
-      return new Error(`${action}作品库的操作被中断，请重试。${unsaved}`);
+      return new Error(`${doing}的操作被中断，请重试。${unsaved}`);
     case "UnknownError":
       return new Error(
-        `浏览器的本地数据库出现内部错误，无法${action}作品库。请重新启动 App；如仍失败，请检查磁盘剩余空间。${unsaved}`,
+        saving
+          ? `本地数据库出现内部错误，暂时无法${doing}。请稍后重试；如仍失败，请检查磁盘剩余空间。${unsaved}`
+          : `本地数据库出现内部错误，无法${doing}。${restart}；如仍失败，请检查磁盘剩余空间。`,
       );
     case "NotFoundError":
       return new Error(
-        `作品库结构不完整，无法${action}。请重新启动 App 后重试。${unsaved}`,
+        saving
+          ? `「我的作品」的数据结构不完整，无法保存。${unsaved}`
+          : `「我的作品」的数据结构不完整，无法${action}。${restart}后重试。`,
       );
     case "DataCloneError":
-      return new Error(`作品中包含无法写入作品库的数据。${unsaved}`);
+      return new Error(`作品中包含无法写入「我的作品」的数据。${unsaved}`);
     default:
-      return new Error(`无法${action}作品库，请重试。${unsaved}`);
+      return new Error(`无法${doing}，请重试。${unsaved}`);
   }
 }
 
@@ -479,11 +519,11 @@ function describeOpenFailure(failure: unknown, action: StorageAction): Error {
     return describeStorageError(failure, action, true);
   if (failure.kind === "unsupported")
     return new Error(
-      `当前环境不支持本地作品库，请使用桌面版或较新的浏览器。${unsaved}`,
+      `当前环境不支持「我的作品」，请使用桌面版或较新的浏览器。${unsaved}`,
     );
   if (failure.kind === "blocked")
     return new Error(
-      `作品库正被另一个音序窗口占用，请关闭其他窗口后重试。${unsaved}`,
+      `「我的作品」正被另一个音序窗口占用，请关闭其他窗口后重试。${unsaved}`,
     );
   return describeStorageError(failure.cause, action, true);
 }
@@ -617,6 +657,20 @@ function damagedTitle(value: unknown): string {
   return clip(title.replace(CONTROL_CHARACTERS, "").trim(), 80) || UNTITLED;
 }
 
+/** What a damaged record still holds that is worth saving before deleting it. */
+function damagedFacts(value: unknown): Pick<DamagedRecord, "audio" | "paid"> {
+  if (!isRecord(value)) return {};
+  const blob = value.audioBlob;
+  const cloud =
+    typeof value.provider === "string" && value.provider !== "local";
+  return {
+    ...(isBlob(blob) && blob.size > 0
+      ? { audio: { type: blob.type, size: blob.size } }
+      : {}),
+    ...(cloud ? { paid: true } : {}),
+  };
+}
+
 function damagedReason(error: unknown): string {
   if (error instanceof NewerVersionError) return NEWER_VERSION_REASON;
   return error instanceof Error && error.message
@@ -681,7 +735,12 @@ export async function listProjects(): Promise<{
       while (taken.has(id));
       damagedKeys.set(id, row.key);
     }
-    damaged.push({ id, title: damagedTitle(row.value), reason });
+    damaged.push({
+      id,
+      title: damagedTitle(row.value),
+      reason,
+      ...damagedFacts(row.value),
+    });
   };
   for (const row of rows) {
     if (row.unreadable || row.value === undefined) {
@@ -706,13 +765,140 @@ export async function listProjects(): Promise<{
   return { projects, damaged };
 }
 
-/** Local recipes and cloud audio Blobs are both stored by structured clone. */
-export async function saveProject(project: Project): Promise<void> {
+/**
+ * Store a whole work: a new one, or one that replaces what is there. Local
+ * recipes and cloud audio Blobs are both stored by structured clone.
+ *
+ * `ifMissing` is for putting a work BACK (undo of a delete): the record is
+ * written only when its key is free, so whatever another window stored there
+ * in the meantime is kept. Resolves false when nothing was written.
+ *
+ * A work that is already in the library is changed with `updateProject`,
+ * never with this function — a whole-record write from a window that read
+ * the library earlier would undo what other windows did since.
+ */
+export async function saveProject(
+  project: Project,
+  options: { ifMissing?: boolean } = {},
+): Promise<boolean> {
   const normalized = normalize(project, true);
-  await withStore("readwrite", "保存", (store) => {
-    store.put(normalized);
-    return () => undefined;
+  return await withStore("readwrite", "保存", (store) => {
+    let written = true;
+    if (options.ifMissing) {
+      const existing = store.getKey(normalized.id);
+      existing.onsuccess = () => {
+        if (existing.result === undefined) store.put(normalized);
+        else written = false;
+      };
+    } else store.put(normalized);
+    return () => written;
   });
+}
+
+const later = (a: string, b: string | undefined) =>
+  b !== undefined && Date.parse(b) > Date.parse(a) ? b : a;
+
+/** `patch` applied to a stored work; throws like normalize for bad values. */
+function applyPatch(current: Project, patch: ProjectPatch): Project {
+  const volumes = { ...current.config.volumes };
+  if (patch.volumes)
+    for (const track of TRACKS) {
+      const value = patch.volumes[track];
+      if (value !== undefined)
+        volumes[track] = numberValue(value, `${TRACK_LABELS[track]}音量`, 0, 1);
+    }
+  return {
+    ...current,
+    ...(patch.title !== undefined
+      ? { title: textValue(patch.title, "作品名称", 80) }
+      : {}),
+    ...(patch.favorite !== undefined
+      ? { favorite: booleanValue(patch.favorite, "收藏状态") }
+      : {}),
+    ...(patch.audioDuration !== undefined
+      ? {
+          audioDuration: numberValue(
+            patch.audioDuration,
+            "实际音频时长",
+            0.01,
+            3600,
+          ),
+        }
+      : {}),
+    ...(patch.updatedAt !== undefined
+      ? {
+          updatedAt: later(
+            current.updatedAt,
+            dateValue(patch.updatedAt, "修改时间"),
+          ),
+        }
+      : {}),
+    config: { ...current.config, volumes },
+  };
+}
+
+/**
+ * Change some fields of a stored work: read, patch and write in ONE
+ * transaction, so a rename made in another window survives a favourite or a
+ * fader move made here (and the other way round). Resolves with the work as
+ * it is stored now, or null when the record no longer exists — a deleted work
+ * stays deleted; it is never written back by an edit.
+ *
+ * `unlessNewer`: skip the patch (and resolve with the stored work) when the
+ * record was modified after `patch.updatedAt` — for a change that was noted
+ * down earlier and is applied late.
+ */
+export async function updateProject(
+  id: string,
+  patch: ProjectPatch,
+  options: { unlessNewer?: boolean } = {},
+): Promise<Project | null> {
+  if (typeof id !== "string" || !id) throw new Error("工程编号无效。");
+  let failure: unknown;
+  try {
+    return await withStore<Project | null>("readwrite", "保存", (store) => {
+      let result: Project | null = null;
+      const request = store.get(id);
+      request.onsuccess = () => {
+        if (request.result === undefined) return;
+        try {
+          const current = normalize(request.result, true);
+          const stale =
+            options.unlessNewer &&
+            patch.updatedAt !== undefined &&
+            Date.parse(current.updatedAt) > Date.parse(patch.updatedAt);
+          result = stale ? current : applyPatch(current, patch);
+          if (!stale) store.put(result);
+        } catch (error) {
+          // Nothing is written: neither a broken record nor a bad value.
+          failure =
+            error instanceof NewerVersionError ||
+            error instanceof NotAProjectError
+              ? new Error("这条记录无法读取，不能修改。")
+              : error;
+          store.transaction.abort();
+        }
+      };
+      return () => result;
+    });
+  } catch (error) {
+    throw failure ?? error;
+  }
+}
+
+/** One stored work, or null when it is missing or cannot be read. */
+export async function readProject(id: string): Promise<Project | null> {
+  if (typeof id !== "string" || !id) throw new Error("工程编号无效。");
+  const value = await withStore<unknown>("readonly", "读取", (store) => {
+    const request = store.get(id);
+    return () => request.result;
+  });
+  if (value === undefined) return null;
+  try {
+    return normalize(value, true);
+  } catch {
+    return null;
+  }
 }
 
 /** Also removes damaged records: pass DamagedRecord.id. */
@@ -781,6 +967,21 @@ export async function readRawRecord(id: string): Promise<string | null> {
   });
   if (value === undefined) return null;
   return JSON.stringify(toPlain(value, new Set()) ?? null, null, 2);
+}
+
+/**
+ * The audio bytes of a stored record exactly as they are, whatever state the
+ * rest of the record is in — so paid audio can be saved from an entry this
+ * build cannot open. null when the record has no audio.
+ */
+export async function readRawAudio(id: string): Promise<Blob | null> {
+  const key = storeKey(id);
+  const value = await withStore<unknown>("readonly", "读取", (store) => {
+    const request = store.get(key);
+    return () => request.result;
+  });
+  const blob = isRecord(value) ? value.audioBlob : undefined;
+  return isBlob(blob) && blob.size > 0 ? blob : null;
 }
 
 function storageManager(): StorageManager | undefined {
@@ -881,7 +1082,7 @@ export function importProject(text: string): Project {
     (PROVIDERS as readonly string[]).includes(source.provider)
   )
     throw new Error(
-      "AI 工程 JSON 不包含音频，无法单独导入。请在原作品库中打开 AI 作品；本地作曲工程可以导入。",
+      "云端作品的工程 JSON 不包含音频，无法单独导入。请在原来的「我的作品」中打开这首作品；本地作曲的工程可以导入。",
     );
   let project: Project;
   try {

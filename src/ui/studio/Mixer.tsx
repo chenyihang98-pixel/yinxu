@@ -10,6 +10,7 @@ import type { LucideIcon } from "lucide-react";
 import { TRACKS } from "../../music/score";
 import { STEM_LABELS } from "../../services/exporter";
 import { percent } from "../../state/format";
+import { silentStem } from "../../state/score";
 import type { AppActions, LoadedAudio } from "../../state/types";
 import type { Project, TrackName } from "../../types";
 import { useRenderCount } from "../hooks/useRenderCount";
@@ -32,8 +33,8 @@ const MixerRow = memo(function MixerRow(props: {
   masked: boolean;
   peaks: readonly number[];
   instruments: readonly string[];
-  /** the arrangement has no part in this group */
-  unused: boolean;
+  /** the stem is silent: nothing was written for this group in this version */
+  silent: boolean;
   actions: AppActions;
 }) {
   const { track, value, soloed, masked, actions } = props;
@@ -46,7 +47,8 @@ const MixerRow = memo(function MixerRow(props: {
       className="mix-row"
       data-testid={`mixer-${track}`}
       data-track={track}
-      data-quiet={muted || masked || undefined}
+      data-quiet={muted || masked || props.silent || undefined}
+      data-silent={props.silent || undefined}
       style={{ "--track": `var(--track-${track})` } as CSSProperties}
     >
       <span className="mix-icon" aria-hidden>
@@ -54,11 +56,21 @@ const MixerRow = memo(function MixerRow(props: {
       </span>
       <div className="mix-name">
         <strong>{label}</strong>
-        <span className="ellipsis" data-testid={`mixer-${track}-instruments`}>
-          {props.instruments.length
-            ? props.instruments.join(" · ")
-            : props.unused
-              ? "这首曲子没有用到"
+        <span
+          className="ellipsis"
+          data-testid={`mixer-${track}-instruments`}
+          data-tip={
+            props.silent
+              ? `这一版的编曲没有写${label}，推子暂时不起作用`
+              : props.instruments.length > 1
+                ? props.instruments.join(" · ")
+                : undefined
+          }
+        >
+          {props.silent
+            ? "这一版没有用到"
+            : props.instruments.length
+              ? props.instruments.join(" · ")
               : " "}
         </span>
       </div>
@@ -165,7 +177,9 @@ export const Mixer = memo(function Mixer(props: MixerProps) {
             masked={solo !== null && solo !== track}
             peaks={audio.stemPeaks[track]}
             instruments={instruments[track]}
-            unused={!!arrangement && instruments[track].length === 0}
+            // Told by the audio itself, not by a list of names: a group is
+            // unused only when its stem is silent.
+            silent={silentStem(audio.stemPeaks[track])}
             actions={actions}
           />
         ))}

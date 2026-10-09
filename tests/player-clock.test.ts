@@ -29,10 +29,19 @@ function loaded(duration: number, loop = false): TransportClock {
 }
 
 test("timing constants stay within what the design promises", () => {
-  assert.ok(RAMP_SECONDS >= 0.008 && RAMP_SECONDS <= 0.01, "8-10 ms anti-click ramps");
+  assert.ok(
+    RAMP_SECONDS >= 0.008 && RAMP_SECONDS <= 0.01,
+    "8-10 ms anti-click ramps",
+  );
   assert.ok(TOP_RAMP_SECONDS > 0 && TOP_RAMP_SECONDS < RAMP_SECONDS);
-  assert.ok(Math.abs(MIX_TIME_CONSTANT - 0.015) < 1e-12, "~15 ms fader smoothing");
-  assert.ok(START_LEAD > 0 && START_LEAD <= 0.05, "imperceptible scheduling lead");
+  assert.ok(
+    Math.abs(MIX_TIME_CONSTANT - 0.015) < 1e-12,
+    "~15 ms fader smoothing",
+  );
+  assert.ok(
+    START_LEAD > 0 && START_LEAD <= 0.05,
+    "imperceptible scheduling lead",
+  );
   assert.equal(END_ZONE, 0.01);
 });
 
@@ -150,7 +159,11 @@ test("turning the loop off while playing keeps the audible position (v0.2 invari
   near(clock.position(80), 15);
   clock.setLoop(false, 80);
   assert.equal(clock.loop, false);
-  near(clock.position(80), 15, "not clamped to the end by the accumulated time");
+  near(
+    clock.position(80),
+    15,
+    "not clamped to the end by the accumulated time",
+  );
   near(clock.position(85), 20, "keeps advancing from the audible position");
   near(clock.position(95), 30, "and now stops at the end of this pass");
   near(clock.position(500), 30);
@@ -223,25 +236,47 @@ test("loading new audio stops the clock and can keep the position", () => {
 test("seek targets are clamped into the audio", () => {
   assert.deepEqual(resolveSeek(12, 30, false), { position: 12, ended: false });
   assert.deepEqual(resolveSeek(-4, 30, false), { position: 0, ended: false });
-  assert.deepEqual(resolveSeek(Number.NaN, 30, false), { position: 0, ended: false });
-  assert.deepEqual(resolveSeek(Number.NEGATIVE_INFINITY, 30, true), { position: 0, ended: false });
+  assert.deepEqual(resolveSeek(Number.NaN, 30, false), {
+    position: 0,
+    ended: false,
+  });
+  assert.deepEqual(resolveSeek(Number.NEGATIVE_INFINITY, 30, true), {
+    position: 0,
+    ended: false,
+  });
   assert.deepEqual(resolveSeek(5, 0, false), { position: 0, ended: false });
-  assert.deepEqual(resolveSeek(5, Number.NaN, true), { position: 0, ended: false });
-  assert.deepEqual(resolveSeek(29.98, 30, false), { position: 29.98, ended: false });
+  assert.deepEqual(resolveSeek(5, Number.NaN, true), {
+    position: 0,
+    ended: false,
+  });
+  assert.deepEqual(resolveSeek(29.98, 30, false), {
+    position: 29.98,
+    ended: false,
+  });
 });
 
 test("at the end a one-shot piece stops and a loop wraps", () => {
   for (const wanted of [30, 29.995, 29.99, 31, 1e6, Number.POSITIVE_INFINITY]) {
     const target = resolveSeek(wanted, 30, false);
     assert.equal(target.ended, true, String(wanted));
-    assert.ok(target.position >= 0 && target.position < 30, `inside [0, duration): ${wanted}`);
+    assert.ok(
+      target.position >= 0 && target.position < 30,
+      `inside [0, duration): ${wanted}`,
+    );
     // a loop never ends: the same request wraps to the top and keeps going
-    assert.deepEqual(resolveSeek(wanted, 30, true), { position: 0, ended: false }, String(wanted));
+    assert.deepEqual(
+      resolveSeek(wanted, 30, true),
+      { position: 0, ended: false },
+      String(wanted),
+    );
   }
   const end = resolveSeek(30, 30, false);
   near(end.position, 30 - END_ZONE / 2);
   // just outside the end zone nothing special happens, looping or not
-  assert.deepEqual(resolveSeek(29.98, 30, true), { position: 29.98, ended: false });
+  assert.deepEqual(resolveSeek(29.98, 30, true), {
+    position: 29.98,
+    ended: false,
+  });
   // a piece shorter than the end zone is all "end"
   assert.deepEqual(resolveSeek(0, 0.005, true), { position: 0, ended: false });
   assert.equal(resolveSeek(0, 0.005, false).ended, true);
@@ -250,7 +285,10 @@ test("at the end a one-shot piece stops and a loop wraps", () => {
     const wanted = (i / 1000) * 90 - 10;
     for (const loop of [false, true]) {
       const { position } = resolveSeek(wanted, 30, loop);
-      assert.ok(position >= 0 && position < 30, `${wanted} loop=${loop} → ${position}`);
+      assert.ok(
+        position >= 0 && position < 30,
+        `${wanted} loop=${loop} → ${position}`,
+      );
     }
   }
   // a parked "ended" position restarts from the top
@@ -280,7 +318,8 @@ test("the clock agrees with a sample-by-sample model of a looping source", () =>
       now += step;
       if (!playing) continue;
       playhead += step;
-      if (playhead >= duration) playhead = loop ? playhead - duration : duration;
+      if (playhead >= duration)
+        playhead = loop ? playhead - duration : duration;
     }
   };
   for (let round = 0; round < 400; round++) {
@@ -344,17 +383,48 @@ test("play requests: only the newest uncancelled one may start audio", () => {
 test("fader targets: clamped, and solo silences every other stem", () => {
   const gains = { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.56 };
   assert.deepEqual(mixTargets(gains, null), gains);
-  assert.deepEqual(mixTargets(gains, "drums"), { melody: 0, chords: 0, bass: 0, drums: 0.56 });
+  assert.deepEqual(mixTargets(gains, "drums"), {
+    melody: 0,
+    chords: 0,
+    bass: 0,
+    drums: 0.56,
+  });
   // a soloed stem plays at its own fader level, including silent
-  assert.deepEqual(mixTargets({ ...gains, bass: 0 }, "bass"), { melody: 0, chords: 0, bass: 0, drums: 0 });
+  assert.deepEqual(mixTargets({ ...gains, bass: 0 }, "bass"), {
+    melody: 0,
+    chords: 0,
+    bass: 0,
+    drums: 0,
+  });
   assert.deepEqual(
-    mixTargets({ melody: 7, chords: -1, bass: Number.NaN, drums: Number.POSITIVE_INFINITY }, null),
+    mixTargets(
+      {
+        melody: 7,
+        chords: -1,
+        bass: Number.NaN,
+        drums: Number.POSITIVE_INFINITY,
+      },
+      null,
+    ),
     { melody: 1, chords: 0, bass: 0, drums: 0 },
   );
-  assert.deepEqual(mixTargets({ melody: 0.5 }, undefined), { melody: 0.5, chords: 0, bass: 0, drums: 0 });
-  assert.deepEqual(mixTargets(null, null), { melody: 0, chords: 0, bass: 0, drums: 0 });
+  assert.deepEqual(mixTargets({ melody: 0.5 }, undefined), {
+    melody: 0.5,
+    chords: 0,
+    bass: 0,
+    drums: 0,
+  });
+  assert.deepEqual(mixTargets(null, null), {
+    melody: 0,
+    chords: 0,
+    bass: 0,
+    drums: 0,
+  });
   assert.deepEqual(
-    mixTargets({ melody: "1" as unknown as number, chords: 1, bass: 1, drums: 1 }, null),
+    mixTargets(
+      { melody: "1" as unknown as number, chords: 1, bass: 1, drums: 1 },
+      null,
+    ),
     { melody: 0, chords: 1, bass: 1, drums: 1 },
   );
   // the result is a fresh object: the caller's mix is never mutated

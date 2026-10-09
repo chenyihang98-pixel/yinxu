@@ -84,11 +84,13 @@ class FakeSource extends FakeNode {
   started: { when: number; offset: number } | null = null;
   stoppedAt: number | null = null;
   start(when: number, offset: number) {
-    if (this.started) throw new DOMException("already started", "InvalidStateError");
+    if (this.started)
+      throw new DOMException("already started", "InvalidStateError");
     this.started = { when, offset };
   }
   stop(when = 0) {
-    if (!this.started) throw new DOMException("not started", "InvalidStateError");
+    if (!this.started)
+      throw new DOMException("not started", "InvalidStateError");
     this.stoppedAt = when;
   }
   /** what the browser does when the buffer runs out */
@@ -177,7 +179,9 @@ class FakeContext {
   }
 }
 
-function harness(options: { resume?: ResumeMode; activated?: boolean | undefined } = {}) {
+function harness(
+  options: { resume?: ResumeMode; activated?: boolean | undefined } = {},
+) {
   const contexts: FakeContext[] = [];
   const timers = new Map<number, { at: number; run: () => void }>();
   const frames = new Map<number, (timestamp: number) => void>();
@@ -257,7 +261,8 @@ function harness(options: { resume?: ResumeMode; activated?: boolean | undefined
         await flush();
       }
       for (const context of contexts)
-        if (context.state === "running") context.currentTime += (target - clock) / 1000;
+        if (context.state === "running")
+          context.currentTime += (target - clock) / 1000;
       clock = target;
       await flush();
     },
@@ -284,7 +289,11 @@ const buffer = (duration: number, sampleRate = 48000) =>
 
 type StemSource = Extract<PlayerSource, { kind: "stems" }>;
 
-function stems(duration = 30, engine: 1 | 2 = 2, sampleRate = 48000): StemSource {
+function stems(
+  duration = 30,
+  engine: 1 | 2 = 2,
+  sampleRate = 48000,
+): StemSource {
   return {
     kind: "stems",
     engine,
@@ -298,7 +307,10 @@ function stems(duration = 30, engine: 1 | 2 = 2, sampleRate = 48000): StemSource
 }
 
 const MIX = {
-  gains: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.56 } as Record<TrackName, number>,
+  gains: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.56 } as Record<
+    TrackName,
+    number
+  >,
   solo: null as TrackName | null,
 };
 const TRACK_ORDER: TrackName[] = ["melody", "chords", "bass", "drums"];
@@ -307,7 +319,9 @@ const TRACK_ORDER: TrackName[] = ["melody", "chords", "bass", "drums"];
 function voice(context: FakeContext, count = 4) {
   const sources = context.sources.slice(-count);
   const gains = sources.map((source) => source.outputs[0] as FakeGain);
-  const fade = (count === 4 ? gains[0].outputs[0] : sources[0].outputs[0]) as FakeGain;
+  const fade = (
+    count === 4 ? gains[0].outputs[0] : sources[0].outputs[0]
+  ) as FakeGain;
   return { sources, gains, fade };
 }
 
@@ -352,7 +366,11 @@ test("engine-2 stems play through faders, one fade, the soft clipper and the mas
   await h.engine.play();
   const context = h.context;
   assert.equal(h.contexts.length, 1);
-  assert.equal(context.sampleRate, 48000, "context created at the audio's own rate");
+  assert.equal(
+    context.sampleRate,
+    48000,
+    "context created at the audio's own rate",
+  );
   assert.equal(context.resumes, 1);
   assert.equal(h.engine.getState().playing, true);
 
@@ -362,12 +380,16 @@ test("engine-2 stems play through faders, one fade, the soft clipper and the mas
   const when = sources[0].started?.when;
   assert.ok(when !== undefined);
   near(when, context.currentTime + START_LEAD);
-  for (const node of sources) assert.deepEqual(node.started, { when, offset: 0 });
+  for (const node of sources)
+    assert.deepEqual(node.started, { when, offset: 0 });
   for (const [index, track] of TRACK_ORDER.entries())
     assert.equal(sources[index].buffer, source.stems[track], `${track} buffer`);
   // each stem has its own fader, initialised without a ramp
   assert.equal(new Set(gains).size, 4);
-  assert.deepEqual(gains.map((gain) => gain.gain.value), [0.8, 0.64, 0.68, 0.56]);
+  assert.deepEqual(
+    gains.map((gain) => gain.gain.value),
+    [0.8, 0.64, 0.68, 0.56],
+  );
   // faders → fade → shaper → master → destination
   for (const gain of gains) assert.deepEqual(gain.outputs, [fade]);
   const [shaper] = context.shapers;
@@ -381,7 +403,11 @@ test("engine-2 stems play through faders, one fade, the soft clipper and the mas
   assert.equal(shaper.curve.length % 2, 1);
   near(shaper.curve[shaper.curve.length - 1], CEILING);
   near(shaper.curve[(shaper.curve.length - 1) / 2], 0);
-  near(shaper.curve[Math.round((shaper.curve.length - 1) * 0.75)], 0.5, "linear below the knee");
+  near(
+    shaper.curve[Math.round((shaper.curve.length - 1) * 0.75)],
+    0.5,
+    "linear below the knee",
+  );
   // from the very top the fade-in is short enough to keep the first transient
   assert.deepEqual(fade.gain.events, [
     { type: "set", value: 0, time: when },
@@ -393,10 +419,18 @@ test("engine-1 stems and cloud audio bypass the soft clipper", async () => {
   const legacy = harness();
   legacy.engine.load(stems(20, 1, 32000), MIX);
   await legacy.engine.play();
-  assert.equal(legacy.context.sampleRate, 32000, "old 32 kHz works get a 32 kHz context");
+  assert.equal(
+    legacy.context.sampleRate,
+    32000,
+    "old 32 kHz works get a 32 kHz context",
+  );
   const old = voice(legacy.context);
   const legacyMaster = legacy.context.shapers[0].outputs[0];
-  assert.deepEqual(old.fade.outputs, [legacyMaster], "summed stems go straight to the master");
+  assert.deepEqual(
+    old.fade.outputs,
+    [legacyMaster],
+    "summed stems go straight to the master",
+  );
   assert.equal(legacy.context.sources.length, 4);
 
   const cloud = harness();
@@ -424,7 +458,14 @@ test("unusable audio is refused with a message instead of a broken player", () =
   assert.equal(h.errors.length, 1);
   assert.match(h.errors[0], /音频数据不完整/);
   h.engine.load({ kind: "mix", buffer: buffer(0) }, MIX);
-  h.engine.load({ kind: "stems", engine: 2, stems: { ...stems(30, 2, 48000).stems, drums: buffer(30, 44100) } } as PlayerSource, MIX);
+  h.engine.load(
+    {
+      kind: "stems",
+      engine: 2,
+      stems: { ...stems(30, 2, 48000).stems, drums: buffer(30, 44100) },
+    } as PlayerSource,
+    MIX,
+  );
   h.engine.load(null as unknown as PlayerSource, MIX);
   assert.equal(h.errors.length, 4);
   assert.equal(h.engine.getState().ready, false);
@@ -477,27 +518,45 @@ test("faders, mute and solo are gain ramps: no restart, no re-render, no React s
 
   // solo silences the other stems; un-solo restores the faders
   h.engine.setMix({ ...MIX.gains, melody: 0.3 }, "drums");
-  assert.deepEqual(gains.map((gain) => gain.gain.last("target")?.value), [0, 0, 0, 0.56]);
+  assert.deepEqual(
+    gains.map((gain) => gain.gain.last("target")?.value),
+    [0, 0, 0, 0.56],
+  );
   h.engine.setMix({ ...MIX.gains, melody: 0.3 }, null);
-  assert.deepEqual(gains.map((gain) => gain.gain.last("target")?.value), [0.3, 0.64, 0.68, 0.56]);
+  assert.deepEqual(
+    gains.map((gain) => gain.gain.last("target")?.value),
+    [0.3, 0.64, 0.68, 0.56],
+  );
   // mute is a fader at zero; out-of-range values are clamped
   h.engine.setMix({ melody: 0, chords: 5, bass: Number.NaN, drums: -1 }, null);
-  assert.deepEqual(gains.map((gain) => gain.gain.last("target")?.value), [0, 1, 0, 0]);
+  assert.deepEqual(
+    gains.map((gain) => gain.gain.last("target")?.value),
+    [0, 1, 0, 0],
+  );
   assert.equal(context.sources.length, 4);
 });
 
 test("a mix set while paused is what the next start uses", async () => {
   const h = harness();
   h.engine.load(stems(30), MIX);
-  h.engine.setMix({ melody: 0.1, chords: 0.2, bass: 0.3, drums: 0.4 }, "chords");
+  h.engine.setMix(
+    { melody: 0.1, chords: 0.2, bass: 0.3, drums: 0.4 },
+    "chords",
+  );
   await h.engine.play();
-  assert.deepEqual(voice(h.context).gains.map((gain) => gain.gain.value), [0, 0.2, 0, 0]);
+  assert.deepEqual(
+    voice(h.context).gains.map((gain) => gain.gain.value),
+    [0, 0.2, 0, 0],
+  );
   // loading a work with solo already chosen starts soloed, with no audible glide
   const soloed = harness();
   soloed.engine.load(stems(30), { gains: MIX.gains, solo: "bass" });
   await soloed.engine.play();
   const started = voice(soloed.context);
-  assert.deepEqual(started.gains.map((gain) => gain.gain.value), [0, 0, 0.68, 0]);
+  assert.deepEqual(
+    started.gains.map((gain) => gain.gain.value),
+    [0, 0, 0.68, 0],
+  );
   assert.ok(started.gains.every((gain) => gain.gain.events.length === 0));
 });
 
@@ -520,12 +579,18 @@ test("listening volume ramps on the master and never touches the stems", async (
   assert.equal(h.engine.getState().volume, 1);
   h.engine.setVolume(Number.NaN);
   assert.equal(h.engine.getState().volume, 1, "garbage is ignored");
-  assert.ok(voice(context).gains.every((gain) => gain.gain.events.length === 0));
+  assert.ok(
+    voice(context).gains.every((gain) => gain.gain.events.length === 0),
+  );
   // while the context is not rendering the value is simply set
   h.engine.pause();
   context.transition("suspended");
   h.engine.setVolume(0.6);
-  assert.deepEqual(master.gain.events.at(-1), { type: "set", value: 0.6, time: 2 });
+  assert.deepEqual(master.gain.events.at(-1), {
+    type: "set",
+    value: 0.6,
+    time: 2,
+  });
 });
 
 /* ---------------- transport ---------------- */
@@ -549,8 +614,14 @@ test("pause fades out, keeps the position, and play continues from it", async ()
     { type: "ramp", value: 0, time: now + RAMP_SECONDS },
   ]);
   for (const source of first.sources) {
-    assert.ok(source.stoppedAt !== null && source.stoppedAt >= now + RAMP_SECONDS);
-    assert.equal(source.onended, null, "a stopped voice can no longer end playback");
+    assert.ok(
+      source.stoppedAt !== null && source.stoppedAt >= now + RAMP_SECONDS,
+    );
+    assert.equal(
+      source.onended,
+      null,
+      "a stopped voice can no longer end playback",
+    );
   }
   assert.equal(h.pendingFrames, 0, "the animation loop stops with the music");
 
@@ -561,7 +632,10 @@ test("pause fades out, keeps the position, and play continues from it", async ()
   assert.notEqual(second.sources[0], first.sources[0]);
   for (const source of second.sources) near(source.started!.offset, 7.5);
   // resuming mid-piece uses the full anti-click ramp
-  near(second.fade.gain.last("ramp")!.time - second.sources[0].started!.when, RAMP_SECONDS);
+  near(
+    second.fade.gain.last("ramp")!.time - second.sources[0].started!.when,
+    RAMP_SECONDS,
+  );
   // the retired voice is disconnected once its fade is over
   await h.advance(200);
   assert.ok(first.sources.every((source) => source.disconnected));
@@ -582,12 +656,24 @@ test("playback always starts on a whole sample frame", async () => {
     context.currentTime += 1.23456789;
     h.engine.pause();
     const paused = h.engine.getTime();
-    assert.ok(!whole(frames(paused)), "the pause itself lands between two samples");
+    assert.ok(
+      !whole(frames(paused)),
+      "the pause itself lands between two samples",
+    );
     await h.engine.play();
     for (const source of voice(context).sources) {
-      assert.ok(whole(frames(source.started!.offset)), `offset ${source.started!.offset} @ ${rate}`);
-      assert.ok(whole(frames(source.started!.when)), `when ${source.started!.when} @ ${rate}`);
-      assert.ok(Math.abs(source.started!.offset - paused) <= 0.5 / rate + 1e-12, "nearest frame");
+      assert.ok(
+        whole(frames(source.started!.offset)),
+        `offset ${source.started!.offset} @ ${rate}`,
+      );
+      assert.ok(
+        whole(frames(source.started!.when)),
+        `when ${source.started!.when} @ ${rate}`,
+      );
+      assert.ok(
+        Math.abs(source.started!.offset - paused) <= 0.5 / rate + 1e-12,
+        "nearest frame",
+      );
     }
     context.currentTime += 0.7654321;
     h.engine.seek(12.3456789);
@@ -619,9 +705,17 @@ test("play and toggle are idempotent: one voice, never two", async () => {
   const h = harness();
   h.engine.load(stems(30), MIX);
   await Promise.all([h.engine.play(), h.engine.play(), h.engine.play()]);
-  assert.equal(h.context.sources.length, 4, "three quick clicks start one voice");
+  assert.equal(
+    h.context.sources.length,
+    4,
+    "three quick clicks start one voice",
+  );
   await h.engine.play();
-  assert.equal(h.context.sources.length, 4, "play while playing does not restart");
+  assert.equal(
+    h.context.sources.length,
+    4,
+    "play while playing does not restart",
+  );
   h.engine.toggle();
   assert.equal(h.engine.getState().playing, false);
   h.engine.toggle();
@@ -651,7 +745,10 @@ test("the playhead is published at most ~30 times a second and only while playin
     h.frame();
   }
   const published = h.timeChanges - base;
-  assert.ok(published >= 28 && published <= 31, `published ${published} times in one second`);
+  assert.ok(
+    published >= 28 && published <= 31,
+    `published ${published} times in one second`,
+  );
   // tracks the audio clock, never ahead of it and at most one tick behind
   const lag = context.currentTime - START_LEAD - h.engine.getTime();
   assert.ok(lag >= -1e-9 && lag < 0.034, `lag ${lag}`);
@@ -685,15 +782,20 @@ test("seeking while paused moves the playhead at once", async () => {
   h.engine.seek(Number.NaN);
   assert.equal(h.engine.getTime(), 0);
   h.engine.seek(1000);
-  assert.ok(h.engine.getTime() < 30 && h.engine.getTime() > 29.9, "rests just before the end");
+  assert.ok(
+    h.engine.getTime() < 30 && h.engine.getTime() > 29.9,
+    "rests just before the end",
+  );
   assert.equal(h.contexts.length, 0);
   // play at the end starts from the top
   await h.engine.play();
-  for (const source of voice(h.context).sources) assert.equal(source.started!.offset, 0);
+  for (const source of voice(h.context).sources)
+    assert.equal(source.started!.offset, 0);
   h.engine.pause();
   h.engine.seek(20);
   await h.engine.play();
-  for (const source of voice(h.context).sources) assert.equal(source.started!.offset, 20);
+  for (const source of voice(h.context).sources)
+    assert.equal(source.started!.offset, 20);
 });
 
 test("a single seek while playing is a short crossfade to the new position", async () => {
@@ -706,7 +808,11 @@ test("a single seek while playing is a short crossfade to the new position", asy
   const now = context.currentTime;
   h.engine.seek(20);
   assert.equal(h.engine.getState().playing, true);
-  assert.equal(h.engine.getTime(), 20, "the target shows immediately: no thumb snap-back");
+  assert.equal(
+    h.engine.getTime(),
+    20,
+    "the target shows immediately: no thumb snap-back",
+  );
   const next = voice(context);
   assert.equal(context.sources.length, 8);
   const when = now + START_LEAD;
@@ -725,9 +831,13 @@ test("a single seek while playing is a short crossfade to the new position", asy
     { type: "set", value: 0, time: when },
     { type: "ramp", value: 1, time: when + RAMP_SECONDS },
   ]);
-  for (const source of old.sources) assert.ok(source.stoppedAt! >= when + RAMP_SECONDS);
+  for (const source of old.sources)
+    assert.ok(source.stoppedAt! >= when + RAMP_SECONDS);
   // the fader positions carry over to the new voice
-  assert.deepEqual(next.gains.map((gain) => gain.gain.value), [0.8, 0.64, 0.68, 0.56]);
+  assert.deepEqual(
+    next.gains.map((gain) => gain.gain.value),
+    [0.8, 0.64, 0.68, 0.56],
+  );
   await h.advance(1000);
   h.frame();
   near(h.engine.getTime(), 21 - START_LEAD);
@@ -742,15 +852,34 @@ test("scrubbing does not restart the audio per event: one start when it settles"
   // 30 input events, 16 ms apart, like dragging a range input
   for (let i = 0; i < 30; i++) {
     h.engine.seek(5 + i * 0.5);
-    assert.equal(h.engine.getTime(), 5 + i * 0.5, "the playhead follows the pointer");
+    assert.equal(
+      h.engine.getTime(),
+      5 + i * 0.5,
+      "the playhead follows the pointer",
+    );
     await h.advance(16);
   }
-  assert.equal(h.engine.getState().playing, true, "still playing as far as the UI is concerned");
-  assert.equal(context.sources.length, 8, "only the first event restarted a voice");
-  assert.ok(context.sources.every((source) => source.stoppedAt !== null), "silent while dragging");
+  assert.equal(
+    h.engine.getState().playing,
+    true,
+    "still playing as far as the UI is concerned",
+  );
+  assert.equal(
+    context.sources.length,
+    8,
+    "only the first event restarted a voice",
+  );
+  assert.ok(
+    context.sources.every((source) => source.stoppedAt !== null),
+    "silent while dragging",
+  );
   assert.equal(h.engine.getTime(), 19.5, "the playhead waits at the target");
   await h.advance(200);
-  assert.equal(context.sources.length, 12, "exactly one more start after the drag");
+  assert.equal(
+    context.sources.length,
+    12,
+    "exactly one more start after the drag",
+  );
   for (const source of voice(context).sources) {
     assert.equal(source.started!.offset, 19.5);
     assert.equal(source.stoppedAt, null);
@@ -781,11 +910,16 @@ test("a drag that passes the end only stops playback if it also ends there", asy
   for (const position of [20, 26, 30, 30, 24, 10]) {
     h.engine.seek(position);
     await h.advance(16);
-    assert.equal(h.engine.getState().playing, true, `still playing at ${position}`);
+    assert.equal(
+      h.engine.getState().playing,
+      true,
+      `still playing at ${position}`,
+    );
   }
   await h.advance(200);
   assert.equal(h.engine.getState().playing, true);
-  for (const source of voice(context).sources) assert.equal(source.started!.offset, 10);
+  for (const source of voice(context).sources)
+    assert.equal(source.started!.offset, 10);
 
   // a drag released at the end stops there, like reaching the end normally
   await h.advance(1000);
@@ -793,7 +927,11 @@ test("a drag that passes the end only stops playback if it also ends there", asy
     h.engine.seek(position);
     await h.advance(16);
   }
-  assert.equal(h.engine.getState().playing, true, "not decided while the pointer is down");
+  assert.equal(
+    h.engine.getState().playing,
+    true,
+    "not decided while the pointer is down",
+  );
   assert.ok(h.engine.getTime() > 29.9, "the thumb stays where the pointer is");
   const before = context.sources.length;
   await h.advance(200);
@@ -823,7 +961,11 @@ test("seeking to the end stops a one-shot piece and wraps a loop", async () => {
   await once.engine.play();
   await once.advance(1000);
   once.engine.seek(30);
-  assert.equal(once.engine.getState().playing, false, "does not wrap and keep playing");
+  assert.equal(
+    once.engine.getState().playing,
+    false,
+    "does not wrap and keep playing",
+  );
   assert.equal(once.engine.getTime(), 0);
   assert.equal(once.context.sources.length, 4, "no new voice");
   assert.ok(once.context.sources.every((source) => source.stoppedAt !== null));
@@ -856,7 +998,11 @@ test("natural end returns to the top; ends of replaced voices are ignored", asyn
   // the browser reports the old sources as ended after their scheduled stop
   for (const handler of staleHandlers) handler?.();
   for (const source of first.sources) source.end();
-  assert.equal(h.engine.getState().playing, true, "a stale ended event must not stop the new voice");
+  assert.equal(
+    h.engine.getState().playing,
+    true,
+    "a stale ended event must not stop the new voice",
+  );
 
   await h.advance(5100);
   h.frame();
@@ -868,7 +1014,8 @@ test("natural end returns to the top; ends of replaced voices are ignored", asyn
   assert.equal(h.pendingFrames, 0);
   // and it can be played again from the top
   await h.engine.play();
-  for (const source of voice(context).sources) assert.equal(source.started!.offset, 0);
+  for (const source of voice(context).sources)
+    assert.equal(source.started!.offset, 0);
 });
 
 test("toggling the audition loop flips the running sources and re-bases time", async () => {
@@ -885,9 +1032,16 @@ test("toggling the audition loop flips the running sources and re-bases time", a
   h.frame();
   near(h.engine.getTime(), 15);
   h.engine.setLoop(false);
-  assert.ok(sources.every((source) => !source.loop), "all four flags change in the same task");
+  assert.ok(
+    sources.every((source) => !source.loop),
+    "all four flags change in the same task",
+  );
   assert.equal(context.sources.length, 4, "no restart, no click");
-  near(h.engine.getTime(), 15, "the audible position, not the accumulated 75 s");
+  near(
+    h.engine.getTime(),
+    15,
+    "the audible position, not the accumulated 75 s",
+  );
   assert.deepEqual(h.engine.getState().loop, false);
   context.currentTime += 5;
   h.frame();
@@ -925,9 +1079,12 @@ test("load can keep the position and the playing state, or start a new work", as
   h.engine.load(stems(30), MIX, { keepPosition: true });
   assert.equal(h.engine.getState().playing, true, "keeps playing");
   assert.equal(h.stateChanges, changes, "no pause/play flicker for the UI");
-  for (const source of voice(context).sources) near(source.started!.offset, position);
+  for (const source of voice(context).sources)
+    near(source.started!.offset, position);
   assert.equal(context.sources.length, 8);
-  assert.ok(context.sources.slice(0, 4).every((source) => source.stoppedAt !== null));
+  assert.ok(
+    context.sources.slice(0, 4).every((source) => source.stoppedAt !== null),
+  );
 
   // a different work: back to the top, paused
   h.engine.load(stems(45), MIX);
@@ -940,7 +1097,8 @@ test("load can keep the position and the playing state, or start a new work", as
   // autoplay
   h.engine.load(stems(20), MIX, { autoplay: true });
   assert.equal(h.engine.getState().playing, true);
-  for (const source of voice(context).sources) assert.equal(source.started!.offset, 0);
+  for (const source of voice(context).sources)
+    assert.equal(source.started!.offset, 0);
   // keepPosition while paused stays paused, at the same place
   h.engine.pause();
   h.engine.seek(11);
@@ -977,7 +1135,11 @@ test("a work at another sample rate gets its own context; the old one is closed"
   assert.equal(first.closes, 1);
   assert.equal(first.state, "closed");
   assert.equal(first.listenerCount, 0);
-  assert.equal(h.engine.getState().playing, true, "closing the old context does not stop the new one");
+  assert.equal(
+    h.engine.getState().playing,
+    true,
+    "closing the old context does not stop the new one",
+  );
   // same rate again: the context is reused
   h.engine.load(stems(10, 1, 32000), MIX, { autoplay: true });
   await flush();
@@ -992,13 +1154,21 @@ test("a start that waited for resume() never plays stale audio", async () => {
   const first = h.engine.play();
   await flush();
   const context = h.context;
-  assert.equal(h.engine.getState().playing, false, "not playing until audio really starts");
+  assert.equal(
+    h.engine.getState().playing,
+    false,
+    "not playing until audio really starts",
+  );
   // pause arrives while resume() is still pending; then the device wakes up
   h.engine.pause();
   context.transition("running");
   await h.advance(5000);
   await first;
-  assert.equal(context.sources.length, 0, "the cancelled request started nothing");
+  assert.equal(
+    context.sources.length,
+    0,
+    "the cancelled request started nothing",
+  );
   assert.deepEqual(h.errors, [], "a cancelled request is not an error");
 
   // loading another work while waiting
@@ -1021,7 +1191,8 @@ test("a start that waited for resume() never plays stale audio", async () => {
   h.engine.seek(7);
   await third;
   assert.equal(h.engine.getState().playing, true);
-  for (const source of voice(context).sources) assert.equal(source.started!.offset, 7);
+  for (const source of voice(context).sources)
+    assert.equal(source.started!.offset, 7);
 });
 
 test("autoplay refused before a user gesture: a clear message and a paused player", async () => {
@@ -1089,7 +1260,11 @@ test("the system suspending the context pauses the player where it is", async ()
   const position = context.currentTime - START_LEAD;
   const interrupted = voice(context);
   context.transition("suspended");
-  assert.equal(h.engine.getState().playing, false, "the button no longer claims to be playing");
+  assert.equal(
+    h.engine.getState().playing,
+    false,
+    "the button no longer claims to be playing",
+  );
   near(h.engine.getTime(), position);
   assert.ok(interrupted.sources.every((source) => source.stoppedAt !== null));
   assert.equal(h.pendingFrames, 0);
@@ -1098,7 +1273,8 @@ test("the system suspending the context pauses the player where it is", async ()
   await h.engine.play();
   assert.equal(context.resumes, 2);
   assert.equal(h.engine.getState().playing, true);
-  for (const source of voice(context).sources) near(source.started!.offset, position);
+  for (const source of voice(context).sources)
+    near(source.started!.offset, position);
 
   // a context closed behind our back is replaced on the next play
   context.transition("closed");
@@ -1132,18 +1308,32 @@ test("an idle player releases the output device and wakes up on play", async () 
   context.slowSuspend = () => new Promise((resolve) => setTimeout(resolve, 0));
   await h.advance(1);
   assert.equal(context.suspends, 2);
-  assert.equal(context.state, "running", "suspend requested but not yet effective");
+  assert.equal(
+    context.state,
+    "running",
+    "suspend requested but not yet effective",
+  );
   const resumesBefore = context.resumes;
   const playing = h.engine.play();
   await flush();
-  assert.equal(h.engine.getState().playing, false, "not started on the strength of a stale state");
+  assert.equal(
+    h.engine.getState().playing,
+    false,
+    "not started on the strength of a stale state",
+  );
   assert.equal(context.sources.length, 8);
   await playing;
-  assert.equal(context.resumes, resumesBefore + 1, "play waited for its own resume()");
+  assert.equal(
+    context.resumes,
+    resumesBefore + 1,
+    "play waited for its own resume()",
+  );
   assert.equal(h.engine.getState().playing, true);
   assert.equal(context.state, "running");
   assert.equal(context.sources.length, 12);
-  assert.ok(voice(context).sources.every((source) => source.stoppedAt === null));
+  assert.ok(
+    voice(context).sources.every((source) => source.stoppedAt === null),
+  );
 });
 
 test("a context that wakes up with nothing to play is put back to sleep", async () => {
@@ -1154,7 +1344,11 @@ test("a context that wakes up with nothing to play is put back to sleep", async 
   const context = h.context;
   // the browser lets the context start later (the user finally touched the page)
   context.transition("running");
-  assert.equal(h.engine.getState().playing, false, "it must not start playing by itself");
+  assert.equal(
+    h.engine.getState().playing,
+    false,
+    "it must not start playing by itself",
+  );
   await h.advance(7000);
   assert.equal(context.suspends, 0);
   await h.advance(1500);
@@ -1191,7 +1385,11 @@ test("dispose closes the context, drops every reference, and the engine can be r
   assert.equal(context.closes, 1);
   assert.equal(context.state, "closed");
   assert.equal(context.listenerCount, 0);
-  assert.ok(context.sources.every((source) => source.stoppedAt !== null && source.disconnected));
+  assert.ok(
+    context.sources.every(
+      (source) => source.stoppedAt !== null && source.disconnected,
+    ),
+  );
   assert.equal(h.engine.getState().playing, false);
   assert.equal(h.pendingFrames, 0);
   near(h.engine.getTime(), position);
@@ -1205,7 +1403,8 @@ test("dispose closes the context, drops every reference, and the engine can be r
   assert.equal(h.contexts.length, 2);
   assert.equal(h.context.state, "running");
   assert.equal(h.engine.getState().playing, true);
-  for (const source of voice(h.context).sources) near(source.started!.offset, position);
+  for (const source of voice(h.context).sources)
+    near(source.started!.offset, position);
   assert.deepEqual(h.errors, []);
 });
 

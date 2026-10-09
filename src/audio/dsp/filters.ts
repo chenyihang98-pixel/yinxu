@@ -292,12 +292,7 @@ export class Biquad {
   }
 
   /** Low shelf: `gainDb` below `hz` (slope 1 = steepest without overshoot). */
-  setLowShelf(
-    hz: number,
-    gainDb: number,
-    sampleRate: number,
-    slope = 1,
-  ): this {
+  setLowShelf(hz: number, gainDb: number, sampleRate: number, slope = 1): this {
     const w = (TAU * clamp(hz, 1, sampleRate * 0.49)) / sampleRate;
     const c = Math.cos(w);
     const a = Math.pow(10, gainDb / 40);

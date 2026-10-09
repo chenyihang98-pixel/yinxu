@@ -19,15 +19,19 @@ import {
   exportProject,
   importProject,
   listProjects,
+  readProject,
+  readRawAudio,
   readRawRecord,
   requestPersistence,
   saveProject,
   storageInfo,
+  updateProject,
 } from "../storage";
 import { AppCore } from "./core";
 import type { CoreDeps } from "./ports";
 import { clampVolume } from "./logic";
 import { browserSession } from "./session";
+import { browserSync } from "./sync";
 
 /**
  * Resolves once the browser has had the chance to paint what was just
@@ -55,8 +59,11 @@ export function browserDeps(): CoreDeps {
     storage: {
       listProjects,
       saveProject,
+      updateProject,
+      readProject,
       deleteProject,
       readRawRecord,
+      readRawAudio,
       importProject,
       storageInfo,
       requestPersistence,
@@ -91,6 +98,7 @@ export function browserDeps(): CoreDeps {
         globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
     },
     session: browserSession,
+    sync: browserSync(),
   };
 }
 

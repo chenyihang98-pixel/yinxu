@@ -1,0 +1,17 @@
+# Text is stored and checked out with LF on every platform, whatever
+# core.autocrlf says: tests compare files byte for byte (the example project,
+# the Content-Security-Policy in two files), and Prettier writes LF.
+* text=auto eol=lf
+
+# Windows command scripts must keep CRLF to run reliably in cmd.exe.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Never converted, never diffed as text.
+*.wav binary
+*.mp3 binary
+*.m4a binary
+*.flac binary
+*.png binary
+*.ico binary
+*.exe binary

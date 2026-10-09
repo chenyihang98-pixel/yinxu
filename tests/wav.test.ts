@@ -42,8 +42,7 @@ function testSignal(frames: number, seed: number): Float32Array {
   let state = seed;
   for (let i = 0; i < frames; i++) {
     state = (Math.imul(state, 1664525) + 1013904223) | 0;
-    data[i] =
-      0.6 * Math.sin(i * 0.0371 + seed) + 0.3 * (state / 2147483648);
+    data[i] = 0.6 * Math.sin(i * 0.0371 + seed) + 0.3 * (state / 2147483648);
   }
   return data;
 }
@@ -83,10 +82,19 @@ test("samples are interleaved little-endian and clamped", () => {
   const right = Float32Array.of(0.5, -0.5, 0, -1, -3, 3, -0.25);
   const wav = encodeWavFromChannels([left, right], 48000, { dither: false });
   const [l, r] = samples(wav, 2);
-  assert.deepEqual(Array.from(l), [-32768, 0, 16384, 32767, 32767, -32768, 8192]);
-  assert.deepEqual(Array.from(r), [16384, -16384, 0, -32768, -32768, 32767, -8192]);
+  assert.deepEqual(
+    Array.from(l),
+    [-32768, 0, 16384, 32767, 32767, -32768, 8192],
+  );
+  assert.deepEqual(
+    Array.from(r),
+    [16384, -16384, 0, -32768, -32768, 32767, -8192],
+  );
   // byte order: the first sample is -32768 = 0x8000 → bytes 00 80
-  assert.deepEqual(Array.from(new Uint8Array(wav, 44, 4)), [0x00, 0x80, 0x00, 0x40]);
+  assert.deepEqual(
+    Array.from(new Uint8Array(wav, 44, 4)),
+    [0x00, 0x80, 0x00, 0x40],
+  );
 });
 
 test("round trip is within half an LSB without dither and 1.5 LSB with TPDF dither", () => {
@@ -130,9 +138,15 @@ test("dither makes the quantisation error independent of the signal", () => {
   const tone = new Float32Array(frames);
   for (let i = 0; i < frames; i++)
     tone[i] = (0.4 / 32768) * Math.sin((2 * Math.PI * 441 * i) / 48000);
-  const plain = samples(encodeWavFromChannels([tone], 48000, { dither: false }), 1)[0];
+  const plain = samples(
+    encodeWavFromChannels([tone], 48000, { dither: false }),
+    1,
+  )[0];
   const dithered = samples(encodeWavFromChannels([tone], 48000), 1)[0];
-  assert.ok(plain.every((value) => value === 0), "undithered: the tone is lost");
+  assert.ok(
+    plain.every((value) => value === 0),
+    "undithered: the tone is lost",
+  );
   let projection = 0;
   for (let i = 0; i < frames; i++)
     projection += dithered[i] * Math.sin((2 * Math.PI * 441 * i) / 48000);
@@ -144,7 +158,11 @@ test("exports are reproducible and digital silence stays silent", () => {
   const channels = [testSignal(5000, 5), testSignal(5000, 6)];
   const first = new Uint8Array(encodeWavFromChannels(channels, 48000));
   const second = new Uint8Array(encodeWavFromChannels(channels, 48000));
-  assert.deepEqual(first, second, "fixed-seed dither: identical bytes every time");
+  assert.deepEqual(
+    first,
+    second,
+    "fixed-seed dither: identical bytes every time",
+  );
 
   const silent = [new Float32Array(2000), new Float32Array(2000)];
   const [l, r] = samples(encodeWavFromChannels(silent, 48000), 2);
@@ -171,14 +189,24 @@ test("only the four AudioBuffer members are needed, and odd inputs are handled",
   assert.equal(wav.byteLength, 44 + 60 * 2);
   // non-finite samples must not produce garbage
   const odd = samples(
-    encodeWavFromChannels([Float32Array.of(NaN, Infinity, -Infinity, 0.5)], 48000, {
-      dither: false,
-    }),
+    encodeWavFromChannels(
+      [Float32Array.of(NaN, Infinity, -Infinity, 0.5)],
+      48000,
+      {
+        dither: false,
+      },
+    ),
     1,
   )[0];
   assert.deepEqual(Array.from(odd), [0, 32767, -32768, 16384]);
   assert.throws(() => encodeWavFromChannels([], 48000), RangeError);
-  assert.throws(() => encodeWavFromChannels([new Float32Array(4)], 0), RangeError);
+  assert.throws(
+    () => encodeWavFromChannels([new Float32Array(4)], 0),
+    RangeError,
+  );
   // an empty buffer is just a header
-  assert.equal(encodeWavFromChannels([new Float32Array(0)], 48000).byteLength, 44);
+  assert.equal(
+    encodeWavFromChannels([new Float32Array(0)], 48000).byteLength,
+    44,
+  );
 });

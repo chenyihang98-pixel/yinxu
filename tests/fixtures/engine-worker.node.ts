@@ -18,7 +18,9 @@ const scope: WorkerScope = {
         type: "probe",
         transferred: transfer?.length ?? 0,
         detached: TRACKS.every((track) =>
-          message.audio.stems[track].every((channel) => channel.byteLength === 0),
+          message.audio.stems[track].every(
+            (channel) => channel.byteLength === 0,
+          ),
         ),
       });
   },

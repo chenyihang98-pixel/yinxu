@@ -1,4 +1,4 @@
-'use strict';
+"use strict";
 
 /**
  * Producer plan through any OpenAI-compatible chat/completions endpoint
@@ -6,32 +6,69 @@
  * No SDK: one guarded fetch, no redirects, bounded reads, and nothing from the
  * upstream answer leaves this module except a validated plan and a model id.
  */
-const { MusicError, readBounded, readErrorBody } = require('../providers/shared.cjs');
-const { safeModelId } = require('../credentials.cjs');
-const { validateBaseUrl, assertPublicHost } = require('./base-url.cjs');
-const { buildMessages, buildSystemPrompt, completePlan, validatePlan, PLAN_SCHEMA } = require('./plan-schema.cjs');
+const {
+  MusicError,
+  readBounded,
+  readErrorBody,
+} = require("../providers/shared.cjs");
+const { safeModelId } = require("../credentials.cjs");
+const { validateBaseUrl, assertPublicHost } = require("./base-url.cjs");
+const {
+  buildMessages,
+  buildSystemPrompt,
+  completePlan,
+  validatePlan,
+  PLAN_SCHEMA,
+} = require("./plan-schema.cjs");
 
 const MAX_TOKENS = 4096;
 const RETRY_DELAY_MS = 1500;
 const MAX_ADAPTATIONS = 3;
+/**
+ * Bounds on what is read from the endpoint. An honest answer is a few kilobytes
+ * (max_tokens is 4096); the whole body adds a reasoning side channel and usage
+ * figures. Everything below is linear in these sizes, so a broken or hostile
+ * endpoint cannot keep the main thread busy: the time limit and cancel still fire.
+ */
+const MAX_BODY_BYTES = 256 * 1024;
+const MAX_ANSWER_CHARS = 64 * 1024;
+const MAX_PARSE_ATTEMPTS = 8;
 
 function wait(milliseconds, signal) {
   return new Promise((resolve, reject) => {
-    if (signal?.aborted) { reject(new Error('aborted')); return; }
-    const onAbort = () => { clearTimeout(timer); reject(new Error('aborted')); };
-    const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, milliseconds);
-    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      reject(new Error("aborted"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
 function statusMessage(status, local) {
-  if (status === 401) return 'API Key 无效或已过期，请在设置中更新大模型的密钥。';
-  if (status === 402) return '大模型账户余额不足，请充值后重试。';
-  if (status === 403) return '当前密钥没有调用这个模型的权限，请在服务商控制台确认。';
-  if (status === 404) return local ? '本机 Ollama 里没有这个模型。请先下载模型，或在设置中改成已安装的模型名称。' : '找不到这个模型或接口地址。请检查设置里的模型名称和接口地址（多数服务需要以 /v1 结尾）。';
-  if (status === 429) return '大模型请求过于频繁或额度已用尽，请稍后再试。';
-  if (status === 400 || status === 422) return '大模型没有接受这次请求，请检查模型名称是否正确，或换一个模型。';
-  if (status >= 500) return local ? '本机 Ollama 出错了，请确认它正在运行且模型可以正常加载。' : '大模型服务暂时不可用，请稍后重试。';
+  if (status === 401)
+    return "API Key 无效或已过期，请在设置中更新大模型的密钥。";
+  if (status === 402) return "大模型账户余额不足，请充值后重试。";
+  if (status === 403)
+    return "当前密钥没有调用这个模型的权限，请在服务商控制台确认。";
+  if (status === 404)
+    return local
+      ? "本机 Ollama 里没有这个模型。请先下载模型，或在设置中改成已安装的模型名称。"
+      : "找不到这个模型或接口地址。请检查设置里的模型名称和接口地址（多数服务需要以 /v1 结尾）。";
+  if (status === 429) return "大模型请求过于频繁或额度已用尽，请稍后再试。";
+  if (status === 400 || status === 422)
+    return "大模型没有接受这次请求，请检查模型名称是否正确，或换一个模型。";
+  if (status >= 500)
+    return local
+      ? "本机 Ollama 出错了，请确认它正在运行且模型可以正常加载。"
+      : "大模型服务暂时不可用，请稍后重试。";
   return `大模型服务返回了错误（${status}），请检查设置。`;
 }
 
@@ -39,10 +76,25 @@ function statusMessage(status, local) {
 function messageText(data) {
   const choice = Array.isArray(data?.choices) ? data.choices[0] : null;
   const content = choice?.message?.content;
-  const text = typeof content === 'string' ? content
-    : Array.isArray(content) ? content.map(part => (typeof part === 'string' ? part : part?.type === 'text' && typeof part.text === 'string' ? part.text : '')).join('')
-      : '';
-  return { text, finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : '' };
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((part) =>
+              typeof part === "string"
+                ? part
+                : part?.type === "text" && typeof part.text === "string"
+                  ? part.text
+                  : "",
+            )
+            .join("")
+        : "";
+  return {
+    text,
+    finishReason:
+      typeof choice?.finish_reason === "string" ? choice.finish_reason : "",
+  };
 }
 
 /**
@@ -50,36 +102,146 @@ function messageText(data) {
  * braces inside JSON strings. A brace that never closes means the answer was cut
  * off: nothing after it is used, so a complete inner object (one form section,
  * say) can never be mistaken for the plan.
+ *
+ * One pass over the text. Each top-level group is tried as a whole; if that is
+ * prose in braces rather than JSON, the groups nested in it are tried next, in
+ * the order they open. At most MAX_PARSE_ATTEMPTS candidates are parsed in all.
  */
 function firstJsonObject(text) {
-  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
-    let depth = 0, inString = false, escaped = false, end = -1;
-    for (let index = start; index < text.length; index++) {
-      const char = text[index];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (char === '\\') escaped = true;
-        else if (char === '"') inString = false;
-      } else if (char === '"') inString = true;
-      else if (char === '{') depth++;
-      else if (char === '}' && --depth === 0) { end = index; break; }
-    }
-    if (end === -1) return null;
+  let attempts = 0;
+  const parsed = (start, end) => {
+    attempts++;
     try {
       const value = JSON.parse(text.slice(start, end + 1));
-      if (value && typeof value === 'object' && !Array.isArray(value)) return value;
-    } catch { /* prose in braces, not JSON: try the next opening brace */ }
+      if (value && typeof value === "object" && !Array.isArray(value))
+        return value;
+    } catch {
+      /* prose in braces, not JSON */
+    }
+    return null;
+  };
+  for (let start = text.indexOf("{"); start !== -1;) {
+    const open = [start];
+    const nested = [];
+    let inString = false,
+      escaped = false,
+      end = -1;
+    for (let index = start + 1; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (code === 92)
+          escaped = true; // backslash
+        else if (code === 34) inString = false; // "
+      } else if (code === 34) inString = true;
+      else if (code === 123)
+        open.push(index); // {
+      else if (code === 125) {
+        // }
+        const begin = open.pop();
+        if (open.length === 0) {
+          end = index;
+          break;
+        }
+        nested.push([begin, index]);
+      }
+    }
+    if (end === -1) return null;
+    const whole = parsed(start, end);
+    if (whole) return whole;
+    nested.sort((a, b) => a[0] - b[0]);
+    for (const [begin, finish] of nested) {
+      if (attempts >= MAX_PARSE_ATTEMPTS) return null;
+      const value = parsed(begin, finish);
+      if (value) return value;
+    }
+    if (attempts >= MAX_PARSE_ATTEMPTS) return null;
+    start = text.indexOf("{", end + 1);
   }
   return null;
 }
 
+const THINK_TAG = /<(\/?)think(?:ing)?>/gi;
+/**
+ * Remove reasoning blocks: <think>…</think> pairs, and everything up to a closing
+ * tag whose opening tag was cut off by the server. An opening tag that never
+ * closes is left alone. A single scan over the tags (no backtracking).
+ */
+function stripReasoning(text) {
+  let kept = "",
+    cursor = 0,
+    openAt = -1;
+  for (const match of text.matchAll(THINK_TAG)) {
+    if (!match[1]) {
+      if (openAt === -1) openAt = match.index;
+    } else if (openAt !== -1) {
+      kept += `${text.slice(cursor, openAt)} `;
+      openAt = -1;
+      cursor = match.index + match[0].length;
+    } else {
+      kept = " ";
+      cursor = match.index + match[0].length;
+    }
+  }
+  return kept + text.slice(cursor);
+}
+
 /** Remove reasoning blocks and code fences that models wrap around the JSON, then find the object. */
 function extractPlanObject(text) {
-  const cleaned = text
-    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, ' ')
-    .replace(/^[\s\S]*<\/think(?:ing)?>/i, ' ') // an unterminated opening tag was cut by the server
-    .replace(/```[a-zA-Z0-9_-]*\s*/g, ' ');
-  return firstJsonObject(cleaned);
+  if (typeof text !== "string" || text.length > MAX_ANSWER_CHARS) return null;
+  return firstJsonObject(
+    stripReasoning(text).replace(/```[a-zA-Z0-9_-]*\s*/g, " "),
+  );
+}
+
+/**
+ * Why a request never got an answer, from the error codes of either network
+ * stack (Chromium: net::ERR_…; Node: cause.code). Only the class is used; the
+ * raw text never leaves this module.
+ */
+function connectionFailure(error) {
+  const seen = new Set();
+  let text = "";
+  const visit = (value) => {
+    if (
+      !value ||
+      typeof value !== "object" ||
+      seen.has(value) ||
+      seen.size >= 8
+    )
+      return;
+    seen.add(value);
+    text += ` ${typeof value.code === "string" ? value.code : ""} ${typeof value.message === "string" ? value.message.slice(0, 200) : ""}`;
+    visit(value.cause);
+    if (Array.isArray(value.errors))
+      for (const inner of value.errors.slice(0, 4)) visit(inner);
+  };
+  visit(error);
+  if (/ERR_UNSAFE_PORT|bad port/i.test(text)) return "port";
+  // Nothing is listening on that port.
+  if (/ERR_CONNECTION_REFUSED|ECONNREFUSED/.test(text)) return "refused";
+  // The address cannot be used, or something answered that does not speak HTTP.
+  if (
+    /ERR_ADDRESS_INVALID|ERR_ADDRESS_UNREACHABLE|EADDRNOTAVAIL|EHOSTUNREACH|ENETUNREACH|ERR_CONNECTION_RESET|ECONNRESET|ERR_CONNECTION_CLOSED|ERR_EMPTY_RESPONSE|ERR_INVALID_HTTP_RESPONSE|ERR_SSL_PROTOCOL_ERROR|UND_ERR_SOCKET|HPE_/.test(
+      text,
+    )
+  )
+    return "address";
+  return "unknown";
+}
+
+function unreachableMessage(error, local) {
+  if (!local)
+    return "无法连接大模型服务。请检查网络和接口地址；如果需要代理，请确认系统代理已开启。";
+  const kind = connectionFailure(error);
+  // By far the most common case: Ollama has not been started.
+  if (kind === "refused")
+    return "无法连接本机的 Ollama：它没有运行，或不在设置的端口上。请先启动 Ollama，再确认设置里的地址和端口。";
+  if (kind === "address")
+    return "本机的这个地址或端口不可用：那里运行的不是 Ollama，或连接被中断。请检查设置里的地址和端口。";
+  if (kind === "port")
+    return "设置里的端口是受限端口，应用无法连接。请让 Ollama 改用其他端口（默认 11434），并在设置里更新地址。";
+  return "无法连接本机的 Ollama。请确认 Ollama 已启动，且设置里的地址和端口正确。";
 }
 
 /**
@@ -88,77 +250,153 @@ function extractPlanObject(text) {
  * parameter is downgraded. Returns false when there is nothing left to try.
  */
 function adapt(body, detail) {
-  if (body.response_format && /response_format|json_schema|json_object/.test(detail)) {
-    if (body.response_format.type === 'json_schema') body.response_format = { type: 'json_object' };
+  if (
+    body.response_format &&
+    /response_format|json_schema|json_object/.test(detail)
+  ) {
+    if (body.response_format.type === "json_schema")
+      body.response_format = { type: "json_object" };
     else delete body.response_format;
     return true;
   }
-  if (body.max_tokens && detail.includes('max_completion_tokens')) {
-    body.max_completion_tokens = body.max_tokens; delete body.max_tokens;
+  if (body.max_tokens && detail.includes("max_completion_tokens")) {
+    body.max_completion_tokens = body.max_tokens;
+    delete body.max_tokens;
     return true;
   }
-  if (body.reasoning_effort && detail.includes('reasoning')) { delete body.reasoning_effort; return true; }
+  if (body.reasoning_effort && detail.includes("reasoning")) {
+    delete body.reasoning_effort;
+    return true;
+  }
   return false;
 }
 
-async function plan({ settings, input, signal, fetchImpl = globalThis.fetch, maxBytes = 1024 * 1024, lookup, sleep = wait }) {
-  const local = settings.kind === 'ollama';
+async function plan({
+  settings,
+  input,
+  signal,
+  fetchImpl = globalThis.fetch,
+  maxBytes = MAX_BODY_BYTES,
+  lookup,
+  sleep = wait,
+}) {
+  const bodyLimit = Math.min(maxBytes, MAX_BODY_BYTES);
+  const local = settings.kind === "ollama";
   // The stored address is checked again on every call: the policy may be stricter than when it was saved.
-  const baseUrl = validateBaseUrl(local ? 'ollama' : 'openai', settings.baseUrl);
+  const baseUrl = validateBaseUrl(
+    local ? "ollama" : "openai",
+    settings.baseUrl,
+  );
   if (!local) await assertPublicHost(baseUrl, { lookup, signal });
   const { system, messages } = buildMessages(input);
-  const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
-  if (!local && settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
-  const body = { model: settings.model, messages: [{ role: 'system', content: system }, ...messages], max_tokens: MAX_TOKENS, response_format: { type: 'json_object' } };
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+  if (!local && settings.apiKey)
+    headers.Authorization = `Bearer ${settings.apiKey}`;
+  const body = {
+    model: settings.model,
+    messages: [{ role: "system", content: system }, ...messages],
+    max_tokens: MAX_TOKENS,
+    response_format: { type: "json_object" },
+  };
   if (local) {
     // Measured with a 9B local model: with thinking on it spent the whole token budget
     // reasoning (empty answer) or closed the JSON after the first field. Ollama can
     // switch thinking off and constrain the answer to the schema, so ask for both.
-    body.response_format = { type: 'json_schema', json_schema: { name: 'music_plan', strict: true, schema: PLAN_SCHEMA } };
-    body.reasoning_effort = 'none';
+    body.response_format = {
+      type: "json_schema",
+      json_schema: { name: "music_plan", strict: true, schema: PLAN_SCHEMA },
+    };
+    body.reasoning_effort = "none";
   }
-  const unreachable = local
-    ? '无法连接本机的 Ollama。请确认 Ollama 已启动，且设置里的地址和端口正确。'
-    : '无法连接大模型服务。请检查网络和接口地址；如果需要代理，请确认系统代理已开启。';
 
   let adaptations = 0; // request-shape downgrades after an HTTP 400 (never billed)
   let retried = false; // one retry on 429 / 5xx at most
   for (;;) {
     signal?.throwIfAborted();
     let response;
-    try { response = await fetchImpl(`${baseUrl}/chat/completions`, { method: 'POST', redirect: 'error', signal, headers, body: JSON.stringify(body) }); }
-    catch (error) {
+    try {
+      response = await fetchImpl(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        redirect: "error",
+        signal,
+        headers,
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
       signal?.throwIfAborted();
       if (error instanceof MusicError) throw error;
-      throw new MusicError(unreachable);
+      throw new MusicError(unreachableMessage(error, local));
     }
     if (!response.ok) {
       const status = response.status;
-      const detail = JSON.stringify(await readErrorBody(response) ?? {}).toLowerCase();
+      const detail = JSON.stringify(
+        (await readErrorBody(response)) ?? {},
+      ).toLowerCase();
       signal?.throwIfAborted();
-      if (status === 400 && adaptations < MAX_ADAPTATIONS && adapt(body, detail)) { adaptations++; continue; }
-      if ((status === 429 || status >= 500) && !retried) { retried = true; await sleep(RETRY_DELAY_MS, signal); continue; }
+      if (
+        status === 400 &&
+        adaptations < MAX_ADAPTATIONS &&
+        adapt(body, detail)
+      ) {
+        adaptations++;
+        continue;
+      }
+      if ((status === 429 || status >= 500) && !retried) {
+        retried = true;
+        await sleep(RETRY_DELAY_MS, signal);
+        continue;
+      }
       throw new MusicError(statusMessage(status, local));
     }
-    const unrecognised = () => new MusicError('大模型返回了无法识别的内容。请确认接口地址是 OpenAI 兼容接口。');
+    const unrecognised = () =>
+      new MusicError(
+        "大模型返回了无法识别的内容。请确认接口地址是 OpenAI 兼容接口。",
+      );
     if (!response.body) throw unrecognised();
     let bytes;
-    try { bytes = await readBounded(response, maxBytes); }
-    catch (error) {
+    try {
+      bytes = await readBounded(response, bodyLimit);
+    } catch (error) {
       signal?.throwIfAborted();
-      throw new MusicError(error instanceof MusicError ? '大模型返回的内容过大，已停止读取。' : '读取大模型的回答时连接中断了，请重试。');
+      throw new MusicError(
+        error instanceof MusicError
+          ? "大模型返回的内容过大，已停止读取。"
+          : "读取大模型的回答时连接中断了，请重试。",
+      );
     }
     signal?.throwIfAborted();
     let data;
-    try { data = JSON.parse(new TextDecoder().decode(bytes)); } catch { throw unrecognised(); }
+    try {
+      data = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      throw unrecognised();
+    }
     const { text, finishReason } = messageText(data);
-    if (finishReason === 'content_filter') throw new MusicError('大模型拒绝了这次请求。请换一种描述，或改用离线规则生成。');
+    if (finishReason === "content_filter")
+      throw new MusicError(
+        "大模型拒绝了这次请求。请换一种描述，或改用离线规则生成。",
+      );
+    if (text.length > MAX_ANSWER_CHARS)
+      throw new MusicError(
+        "大模型返回的内容过长，不是一份编排方案。请重试，或换一个模型。",
+      );
     const raw = extractPlanObject(text);
     if (!raw) {
-      if (finishReason === 'length') throw new MusicError('大模型的回答被截断，没有得到完整方案。请换一个模型，或关闭它的深度思考后重试。');
-      throw new MusicError('大模型没有按约定返回方案。请重试，或换一个更擅长结构化输出的模型。');
+      if (finishReason === "length")
+        throw new MusicError(
+          "大模型的回答被截断，没有得到完整方案。请换一个模型，或关闭它的深度思考后重试。",
+        );
+      throw new MusicError(
+        "大模型没有按约定返回方案。请重试，或换一个更擅长结构化输出的模型。",
+      );
     }
-    return { plan: validatePlan(completePlan(raw, input)), model: safeModelId(data?.model, settings.model) };
+    return {
+      plan: validatePlan(completePlan(raw, input)),
+      model: safeModelId(data?.model, settings.model),
+    };
   }
 }
 
@@ -169,11 +407,32 @@ async function plan({ settings, input, signal, fetchImpl = globalThis.fetch, max
  * "ollama" (a hosted service would bill it); the answer is discarded unread.
  */
 async function warmUp({ settings, signal, fetchImpl = globalThis.fetch }) {
-  if (settings.kind !== 'ollama') return;
-  const baseUrl = validateBaseUrl('ollama', settings.baseUrl);
-  const body = { model: settings.model, messages: [{ role: 'system', content: buildSystemPrompt() }, { role: 'user', content: '你好' }], max_tokens: 1 };
-  const response = await fetchImpl(`${baseUrl}/chat/completions`, { method: 'POST', redirect: 'error', signal, headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) });
+  if (settings.kind !== "ollama") return;
+  const baseUrl = validateBaseUrl("ollama", settings.baseUrl);
+  const body = {
+    model: settings.model,
+    messages: [
+      { role: "system", content: buildSystemPrompt() },
+      { role: "user", content: "你好" },
+    ],
+    max_tokens: 1,
+  };
+  const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    redirect: "error",
+    signal,
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
   await response.body?.cancel().catch(() => {});
 }
 
-module.exports = { plan, warmUp, extractPlanObject, MAX_TOKENS };
+module.exports = {
+  plan,
+  warmUp,
+  extractPlanObject,
+  connectionFailure,
+  MAX_TOKENS,
+  MAX_BODY_BYTES,
+  MAX_ANSWER_CHARS,
+};

@@ -28,12 +28,7 @@ import {
   tailDb,
 } from "../src/audio/voices/testing";
 import type { ContractOptions, Rendered } from "../src/audio/voices/testing";
-import {
-  createRng,
-  isAliasVoice,
-  midiToHz,
-  powerSpectrum,
-} from "../src/audio/dsp";
+import { createRng, midiToHz, powerSpectrum } from "../src/audio/dsp";
 import {
   NES_TRIANGLE_MAX_INC,
   ResponseTable,
@@ -76,7 +71,10 @@ const BASSES: VoiceId[] = [
   "bass808",
 ];
 const ALL: VoiceId[] = [...SUSTAINED, ...BASSES];
-const VOICES = { ...SUSTAINED_VOICES, ...BASS_VOICES } as Record<VoiceId, Voice>;
+const VOICES = { ...SUSTAINED_VOICES, ...BASS_VOICES } as Record<
+  VoiceId,
+  Voice
+>;
 const CONTRACTS = { ...SUSTAINED_CONTRACT, ...BASS_CONTRACT } as Record<
   VoiceId,
   ContractOptions
@@ -94,15 +92,26 @@ const note = (
 ): Rendered =>
   renderNote(VOICES[id], { midi, vel, duration, bend }, SAMPLE_RATE, seed);
 
-const near = (actual: number, expected: number, tolerance: number, what: string) =>
+const near = (
+  actual: number,
+  expected: number,
+  tolerance: number,
+  what: string,
+) =>
   assert.ok(
     Math.abs(actual - expected) <= tolerance,
     `${what}: got ${actual.toFixed(2)}, expected ${expected} ±${tolerance}`,
   );
 const above = (actual: number, limit: number, what: string) =>
-  assert.ok(actual > limit, `${what}: got ${actual.toFixed(2)}, want more than ${limit}`);
+  assert.ok(
+    actual > limit,
+    `${what}: got ${actual.toFixed(2)}, want more than ${limit}`,
+  );
 const below = (actual: number, limit: number, what: string) =>
-  assert.ok(actual < limit, `${what}: got ${actual.toFixed(2)}, want less than ${limit}`);
+  assert.ok(
+    actual < limit,
+    `${what}: got ${actual.toFixed(2)}, want less than ${limit}`,
+  );
 
 /**
  * Milliseconds until the 8 ms RMS envelope first reaches `share` of the
@@ -137,7 +146,13 @@ function harmonicsDb(
 ): number[] {
   const start = Math.round(from * r.sampleRate);
   const length = Math.min(r.frames - start, Math.round(seconds * r.sampleRate));
-  const spectrum = powerSpectrum(monoSum(r), r.sampleRate, start, length, 65536);
+  const spectrum = powerSpectrum(
+    monoSum(r),
+    r.sampleRate,
+    start,
+    length,
+    65536,
+  );
   const levels: number[] = [];
   for (let k = 1; k <= count; k++) {
     const low = Math.max(1, Math.floor(((k - 0.35) * f0) / spectrum.binHz));
@@ -209,7 +224,12 @@ function sideDb(r: Rendered): number {
 }
 
 /** Share (dB re total of the same span) of the power between the harmonics 1-2, 2-3 and 3-4: breath, not tone. */
-function betweenHarmonicsDb(r: Rendered, f0: number, from: number, seconds: number): number {
+function betweenHarmonicsDb(
+  r: Rendered,
+  f0: number,
+  from: number,
+  seconds: number,
+): number {
   const bands = bandEnergiesDb(
     r,
     [1.25 * f0, 1.75 * f0, 2.25 * f0, 2.75 * f0, 3.25 * f0, 3.75 * f0],
@@ -244,23 +264,30 @@ function firstCycles(r: Rendered, count: number): number[] {
 test("the sustained and bass groups provide sixteen real voices", () => {
   assert.deepEqual(Object.keys(SUSTAINED_VOICES).sort(), [...SUSTAINED].sort());
   assert.deepEqual(Object.keys(BASS_VOICES).sort(), [...BASSES].sort());
-  assert.deepEqual(Object.keys(SUSTAINED_CONTRACT).sort(), [...SUSTAINED].sort());
+  assert.deepEqual(
+    Object.keys(SUSTAINED_CONTRACT).sort(),
+    [...SUSTAINED].sort(),
+  );
   assert.deepEqual(Object.keys(BASS_CONTRACT).sort(), [...BASSES].sort());
   const engines = new Set<Voice["render"]>();
   for (const id of ALL) {
     const voice = VOICES[id];
     assert.equal(voice.id, id);
-    assert.ok(!isAliasVoice(voice), `${id} must not be an alias`);
     engines.add(voice.render);
   }
-  assert.equal(engines.size, ALL.length, "every id has its own render function");
+  assert.equal(
+    engines.size,
+    ALL.length,
+    "every id has its own render function",
+  );
   // ... and no two of them sound alike: same note, different audio
   const renders = ALL.map((id) => note(id, 57, 0.8, 0.5));
   for (let a = 0; a < ALL.length; a++)
     for (let b = a + 1; b < ALL.length; b++) {
       let differs = renders[a].frames !== renders[b].frames;
       for (let i = 2000; i < 6000 && !differs; i++)
-        if (Math.abs(renders[a].left[i] - renders[b].left[i]) > 1e-4) differs = true;
+        if (Math.abs(renders[a].left[i] - renders[b].left[i]) > 1e-4)
+          differs = true;
       assert.ok(differs, `${ALL[a]} and ${ALL[b]} render the same audio`);
     }
 });
@@ -277,7 +304,12 @@ for (const id of ALL) {
       below(Math.abs(row.cents), 8, `${id} tuning at midi ${row.midi}`);
     }
     for (const velocity of report.velocity)
-      near(velocity.levelSpanDb, 11.9, 1.5, `${id} velocity law at midi ${velocity.midi}`);
+      near(
+        velocity.levelSpanDb,
+        11.9,
+        1.5,
+        `${id} velocity law at midi ${velocity.midi}`,
+      );
     below(report.worstPeak, 0.95, `${id} worst peak`);
   });
 }
@@ -289,9 +321,16 @@ test("strings: a section with a bow attack, late vibrato and a body", () => {
   for (const vel of [0.3, 0.8, 1]) {
     const bowed = riseMs(note("strings", 60, vel, 2));
     const blown = riseMs(note("brass", 60, vel, 2));
-    above(bowed, blown + 8, `strings rise vs brass (${blown.toFixed(0)} ms) at vel ${vel}`);
+    above(
+      bowed,
+      blown + 8,
+      `strings rise vs brass (${blown.toFixed(0)} ms) at vel ${vel}`,
+    );
     const full = riseMs(note("strings", 60, vel, 2), 0.9);
-    assert.ok(full > 35 && full < 140, `bow attack at vel ${vel}: ${full.toFixed(0)} ms`);
+    assert.ok(
+      full > 35 && full < 140,
+      `bow attack at vel ${vel}: ${full.toFixed(0)} ms`,
+    );
   }
   above(
     riseMs(note("strings", 60, 0.3, 2), 0.9),
@@ -307,17 +346,40 @@ test("strings: a section with a bow attack, late vibrato and a body", () => {
   );
   // vibrato fades in: steady while the bow settles, moving later
   const held = note("strings", 69, 0.8, 2.5);
-  below(deviation(pitchTrack(held, 69, 0.03, 0.15)), 2, "pitch movement in the first 150 ms");
-  above(deviation(pitchTrack(held, 69, 1, 2.4)), 3, "pitch movement after a second");
+  below(
+    deviation(pitchTrack(held, 69, 0.03, 0.15)),
+    2,
+    "pitch movement in the first 150 ms",
+  );
+  above(
+    deviation(pitchTrack(held, 69, 1, 2.4)),
+    3,
+    "pitch movement after a second",
+  );
   // bright but not fizzy, and a real ensemble: wide, never out of phase
   const bands = bandEnergiesDb(held, [0, 250, 1000, 4000, 8000, 24000], 0.5, 1);
   above(bands[2], -9, "1-4 kHz share");
   below(bands[4], -25, "share above 8 kHz");
   const correlation = stereoCorrelation(held);
-  assert.ok(correlation > 0.35 && correlation < 0.9, `correlation ${correlation}`);
+  assert.ok(
+    correlation > 0.35 && correlation < 0.9,
+    `correlation ${correlation}`,
+  );
   // the body does not move with the note: two pitches, two harmonic balances
-  const low = harmonicsDb(note("strings", 48, 0.8, 1.5), midiToHz(48), 0.5, 1, 6);
-  const high = harmonicsDb(note("strings", 72, 0.8, 1.5), midiToHz(72), 0.5, 1, 6);
+  const low = harmonicsDb(
+    note("strings", 48, 0.8, 1.5),
+    midiToHz(48),
+    0.5,
+    1,
+    6,
+  );
+  const high = harmonicsDb(
+    note("strings", 72, 0.8, 1.5),
+    midiToHz(72),
+    0.5,
+    1,
+    6,
+  );
   above(
     Math.max(...low.map((level, k) => Math.abs(level - high[k]))),
     3,
@@ -328,14 +390,22 @@ test("strings: a section with a bow attack, late vibrato and a body", () => {
   below(pitchTrack(scooped, 69, 0.005, 0.045)[0], -60, "scoop start (cents)");
   near(centsError(scooped, 69, 0.3, 0.5), 0, 8, "scoop lands");
   // works as a lead line: a 150 ms note already carries most of its level
-  above(loudestWindowDb(note("strings", 72, 0.8, 0.15), 0.1), -23, "150 ms note level");
+  above(
+    loudestWindowDb(note("strings", 72, 0.8, 0.15), 0.1),
+    -23,
+    "150 ms note level",
+  );
 });
 
 test("brass: stabs with bite, velocity opens the bell, a scoop at the lips", () => {
   const stab = note("brass", 60, 1, 0.12);
   above(loudestWindowDb(stab, 0.1), -18, "a 120 ms stab at vel 1");
   below(riseMs(note("brass", 60, 1, 2)), 15, "rise of a hard note (ms)");
-  above(riseMs(note("brass", 60, 0.3, 2)), riseMs(note("brass", 60, 1, 2)) + 8, "a soft note swells");
+  above(
+    riseMs(note("brass", 60, 0.3, 2)),
+    riseMs(note("brass", 60, 1, 2)) + 8,
+    "a soft note swells",
+  );
   // the attack is brighter than what it settles to
   const held = note("brass", 60, 0.9, 1.5);
   above(
@@ -352,20 +422,47 @@ test("brass: stabs with bite, velocity opens the bell, a scoop at the lips", () 
     "brightness hard / soft",
   );
   // strong mids without harshness
-  const loud = bandEnergiesDb(note("brass", 60, 1, 1.5), [0, 400, 2500, 6000, 24000], 0.3, 1);
+  const loud = bandEnergiesDb(
+    note("brass", 60, 1, 1.5),
+    [0, 400, 2500, 6000, 24000],
+    0.3,
+    1,
+  );
   above(loud[1], -3, "400 Hz - 2.5 kHz share at vel 1");
   below(loud[3], -35, "share above 6 kHz at vel 1");
   // brass spectrum: harmonics 2..4 within a few dB of the fundamental
-  const harmonics = harmonicsDb(note("brass", 55, 0.9, 1.5), midiToHz(55), 0.5, 0.8, 5);
-  above(Math.max(harmonics[1], harmonics[2], harmonics[3]), -8, "strongest of H2..H4 (dB re H1)");
+  const harmonics = harmonicsDb(
+    note("brass", 55, 0.9, 1.5),
+    midiToHz(55),
+    0.5,
+    0.8,
+    5,
+  );
+  above(
+    Math.max(harmonics[1], harmonics[2], harmonics[3]),
+    -8,
+    "strongest of H2..H4 (dB re H1)",
+  );
   // every note starts a little flat and is in tune within a tenth of a second
   for (const seed of [1, 2, 3]) {
     const scooped = note("brass", 60, 0.9, 1, undefined, seed);
-    below(pitchTrack(scooped, 60, 0.004, 0.034, 0.03)[0], -5, `onset pitch, seed ${seed} (cents)`);
-    near(centsError(scooped, 60, 0.1, 0.3), 0, 6, `pitch after the scoop, seed ${seed}`);
+    below(
+      pitchTrack(scooped, 60, 0.004, 0.034, 0.03)[0],
+      -5,
+      `onset pitch, seed ${seed} (cents)`,
+    );
+    near(
+      centsError(scooped, 60, 0.1, 0.3),
+      0,
+      6,
+      `pitch after the scoop, seed ${seed}`,
+    );
   }
   const correlation = stereoCorrelation(held);
-  assert.ok(correlation > 0.5 && correlation < 0.95, `correlation ${correlation}`);
+  assert.ok(
+    correlation > 0.5 && correlation < 0.95,
+    `correlation ${correlation}`,
+  );
 });
 
 test("pad and airpad: slow, wide, and two different colours", () => {
@@ -373,18 +470,29 @@ test("pad and airpad: slow, wide, and two different colours", () => {
   const airy = note("airpad", 60, 0.8, 4);
   above(riseMs(warm), 80, "pad rise (ms)");
   above(riseMs(airy), 150, "airpad rise (ms)");
-  above(riseMs(note("airpad", 60, 0.3, 4)), riseMs(note("airpad", 60, 1, 4)) + 40, "airpad: softer = slower");
+  above(
+    riseMs(note("airpad", 60, 0.3, 4)),
+    riseMs(note("airpad", 60, 1, 4)) + 40,
+    "airpad: softer = slower",
+  );
   for (const [name, r] of [
     ["pad", warm],
     ["airpad", airy],
   ] as const) {
     const correlation = stereoCorrelation(r);
-    assert.ok(correlation > 0.35 && correlation < 0.9, `${name} correlation ${correlation}`);
+    assert.ok(
+      correlation > 0.35 && correlation < 0.9,
+      `${name} correlation ${correlation}`,
+    );
     // mono sum loses little: no phase tricks
     below(sideDb(r), -3, `${name} side / mid (dB)`);
   }
   below(centroidHz(warm, 1, 2), 500, "pad centroid at C4 (Hz)");
-  above(centroidHz(airy, 1, 2) / centroidHz(warm, 1, 2), 1.6, "airpad / pad brightness");
+  above(
+    centroidHz(airy, 1, 2) / centroidHz(warm, 1, 2),
+    1.6,
+    "airpad / pad brightness",
+  );
   // long releases
   above(rmsDb(warm, 4.4, 4.6), -50, "pad level 500 ms after note-off");
   above(rmsDb(airy, 4.4, 4.6), -45, "airpad level 500 ms after note-off");
@@ -393,7 +501,11 @@ test("pad and airpad: slow, wide, and two different colours", () => {
   for (let seed = 1; seed <= 8; seed++) {
     const r = note("pad", 55, 0.8, 1, undefined, seed);
     levels.push(loudestWindowDb(r));
-    above(stereoCorrelation(note("pad", 43, 0.8, 0.3, undefined, seed)), 0.3, `short low pad note, seed ${seed}`);
+    above(
+      stereoCorrelation(note("pad", 43, 0.8, 0.3, undefined, seed)),
+      0.3,
+      `short low pad note, seed ${seed}`,
+    );
   }
   below(span(levels), 1.5, "pad level spread over 8 seeds (dB)");
   assert.notDeepEqual(
@@ -403,15 +515,25 @@ test("pad and airpad: slow, wide, and two different colours", () => {
   );
   // airpad: air between the partials (the pad has none) ...
   const f0 = midiToHz(84);
-  above(bandEnergiesDb(note("airpad", 84, 0.6, 3), [3.2 * f0, 3.8 * f0], 1, 2)[0], -30, "airpad noise between partials");
-  below(bandEnergiesDb(note("pad", 84, 0.6, 3), [3.2 * f0, 3.8 * f0], 1, 2)[0], -60, "pad noise between partials");
+  above(
+    bandEnergiesDb(note("airpad", 84, 0.6, 3), [3.2 * f0, 3.8 * f0], 1, 2)[0],
+    -30,
+    "airpad noise between partials",
+  );
+  below(
+    bandEnergiesDb(note("pad", 84, 0.6, 3), [3.2 * f0, 3.8 * f0], 1, 2)[0],
+    -60,
+    "pad noise between partials",
+  );
   // ... glassy upper partials (octaves ring: the 4th stands out over the 5th) ...
   const early = harmonicsDb(airy, midiToHz(60), 1, 1, 8);
   above(early[3] - early[4], 3, "4th partial above the 5th (dB)");
   // ... and the colour keeps moving while the note is held
   const late = harmonicsDb(airy, midiToHz(60), 3, 1, 8);
   above(
-    Math.max(...early.slice(1).map((level, k) => Math.abs(level - late[k + 1]))),
+    Math.max(
+      ...early.slice(1).map((level, k) => Math.abs(level - late[k + 1])),
+    ),
     2,
     "largest change of a partial between 1-2 s and 3-4 s (dB)",
   );
@@ -419,7 +541,11 @@ test("pad and airpad: slow, wide, and two different colours", () => {
 
 test("choir: a slow 'aah' with formants near 700, 1100 and 2600 Hz", () => {
   above(riseMs(note("choir", 57, 0.8, 2)), 50, "rise (ms)");
-  above(riseMs(note("choir", 57, 0.3, 2)), riseMs(note("choir", 57, 1, 2)) + 20, "softer = slower");
+  above(
+    riseMs(note("choir", 57, 0.3, 2)),
+    riseMs(note("choir", 57, 1, 2)) + 20,
+    "softer = slower",
+  );
   for (const midi of [45, 52, 57]) {
     const b = bandEnergiesDb(
       note("choir", midi, 0.8, 2.5),
@@ -427,9 +553,21 @@ test("choir: a slow 'aah' with formants near 700, 1100 and 2600 Hz", () => {
       0.6,
       1.5,
     );
-    above(b[2] - b[1], 2, `midi ${midi}: first formant (450-900 Hz) over 250-450 Hz`);
-    above(b[3] - b[4], 4, `midi ${midi}: second formant (900-1300 Hz) over 1300-1900 Hz`);
-    above(b[6] - b[5], 3, `midi ${midi}: third formant (2300-3100 Hz) over 1900-2300 Hz`);
+    above(
+      b[2] - b[1],
+      2,
+      `midi ${midi}: first formant (450-900 Hz) over 250-450 Hz`,
+    );
+    above(
+      b[3] - b[4],
+      4,
+      `midi ${midi}: second formant (900-1300 Hz) over 1300-1900 Hz`,
+    );
+    above(
+      b[6] - b[5],
+      3,
+      `midi ${midi}: third formant (2300-3100 Hz) over 1900-2300 Hz`,
+    );
     below(b[8], -30, `midi ${midi}: share above 5 kHz`);
   }
   // sung louder = brighter source
@@ -441,11 +579,26 @@ test("choir: a slow 'aah' with formants near 700, 1100 and 2600 Hz", () => {
   );
   // breath between the harmonics, and voices that move
   const held = note("choir", 69, 0.8, 2.5);
-  above(betweenHarmonicsDb(held, midiToHz(69), 0.8, 1.5), -50, "aspiration between harmonics");
-  above(deviation(pitchTrack(held, 69, 1.2, 2.4)), 1.5, "pitch movement after a second");
+  above(
+    betweenHarmonicsDb(held, midiToHz(69), 0.8, 1.5),
+    -50,
+    "aspiration between harmonics",
+  );
+  above(
+    deviation(pitchTrack(held, 69, 1.2, 2.4)),
+    1.5,
+    "pitch movement after a second",
+  );
   const correlation = stereoCorrelation(held);
-  assert.ok(correlation > 0.45 && correlation < 0.95, `correlation ${correlation}`);
-  above(rmsDb(note("choir", 57, 0.8, 1), 1.08, 1.12), -40, "release still sounding after 100 ms");
+  assert.ok(
+    correlation > 0.45 && correlation < 0.95,
+    `correlation ${correlation}`,
+  );
+  above(
+    rmsDb(note("choir", 57, 0.8, 1), 1.08, 1.12),
+    -40,
+    "release still sounding after 100 ms",
+  );
 });
 
 test("flute: sine-dominant, weak even harmonics, breath at the attack, late 5 Hz vibrato", () => {
@@ -458,9 +611,16 @@ test("flute: sine-dominant, weak even harmonics, breath at the attack, late 5 Hz
     below(h[3], h[2] - 5, `midi ${midi}: 4th harmonic vs 3rd`);
     below(h[3], h[4] + 1, `midi ${midi}: 4th harmonic vs 5th`);
     // vibrato: none while the note speaks, about 5 Hz and gentle once it has settled
-    below(deviation(pitchTrack(r, midi, 0.04, 0.14)), 1.5, `midi ${midi}: early pitch movement`);
+    below(
+      deviation(pitchTrack(r, midi, 0.04, 0.14)),
+      1.5,
+      `midi ${midi}: early pitch movement`,
+    );
     const late = pitchTrack(r, midi, 1.2, 2.4);
-    assert.ok(span(late) > 8 && span(late) < 30, `midi ${midi}: vibrato width ${span(late)} cents`);
+    assert.ok(
+      span(late) > 8 && span(late) < 30,
+      `midi ${midi}: vibrato width ${span(late)} cents`,
+    );
     const rate = wobbleHz(late);
     assert.ok(rate > 4.2 && rate < 6, `midi ${midi}: vibrato rate ${rate} Hz`);
     above(stereoCorrelation(r), 0.95, `midi ${midi}: a point source`);
@@ -484,7 +644,11 @@ test("flute: sine-dominant, weak even harmonics, breath at the attack, late 5 Hz
   assert.ok(rise > 15 && rise < 80, `attack ${rise} ms`);
   // NoteEvent.bend slides into the note
   const slid = note("flute", 76, 0.8, 1, -2);
-  below(pitchTrack(slid, 76, 0.005, 0.035, 0.03)[0], -80, "slide start (cents)");
+  below(
+    pitchTrack(slid, 76, 0.005, 0.035, 0.03)[0],
+    -80,
+    "slide start (cents)",
+  );
   near(centsError(slid, 76, 0.3, 0.5), 0, 3, "slide lands");
 });
 
@@ -492,18 +656,35 @@ test("dizi: brighter and buzzier than the flute, more breath, quicker ornaments"
   for (const midi of [67, 74, 81]) {
     const reed = note("dizi", midi, 0.8, 2.5);
     const pipe = note("flute", midi, 0.8, 2.5);
-    above(centroidHz(reed, 0.6, 1) / centroidHz(pipe, 0.6, 1), 1.8, `midi ${midi}: brightness dizi / flute`);
+    above(
+      centroidHz(reed, 0.6, 1) / centroidHz(pipe, 0.6, 1),
+      1.8,
+      `midi ${midi}: brightness dizi / flute`,
+    );
     // the membrane: a band of harmonics around 3.6 kHz the flute does not have
     above(
-      bandEnergiesDb(reed, [2500, 5500], 0.6, 1)[0] - bandEnergiesDb(pipe, [2500, 5500], 0.6, 1)[0],
+      bandEnergiesDb(reed, [2500, 5500], 0.6, 1)[0] -
+        bandEnergiesDb(pipe, [2500, 5500], 0.6, 1)[0],
       10,
       `midi ${midi}: 2.5-5.5 kHz, dizi minus flute (dB)`,
     );
-    below(riseMs(reed) + 5, riseMs(pipe), `midi ${midi}: tongued attack (dizi rise + 5 ms vs flute)`);
+    below(
+      riseMs(reed) + 5,
+      riseMs(pipe),
+      `midi ${midi}: tongued attack (dizi rise + 5 ms vs flute)`,
+    );
     const reedVibrato = pitchTrack(reed, midi, 1.2, 2.4);
     const pipeVibrato = pitchTrack(pipe, midi, 1.2, 2.4);
-    above(span(reedVibrato), span(pipeVibrato) + 4, `midi ${midi}: vibrato width`);
-    above(wobbleHz(reedVibrato), wobbleHz(pipeVibrato), `midi ${midi}: vibrato rate`);
+    above(
+      span(reedVibrato),
+      span(pipeVibrato) + 4,
+      `midi ${midi}: vibrato width`,
+    );
+    above(
+      wobbleHz(reedVibrato),
+      wobbleHz(pipeVibrato),
+      `midi ${midi}: vibrato rate`,
+    );
   }
   // the buzz grows with blowing pressure
   above(
@@ -521,12 +702,20 @@ test("dizi: brighter and buzzier than the flute, more breath, quicker ornaments"
   // vibrato arrives sooner than on the flute
   const reed = note("dizi", 74, 0.8, 1);
   const pipe = note("flute", 74, 0.8, 1);
-  above(span(pitchTrack(reed, 74, 0.3, 0.5)), span(pitchTrack(pipe, 74, 0.3, 0.5)) + 3, "vibrato width at 300-500 ms");
+  above(
+    span(pitchTrack(reed, 74, 0.3, 0.5)),
+    span(pitchTrack(pipe, 74, 0.3, 0.5)) + 3,
+    "vibrato width at 300-500 ms",
+  );
   // NoteEvent.bend is a slide, from above or from below
   for (const bend of [-2, 3]) {
     const slid = note("dizi", 76, 0.8, 1, bend);
     const start = pitchTrack(slid, 76, 0.005, 0.035, 0.03)[0];
-    above(start * Math.sign(bend), 80, `slide of ${bend}: start (cents towards the bend)`);
+    above(
+      start * Math.sign(bend),
+      80,
+      `slide of ${bend}: start (cents towards the bend)`,
+    );
     near(centsError(slid, 76, 0.3, 0.5), 0, 3, `slide of ${bend} lands`);
   }
 });
@@ -536,7 +725,8 @@ test("synth: two oscillators, a filter that snaps, vibrato that arrives late", (
   below(riseMs(held), 8, "attack (ms)");
   // filter envelope: the attack carries far more top than the sustain
   above(
-    bandEnergiesDb(held, [4000, 24000], 0, 0.06)[0] - bandEnergiesDb(held, [4000, 24000], 0.6, 0.6)[0],
+    bandEnergiesDb(held, [4000, 24000], 0, 0.06)[0] -
+      bandEnergiesDb(held, [4000, 24000], 0.6, 0.6)[0],
     6,
     "energy above 4 kHz, attack minus sustain (dB)",
   );
@@ -545,25 +735,55 @@ test("synth: two oscillators, a filter that snaps, vibrato that arrives late", (
   above(h[1], -16, "2nd harmonic (dB re fundamental)");
   above(h[2], -14, "3rd harmonic (dB re fundamental)");
   // steady pitch at first, vibrato after about half a second
-  below(Math.max(...pitchTrack(held, 69, 0.01, 0.1).map(Math.abs)), 4, "pitch in the first 100 ms (cents)");
-  above(span(pitchTrack(held, 69, 1, 1.9)), 10, "pitch movement after a second (cents)");
+  below(
+    Math.max(...pitchTrack(held, 69, 0.01, 0.1).map(Math.abs)),
+    4,
+    "pitch in the first 100 ms (cents)",
+  );
+  above(
+    span(pitchTrack(held, 69, 1, 1.9)),
+    10,
+    "pitch movement after a second (cents)",
+  );
   // the two oscillators sit a little left and right
   const correlation = stereoCorrelation(held);
-  assert.ok(correlation > 0.75 && correlation < 0.98, `correlation ${correlation}`);
+  assert.ok(
+    correlation > 0.75 && correlation < 0.98,
+    `correlation ${correlation}`,
+  );
   // cuts through without piercing
   for (const midi of [81, 93]) {
     const loud = note("synth", midi, 1, 1);
-    below(bandEnergiesDb(loud, [8000, 24000])[0], -25, `midi ${midi}: share above 8 kHz at vel 1`);
-    above(bandEnergiesDb(loud, [1000, 6000])[0], -8, `midi ${midi}: 1-6 kHz share at vel 1`);
+    below(
+      bandEnergiesDb(loud, [8000, 24000])[0],
+      -25,
+      `midi ${midi}: share above 8 kHz at vel 1`,
+    );
+    above(
+      bandEnergiesDb(loud, [1000, 6000])[0],
+      -8,
+      `midi ${midi}: 1-6 kHz share at vel 1`,
+    );
   }
   // every note starts with the full sound: the level does not depend on the seed
   const levels: number[] = [];
   for (let seed = 1; seed <= 8; seed++)
-    levels.push(loudestWindowDb(note("synth", 60, 0.8, 0.25, undefined, seed), 0.2));
+    levels.push(
+      loudestWindowDb(note("synth", 60, 0.8, 0.25, undefined, seed), 0.2),
+    );
   below(span(levels), 1.5, "level spread of short notes over 8 seeds (dB)");
   // NoteEvent.bend glides in
-  above(pitchTrack(note("synth", 69, 0.8, 1, 3), 69, 0.003, 0.023, 0.02)[0], 150, "glide start (cents)");
-  near(centsError(note("synth", 69, 0.8, 1, 3), 69, 0.3, 0.5), 0, 8, "glide lands");
+  above(
+    pitchTrack(note("synth", 69, 0.8, 1, 3), 69, 0.003, 0.023, 0.02)[0],
+    150,
+    "glide start (cents)",
+  );
+  near(
+    centsError(note("synth", 69, 0.8, 1, 3), 69, 0.3, 0.5),
+    0,
+    8,
+    "glide lands",
+  );
 });
 
 test("chip and chipPulse: console pulse channels, the pulse thinner than the square", () => {
@@ -578,38 +798,98 @@ test("chip and chipPulse: console pulse channels, the pulse thinner than the squ
     below(riseMs(square), 6, `chip vel ${vel}: attack (ms)`);
     near(stereoCorrelation(square), 1, 1e-9, "chip is mono");
     // vibrato only once a note is long
-    below(span(pitchTrack(square, 60, 0.05, 0.25)), 1, `chip vel ${vel}: early pitch movement`);
+    below(
+      span(pitchTrack(square, 60, 0.05, 0.25)),
+      1,
+      `chip vel ${vel}: early pitch movement`,
+    );
     const late = span(pitchTrack(square, 60, 0.8, 1.4));
-    assert.ok(late > 6 && late < 25, `chip vel ${vel}: vibrato width ${late} cents`);
+    assert.ok(
+      late > 6 && late < 25,
+      `chip vel ${vel}: vibrato width ${late} cents`,
+    );
 
     const pulse = note("chipPulse", 60, vel, 1.5);
     const p = harmonicsDb(pulse, midiToHz(60), 0.3, 0.6, 8);
     above(p[1], -6, `chipPulse vel ${vel}: 2nd harmonic`);
     // thinner: less of the energy in the fundamental, more above
-    const squareBody = bandEnergiesDb(square, [0, 1.5 * midiToHz(60)], 0.3, 0.6)[0];
-    const pulseBody = bandEnergiesDb(pulse, [0, 1.5 * midiToHz(60)], 0.3, 0.6)[0];
-    below(pulseBody, squareBody - 1.5, `vel ${vel}: fundamental share, pulse vs square`);
-    above(centroidHz(pulse, 0.3, 0.6) / centroidHz(square, 0.3, 0.6), 1.15, `vel ${vel}: brightness pulse / square`);
+    const squareBody = bandEnergiesDb(
+      square,
+      [0, 1.5 * midiToHz(60)],
+      0.3,
+      0.6,
+    )[0];
+    const pulseBody = bandEnergiesDb(
+      pulse,
+      [0, 1.5 * midiToHz(60)],
+      0.3,
+      0.6,
+    )[0];
+    below(
+      pulseBody,
+      squareBody - 1.5,
+      `vel ${vel}: fundamental share, pulse vs square`,
+    );
+    above(
+      centroidHz(pulse, 0.3, 0.6) / centroidHz(square, 0.3, 0.6),
+      1.15,
+      `vel ${vel}: brightness pulse / square`,
+    );
     below(riseMs(pulse), 6, `chipPulse vel ${vel}: attack (ms)`);
     near(stereoCorrelation(pulse), 1, 1e-9, "chipPulse is mono");
   }
   // chipPulse: 25 % duty when soft (every 4th harmonic missing), 12.5 % when hard (every 8th)
-  const soft = harmonicsDb(note("chipPulse", 60, 0.3, 1), midiToHz(60), 0.3, 0.6, 8);
+  const soft = harmonicsDb(
+    note("chipPulse", 60, 0.3, 1),
+    midiToHz(60),
+    0.3,
+    0.6,
+    8,
+  );
   below(soft[3], -30, "25 % duty: 4th harmonic");
-  const hard = harmonicsDb(note("chipPulse", 60, 1, 1), midiToHz(60), 0.3, 0.6, 8);
+  const hard = harmonicsDb(
+    note("chipPulse", 60, 1, 1),
+    midiToHz(60),
+    0.3,
+    0.6,
+    8,
+  );
   above(hard[3], -10, "12.5 % duty: 4th harmonic");
   below(hard[7], -30, "12.5 % duty: 8th harmonic");
   // chip accents: a hard note opens on a narrower duty (even harmonics for two frames), a soft one does not
-  above(harmonicsDb(note("chip", 60, 1, 0.5), midiToHz(60), 0.003, 0.028, 2)[1], -12, "opening duty of a hard note: 2nd harmonic");
-  below(harmonicsDb(note("chip", 60, 0.4, 0.5), midiToHz(60), 0.003, 0.028, 2)[1], -30, "opening of a soft note: 2nd harmonic");
+  above(
+    harmonicsDb(note("chip", 60, 1, 0.5), midiToHz(60), 0.003, 0.028, 2)[1],
+    -12,
+    "opening duty of a hard note: 2nd harmonic",
+  );
+  below(
+    harmonicsDb(note("chip", 60, 0.4, 0.5), midiToHz(60), 0.003, 0.028, 2)[1],
+    -30,
+    "opening of a soft note: 2nd harmonic",
+  );
   // ... and an accent decays to the sustain level within a few frames (chipPulse shows it plainly)
   const accented = note("chipPulse", 60, 1, 1);
-  above(rmsDb(accented, 0.005, 0.03) - rmsDb(accented, 0.5, 1), 1, "accent above the sustain level (dB)");
-  near(rmsDb(note("chipPulse", 60, 0.3, 1), 0.005, 0.03) - rmsDb(note("chipPulse", 60, 0.3, 1), 0.5, 1), 0, 0.3, "no accent on a soft note");
+  above(
+    rmsDb(accented, 0.005, 0.03) - rmsDb(accented, 0.5, 1),
+    1,
+    "accent above the sustain level (dB)",
+  );
+  near(
+    rmsDb(note("chipPulse", 60, 0.3, 1), 0.005, 0.03) -
+      rmsDb(note("chipPulse", 60, 0.3, 1), 0.5, 1),
+    0,
+    0.3,
+    "no accent on a soft note",
+  );
   // bends move on the 60 Hz frame grid: the pitch holds still inside a frame
   const bent = note("chip", 72, 0.8, 0.5, -4);
   const cycles = firstCycles(bent, 12);
-  near(cycles[4], cycles[1], cycles[1] * 0.002, "pitch inside the first frame (Hz)");
+  near(
+    cycles[4],
+    cycles[1],
+    cycles[1] * 0.002,
+    "pitch inside the first frame (Hz)",
+  );
   above(cycles[cycles.length - 1], cycles[1] * 1.02, "pitch one frame later");
   near(centsError(bent, 72, 0.2, 0.25), 0, 2, "bend lands");
 });
@@ -626,13 +906,34 @@ test("bass voices: mono, no DC, a strong fundamental and harmonics a small speak
       below(dcOffset(r), 2e-3, `${what}: DC`);
       const f0 = midiToHz(midi);
       const h = harmonicsDb(r, f0, 0.02, 0.5, 6);
-      below(Math.max(...h.slice(1)), 0, `${what}: strongest overtone (dB re fundamental)`);
-      const shares = bandEnergiesDb(r, [0, 1.5 * f0, 3.5 * f0, 24000], 0.02, 0.5);
+      below(
+        Math.max(...h.slice(1)),
+        0,
+        `${what}: strongest overtone (dB re fundamental)`,
+      );
+      const shares = bandEnergiesDb(
+        r,
+        [0, 1.5 * f0, 3.5 * f0, 24000],
+        0.02,
+        0.5,
+      );
       above(shares[0], -4.5, `${what}: share of the fundamental`);
       above(shares[1], -22, `${what}: share of the 2nd + 3rd harmonic`);
-      above(bandEnergiesDb(r, [100, 24000], 0.02, 0.5)[0], -21, `${what}: share above 100 Hz`);
-      below(bandEnergiesDb(r, [4000, 24000], 0.02, 0.5)[0], -30, `${what}: share above 4 kHz`);
-      below(20 * Math.log10(peak(r)) - loudestWindowDb(r), 12, `${what}: crest factor (dB)`);
+      above(
+        bandEnergiesDb(r, [100, 24000], 0.02, 0.5)[0],
+        -21,
+        `${what}: share above 100 Hz`,
+      );
+      below(
+        bandEnergiesDb(r, [4000, 24000], 0.02, 0.5)[0],
+        -30,
+        `${what}: share above 4 kHz`,
+      );
+      below(
+        20 * Math.log10(peak(r)) - loudestWindowDb(r),
+        12,
+        `${what}: crest factor (dB)`,
+      );
     }
 });
 
@@ -642,14 +943,23 @@ test("fingerBass: a plucked string that sustains, is stopped by the finger and c
   assert.ok(fall > 3 && fall < 14, `decay over 1.6 s: ${fall} dB`);
   below(riseMs(held), 12, "attack (ms)");
   // upper partials go first
-  below(centroidHz(held, 1.2, 0.6), centroidHz(held, 0.02, 0.2) * 0.95, "centroid after 1.2 s vs at the pluck");
+  below(
+    centroidHz(held, 1.2, 0.6),
+    centroidHz(held, 0.02, 0.2) * 0.95,
+    "centroid after 1.2 s vs at the pluck",
+  );
   // eighth notes: the finger stops the string
   const short = note("fingerBass", 33, 0.8, 0.2);
-  below(rmsDb(short, 0.26, 0.28), rmsDb(short, 0.05, 0.2) - 30, "60 ms after note-off");
+  below(
+    rmsDb(short, 0.26, 0.28),
+    rmsDb(short, 0.05, 0.2) - 30,
+    "60 ms after note-off",
+  );
   // finger noise: a burst above 1 kHz in the first milliseconds, more of it when plucked hard
   const hard = note("fingerBass", 40, 1, 1);
   above(
-    bandEnergiesDb(hard, [1000, 6000], 0, 0.02)[0] - bandEnergiesDb(hard, [1000, 6000], 0.4, 0.4)[0],
+    bandEnergiesDb(hard, [1000, 6000], 0, 0.02)[0] -
+      bandEnergiesDb(hard, [1000, 6000], 0.4, 0.4)[0],
     6,
     "energy above 1 kHz, first 20 ms minus sustain (dB)",
   );
@@ -682,15 +992,31 @@ test("uprightBass: woody pizzicato whose overtones die before its fundamental", 
   const finger = note("fingerBass", 33, 0.8, 2);
   const fall = rmsDb(held, 0.05, 0.25) - rmsDb(held, 1.6, 2);
   assert.ok(fall > 10 && fall < 30, `decay over 1.6 s: ${fall} dB`);
-  above(fall, rmsDb(finger, 0.05, 0.25) - rmsDb(finger, 1.6, 2) + 5, "decays faster than the electric bass");
+  above(
+    fall,
+    rmsDb(finger, 0.05, 0.25) - rmsDb(finger, 1.6, 2) + 5,
+    "decays faster than the electric bass",
+  );
   // long-ish fundamental: a second later it is still there
   above(rmsDb(held, 0.9, 1.1), -32, "level after one second");
   // fast-decaying upper partials
   const early = harmonicsDb(held, midiToHz(33), 0.02, 0.25, 4);
   const late = harmonicsDb(held, midiToHz(33), 0.8, 0.5, 4);
-  above(early[1] - late[1], 1, "2nd harmonic re fundamental, early minus late (dB)");
-  above(early[3] - late[3], 4, "4th harmonic re fundamental, early minus late (dB)");
-  below(centroidHz(held, 0.4, 0.4), centroidHz(held, 0, 0.05) * 0.85, "centroid after 400 ms vs at the pluck");
+  above(
+    early[1] - late[1],
+    1,
+    "2nd harmonic re fundamental, early minus late (dB)",
+  );
+  above(
+    early[3] - late[3],
+    4,
+    "4th harmonic re fundamental, early minus late (dB)",
+  );
+  below(
+    centroidHz(held, 0.4, 0.4),
+    centroidHz(held, 0, 0.05) * 0.85,
+    "centroid after 400 ms vs at the pluck",
+  );
   // darker than the electric bass
   below(
     bandEnergiesDb(held, [300, 24000], 0.02, 0.5)[0],
@@ -700,7 +1026,8 @@ test("uprightBass: woody pizzicato whose overtones die before its fundamental", 
   // woody attack: the body knocks in the first 25 ms
   const hard = note("uprightBass", 45, 1, 1);
   above(
-    bandEnergiesDb(hard, [350, 1300], 0, 0.025)[0] - bandEnergiesDb(hard, [350, 1300], 0.3, 0.3)[0],
+    bandEnergiesDb(hard, [350, 1300], 0, 0.025)[0] -
+      bandEnergiesDb(hard, [350, 1300], 0.3, 0.3)[0],
     6,
     "350-1300 Hz, first 25 ms minus sustain (dB)",
   );
@@ -709,10 +1036,18 @@ test("uprightBass: woody pizzicato whose overtones die before its fundamental", 
   assert.ok(start > 3 && start < 30, `pitch at the pluck: +${start} cents`);
   below(pitchTrack(hard, 45, 0.06, 0.11, 0.05)[0], start, "pitch 50 ms later");
   near(centsError(hard, 45, 0.3, 0.5), 0, 1, "settled pitch");
-  below(pitchTrack(note("uprightBass", 45, 0.3, 1), 45, 0.01, 0.06, 0.05)[0], start - 2, "a soft pluck is less sharp");
+  below(
+    pitchTrack(note("uprightBass", 45, 0.3, 1), 45, 0.01, 0.06, 0.05)[0],
+    start - 2,
+    "a soft pluck is less sharp",
+  );
   // stopped by the hand, a little later than an electric bass
   const short = note("uprightBass", 33, 0.8, 0.2);
-  below(rmsDb(short, 0.35, 0.37), rmsDb(short, 0.05, 0.2) - 40, "150 ms after note-off");
+  below(
+    rmsDb(short, 0.35, 0.37),
+    rmsDb(short, 0.05, 0.2) - 40,
+    "150 ms after note-off",
+  );
 });
 
 test("synthBass: the same solid attack on every note, a filter that snaps shut", () => {
@@ -721,9 +1056,14 @@ test("synthBass: the same solid attack on every note, a filter that snaps shut",
   const b = note("synthBass", 40, 0.9, 0.5, undefined, 9);
   assert.deepEqual(a.left, b.left);
   // snappy filter envelope
-  above(centroidHz(a, 0, 0.03) / centroidHz(a, 0.25, 0.2), 1.25, "centroid attack / sustain");
   above(
-    bandEnergiesDb(a, [1000, 24000], 0, 0.03)[0] - bandEnergiesDb(a, [1000, 24000], 0.25, 0.2)[0],
+    centroidHz(a, 0, 0.03) / centroidHz(a, 0.25, 0.2),
+    1.25,
+    "centroid attack / sustain",
+  );
+  above(
+    bandEnergiesDb(a, [1000, 24000], 0, 0.03)[0] -
+      bandEnergiesDb(a, [1000, 24000], 0.25, 0.2)[0],
     6,
     "energy above 1 kHz, first 30 ms minus sustain (dB)",
   );
@@ -734,7 +1074,12 @@ test("synthBass: the same solid attack on every note, a filter that snaps shut",
   // velocity opens the filter
   above(
     bandEnergiesDb(note("synthBass", 40, 1, 0.5), [300, 24000], 0.1, 0.3)[0] -
-      bandEnergiesDb(note("synthBass", 40, 0.3, 0.5), [300, 24000], 0.1, 0.3)[0],
+      bandEnergiesDb(
+        note("synthBass", 40, 0.3, 0.5),
+        [300, 24000],
+        0.1,
+        0.3,
+      )[0],
     3,
     "share above 300 Hz, hard minus soft (dB)",
   );
@@ -756,14 +1101,31 @@ test("chipBass: the 4-bit triangle of a console", () => {
   above(Math.min(h[30], h[32]), -36, "step harmonics 31 and 33");
   below(h[31], -60, "harmonic 32");
   // soft notes are rounder
-  const soft = harmonicsDb(note("chipBass", 45, 0.3, 1), midiToHz(45), 0.2, 0.6, 34);
+  const soft = harmonicsDb(
+    note("chipBass", 45, 0.3, 1),
+    midiToHz(45),
+    0.2,
+    0.6,
+    34,
+  );
   below(soft[30], h[30] - 4, "step harmonic of a soft note");
   // instant attack, flat level, clean stop
   below(riseMs(hard), 6, "attack (ms)");
-  near(rmsDb(hard, 0.05, 0.25) - rmsDb(hard, 0.75, 0.95), 0, 0.3, "level is flat");
+  near(
+    rmsDb(hard, 0.05, 0.25) - rmsDb(hard, 0.75, 0.95),
+    0,
+    0.3,
+    "level is flat",
+  );
   below(rmsDb(hard, 1.012, 1.014), -60, "12 ms after note-off");
   // above the range where a step is two samples long it falls back to a smooth triangle
-  const high = harmonicsDb(note("chipBass", 84, 0.8, 0.5), midiToHz(84), 0.1, 0.3, 5);
+  const high = harmonicsDb(
+    note("chipBass", 84, 0.8, 0.5),
+    midiToHz(84),
+    0.1,
+    0.3,
+    5,
+  );
   near(high[2], -19.08, 1.5, "3rd harmonic of a high note");
 });
 
@@ -773,16 +1135,30 @@ test("bass808: a pitch drop into a long driven sub", () => {
   // downward sweep inside the first 60 ms
   above(cycles[0], midiToHz(45) * 1.25, "frequency of the first cycle (Hz)");
   for (let i = 1; i < 6; i++)
-    assert.ok(cycles[i] < cycles[i - 1], `cycle ${i + 1} (${cycles[i]} Hz) is lower than the one before`);
+    assert.ok(
+      cycles[i] < cycles[i - 1],
+      `cycle ${i + 1} (${cycles[i]} Hz) is lower than the one before`,
+    );
   let elapsed = 0;
   let index = 0;
-  while (elapsed < 0.06 && index < cycles.length) elapsed += 1 / cycles[index++];
-  near(cycles[index - 1], midiToHz(45), midiToHz(45) * 0.03, "frequency at 60 ms (Hz)");
+  while (elapsed < 0.06 && index < cycles.length)
+    elapsed += 1 / cycles[index++];
+  near(
+    cycles[index - 1],
+    midiToHz(45),
+    midiToHz(45) * 0.03,
+    "frequency at 60 ms (Hz)",
+  );
   near(centsError(hit, 45, 0.1, 0.3), 0, 2, "pitch after the drop");
   // harder = a deeper drop and more drive
-  above(firstCycles(note("bass808", 45, 1, 0.5), 2)[0], firstCycles(note("bass808", 45, 0.3, 0.5), 2)[0] * 1.1, "first cycle, hard vs soft");
   above(
-    centroidHz(note("bass808", 33, 1, 1), 0.2, 0.6) / centroidHz(note("bass808", 33, 0.3, 1), 0.2, 0.6),
+    firstCycles(note("bass808", 45, 1, 0.5), 2)[0],
+    firstCycles(note("bass808", 45, 0.3, 0.5), 2)[0] * 1.1,
+    "first cycle, hard vs soft",
+  );
+  above(
+    centroidHz(note("bass808", 33, 1, 1), 0.2, 0.6) /
+      centroidHz(note("bass808", 33, 0.3, 1), 0.2, 0.6),
     1.05,
     "brightness hard / soft",
   );
@@ -792,15 +1168,28 @@ test("bass808: a pitch drop into a long driven sub", () => {
   above(h[2], -18, "3rd harmonic");
   // sustains while held (sagging only a little) ...
   const held = note("bass808", 33, 0.8, 4);
-  near(rmsDb(held, 0.1, 0.4) - rmsDb(held, 3.5, 4), 2, 2, "sag over four seconds (dB)");
+  near(
+    rmsDb(held, 0.1, 0.4) - rmsDb(held, 3.5, 4),
+    2,
+    2,
+    "sag over four seconds (dB)",
+  );
   // ... then lets go smoothly: still audible after 60 ms, gone when the tail ends
   const short = note("bass808", 33, 0.8, 0.2);
   above(rmsDb(short, 0.26, 0.28), -45, "60 ms after note-off");
-  below(rmsDb(short, 0.26, 0.28), rmsDb(short, 0.05, 0.2) - 6, "60 ms after note-off vs held");
+  below(
+    rmsDb(short, 0.26, 0.28),
+    rmsDb(short, 0.05, 0.2) - 6,
+    "60 ms after note-off vs held",
+  );
   below(tailDb(short), -60, "end of the tail");
   // NoteEvent.bend is the glide from the previous note
   const glide = note("bass808", 57, 0.8, 1, -5);
-  below(pitchTrack(glide, 57, 0.03, 0.06, 0.03)[0], -60, "glide at 30-60 ms (cents)");
+  below(
+    pitchTrack(glide, 57, 0.03, 0.06, 0.03)[0],
+    -60,
+    "glide at 30-60 ms (cents)",
+  );
   near(centsError(glide, 57, 0.3, 0.5), 0, 2, "glide lands");
 });
 
@@ -847,18 +1236,34 @@ test("any buffer length and out-of-range notes are survived", () => {
           const what = `${id} ${frames} frames @${sampleRate} ${JSON.stringify(n)}`;
           const left = new Float32Array(frames + 8);
           const right = new Float32Array(frames + 8);
-          VOICES[id].render(left, right, frames, n, { sampleRate, random: createRng(3) });
+          VOICES[id].render(left, right, frames, n, {
+            sampleRate,
+            random: createRng(3),
+          });
           let top = 0;
           for (let i = 0; i < frames + 8; i++) {
-            assert.ok(Number.isFinite(left[i]) && Number.isFinite(right[i]), `${what}: not finite`);
-            if (i >= frames) assert.ok(left[i] === 0 && right[i] === 0, `${what}: wrote beyond frames`);
+            assert.ok(
+              Number.isFinite(left[i]) && Number.isFinite(right[i]),
+              `${what}: not finite`,
+            );
+            if (i >= frames)
+              assert.ok(
+                left[i] === 0 && right[i] === 0,
+                `${what}: wrote beyond frames`,
+              );
             top = Math.max(top, Math.abs(left[i]), Math.abs(right[i]));
           }
           assert.ok(top <= 1, `${what}: peak ${top}`);
           assert.ok(Math.abs(left[0]) <= 0.01, `${what}: starts at ${left[0]}`);
-          assert.ok(Math.abs(left[frames - 1]) <= 0.003, `${what}: ends at ${left[frames - 1]}`);
+          assert.ok(
+            Math.abs(left[frames - 1]) <= 0.003,
+            `${what}: ends at ${left[frames - 1]}`,
+          );
           const tail = VOICES[id].tail(n);
-          assert.ok(Number.isFinite(tail) && tail >= 0 && tail <= 8, `${id}: tail ${tail}`);
+          assert.ok(
+            Number.isFinite(tail) && tail >= 0 && tail <= 8,
+            `${id}: tail ${tail}`,
+          );
         }
 });
 
@@ -872,11 +1277,18 @@ test("random notes around every range render clean", () => {
       const duration =
         random() < 0.3 ? 0.02 + 0.1 * random() : 0.05 + 4 * random() * random();
       const bend =
-        random() < 0.35 ? Math.round((random() * 2 - 1) * 7) || undefined : undefined;
+        random() < 0.35
+          ? Math.round((random() * 2 - 1) * 7) || undefined
+          : undefined;
       const sampleRate = random() < 0.25 ? 44100 : SAMPLE_RATE;
       const seed = 1 + Math.floor(random() * 1e6);
       const what = `${id} midi ${midi.toFixed(2)} vel ${vel.toFixed(2)} ${duration.toFixed(3)}s bend ${bend} @${sampleRate} seed ${seed}`;
-      const r = renderNote(VOICES[id], { midi, vel, duration, bend }, sampleRate, seed);
+      const r = renderNote(
+        VOICES[id],
+        { midi, vel, duration, bend },
+        sampleRate,
+        seed,
+      );
       assert.ok(r.guardIntact, `${what}: wrote beyond frames`);
       assert.ok(isFiniteAudio(r), `${what}: not finite`);
       assert.ok(peak(r) <= 1, `${what}: peak ${peak(r)}`);
@@ -885,7 +1297,10 @@ test("random notes around every range render clean", () => {
       // inside the range a note must be click-free in every respect; an
       // octave outside it must still start and end at zero
       for (const problem of clicks.problems)
-        assert.ok(!inRange && !/starts at|ends at/.test(problem), `${what}: ${problem}`);
+        assert.ok(
+          !inRange && !/starts at|ends at/.test(problem),
+          `${what}: ${problem}`,
+        );
       if (inRange && duration >= 0.25) {
         below(dcOffset(r), 0.01, `${what}: DC`);
         assert.ok(
@@ -898,7 +1313,14 @@ test("random notes around every range render clean", () => {
 });
 
 test("ensembles do not depend on the luck of the seed", () => {
-  for (const id of ["strings", "pad", "airpad", "brass", "choir", "synth"] as VoiceId[]) {
+  for (const id of [
+    "strings",
+    "pad",
+    "airpad",
+    "brass",
+    "choir",
+    "synth",
+  ] as VoiceId[]) {
     const [low, high] = CONTRACTS[id].range ?? [36, 96];
     let lowest = 1;
     for (let midi = low; midi <= high; midi += 12)
@@ -906,14 +1328,33 @@ test("ensembles do not depend on the luck of the seed", () => {
         const what = `${id} midi ${midi} seed ${seed}`;
         const short = note(id, midi, 0.8, 0.25, undefined, seed);
         const long = note(id, midi, 0.8, 1, undefined, seed);
-        lowest = Math.min(lowest, stereoCorrelation(short), stereoCorrelation(long));
-        above(stereoCorrelation(short), 0.3, `${what}: correlation of a 250 ms note`);
-        above(stereoCorrelation(long), 0.3, `${what}: correlation of a 1 s note`);
+        lowest = Math.min(
+          lowest,
+          stereoCorrelation(short),
+          stereoCorrelation(long),
+        );
+        above(
+          stereoCorrelation(short),
+          0.3,
+          `${what}: correlation of a 250 ms note`,
+        );
+        above(
+          stereoCorrelation(long),
+          0.3,
+          `${what}: correlation of a 1 s note`,
+        );
         near(loudestWindowDb(long), -18, 2.5, `${what}: level`);
         below(Math.abs(centsError(long, midi)), 10, `${what}: tuning`);
-        below(peak(note(id, midi, 1, 1, undefined, seed)), 0.95, `${what}: peak at vel 1`);
+        below(
+          peak(note(id, midi, 1, 1, undefined, seed)),
+          0.95,
+          `${what}: peak at vel 1`,
+        );
       }
-    assert.ok(lowest < 0.97, `${id} is not mono (lowest correlation ${lowest})`);
+    assert.ok(
+      lowest < 0.97,
+      `${id} is not mono (lowest correlation ${lowest})`,
+    );
   }
 });
 
@@ -945,8 +1386,16 @@ test("extra-sustained primitives: tables, filters, saw bank, NES triangle, phase
   ];
   const table = new ResponseTable(chain, sr);
   for (const hz of [20, 61, 333, 700, 731, 1500, 2999, 8000, 20000]) {
-    const exact = chain.reduce((gain, filter) => gain * filter.magnitude(hz, sr), 1);
-    near(20 * Math.log10(table.gain(hz) / exact), 0, 0.15, `table gain at ${hz} Hz (dB)`);
+    const exact = chain.reduce(
+      (gain, filter) => gain * filter.magnitude(hz, sr),
+      1,
+    );
+    near(
+      20 * Math.log10(table.gain(hz) / exact),
+      0,
+      0.15,
+      `table gain at ${hz} Hz (dB)`,
+    );
   }
   // SvfRange is the toolbox SVF, range by range
   const reference = new Svf(1200, 2.5, sr);
@@ -960,24 +1409,33 @@ test("extra-sustained primitives: tables, filters, saw bank, NES triangle, phase
   reference.process(a, 512);
   ranged.low(b, 0, 200);
   ranged.low(b, 200, 512);
-  for (let i = 0; i < 512; i++) near(b[i], a[i], 1e-6, `SvfRange.low sample ${i}`);
+  for (let i = 0; i < 512; i++)
+    near(b[i], a[i], 1e-6, `SvfRange.low sample ${i}`);
   const band = new SvfRange();
   band.copy(ranged);
   band.band(c, 0, 512);
   const check = new Svf(1200, 2.5, sr);
   const d = new Float32Array(512);
   new WhiteNoise(5).fill(d, 512);
-  for (let i = 0; i < 512; i++) near(c[i], check.band(d[i]) / 2.5, 1e-6, `SvfRange.band sample ${i}`);
+  for (let i = 0; i < 512; i++)
+    near(c[i], check.band(d[i]) / 2.5, 1e-6, `SvfRange.band sample ${i}`);
   // TiltShelf: unity at DC, `gain` at the top, magnitude() tells the truth
   const tilt = new TiltShelf();
   tilt.set(500, 3.4, sr);
   near(tilt.magnitude(1, sr), 1, 0.01, "tilt at 1 Hz");
   near(tilt.magnitude(20000, sr), 3.4, 0.05, "tilt at 20 kHz");
-  const sine = Float32Array.from({ length: 9600 }, (_, i) => Math.sin((2 * Math.PI * 500 * i) / sr));
+  const sine = Float32Array.from({ length: 9600 }, (_, i) =>
+    Math.sin((2 * Math.PI * 500 * i) / sr),
+  );
   tilt.process(sine, 9600);
   let power = 0;
   for (let i = 4800; i < 9600; i++) power += sine[i] * sine[i];
-  near(Math.sqrt(power / 2400), tilt.magnitude(500, sr), 0.02, "tilt gain measured at its corner");
+  near(
+    Math.sqrt(power / 2400),
+    tilt.magnitude(500, sr),
+    0.02,
+    "tilt gain measured at its corner",
+  );
   // bandpassNoisePower predicts the level of filtered noise
   for (const [hz, q] of [
     [900, 3],
@@ -1052,14 +1510,32 @@ test("extra-sustained primitives: tables, filters, saw bank, NES triangle, phase
   below(largest, 0.8 * (2 / 15), "largest sample-to-sample step");
   // softPluck (bass strings) is makePluck without its noise share, written without the convolution
   for (const options of [
-    { sampleRate: sr, period: sr / 41.2, position: 0.37, bodyHz: 250, hardnessHz: 520, noise: 0 },
-    { sampleRate: 44100, period: 44100 / 196, position: 0.34, bodyHz: 700, hardnessHz: 1800, noise: 0 },
+    {
+      sampleRate: sr,
+      period: sr / 41.2,
+      position: 0.37,
+      bodyHz: 250,
+      hardnessHz: 520,
+      noise: 0,
+    },
+    {
+      sampleRate: 44100,
+      period: 44100 / 196,
+      position: 0.34,
+      bodyHz: 700,
+      hardnessHz: 1800,
+      noise: 0,
+    },
   ]) {
     const size = pluckLength(options);
     const fast = new Float32Array(size);
     const slow = new Float32Array(size);
-    assert.equal(softPluck(fast, options), makePluck(slow, options, createRng(1)));
-    for (let i = 0; i < size; i++) near(fast[i], slow[i], 1e-6, `softPluck sample ${i}`);
+    assert.equal(
+      softPluck(fast, options),
+      makePluck(slow, options, createRng(1)),
+    );
+    for (let i = 0; i < size; i++)
+      near(fast[i], slow[i], 1e-6, `softPluck sample ${i}`);
     assert.equal(fast[0], 0);
   }
   // seedPhases: the pattern, rotated as a whole, slightly jittered, deterministic
@@ -1069,7 +1545,10 @@ test("extra-sustained primitives: tables, filters, saw bank, NES triangle, phase
   for (let i = 0; i < 3; i++) {
     let delta = phases[i] - rotation - pattern[i];
     delta -= Math.round(delta);
-    assert.ok(Math.abs(delta) <= 0.015 + 1e-9, `phase ${i} is the pattern plus at most half the jitter`);
+    assert.ok(
+      Math.abs(delta) <= 0.015 + 1e-9,
+      `phase ${i} is the pattern plus at most half the jitter`,
+    );
     assert.ok(phases[i] >= 0 && phases[i] < 1);
   }
   const again = new Float64Array(3);

@@ -161,7 +161,13 @@ function shake(h: Hit, p: Shaken): void {
     toSide[count] = g * pan * p.width;
     count++;
   }
-  dry.setHighpass(Math.min(p.directHz * byVel(h, 0.75, 1.06), sr * 0.42), 0.7071, sr).reset();
+  dry
+    .setHighpass(
+      Math.min(p.directHz * byVel(h, 0.75, 1.06), sr * 0.42),
+      0.7071,
+      sr,
+    )
+    .reset();
   const direct = p.direct * byVel(h, 0.6, 1.1);
 
   const build = Math.round(p.attack * (1 + 0.6 * (1 - vel)) * sr);
@@ -174,7 +180,10 @@ function shake(h: Hit, p: Shaken): void {
   noise.restart();
   // The strike: one impulse that sets every jingle ringing together, plus a
   // noise grain. A gentle hand lands over a few milliseconds instead of at once.
-  const landing = Math.max(1, Math.round((0.0002 + 0.003 * (1 - vel) * (1 - vel)) * sr));
+  const landing = Math.max(
+    1,
+    Math.round((0.0002 + 0.003 * (1 - vel) * (1 - vel)) * sr),
+  );
   const thrown = (0.5 * p.strike) / landing;
   // an impulse has to grow with the sample rate to ring a resonance equally
   const impulse = 3 * (sr / 48000);

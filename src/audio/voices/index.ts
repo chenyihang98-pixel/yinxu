@@ -1,13 +1,12 @@
 /**
  * The complete voice bank: one Voice per VoiceId, assembled from the four
- * group modules. A missing voice is a build error, not a silent fallback:
- * under a test runner this module THROWS at import time, and
- * MISSING_VOICES / ALIASED_VOICES tell you exactly what is left to write.
+ * group modules. A missing voice is never a silent fallback: MISSING_VOICES
+ * names it (tests/voices-core.test.ts requires the list to be empty), and
+ * using it throws.
  */
 import { VOICE_IDS } from "../../music/score";
 import type { VoiceId } from "../../music/score";
 import type { Voice, VoiceBank } from "./types";
-import { isAliasVoice } from "../dsp";
 import type { ContractOptions } from "./testing";
 import { KEYS_CONTRACT, KEYS_VOICES } from "./group-keys";
 import { PLUCKED_CONTRACT, PLUCKED_VOICES } from "./group-plucked";
@@ -20,11 +19,9 @@ export interface AssembledBank {
   missing: VoiceId[];
   /** ids provided by more than one group */
   duplicates: VoiceId[];
-  /** ids still served by a temporary alias of another voice */
-  aliased: VoiceId[];
 }
 
-/** Merge group modules and report what is missing, duplicated or still aliased. */
+/** Merge group modules and report what is missing or duplicated. */
 export function assembleVoiceBank(
   groups: readonly Partial<VoiceBank>[],
 ): AssembledBank {
@@ -38,11 +35,7 @@ export function assembleVoiceBank(
       voices[id] = voice;
     }
   const missing = VOICE_IDS.filter((id) => voices[id]?.id !== id);
-  const aliased = VOICE_IDS.filter((id) => {
-    const voice = voices[id];
-    return voice !== undefined && isAliasVoice(voice);
-  });
-  return { voices, missing, duplicates, aliased };
+  return { voices, missing, duplicates };
 }
 
 /** "" for a complete bank, otherwise a message naming every missing / duplicated id. */
@@ -56,8 +49,8 @@ export function bankProblem(bank: AssembledBank): string {
 
 /**
  * A full VoiceBank from an assembled one. An id without an implementation
- * gets a voice that THROWS when used, so outside the test runner an
- * incomplete bank still loads but can never render a wrong timbre unnoticed.
+ * gets a voice that THROWS when used, so an incomplete bank can never render
+ * a wrong timbre unnoticed.
  */
 export function completeBank(bank: AssembledBank): VoiceBank {
   const problem = bankProblem(bank);
@@ -75,24 +68,6 @@ export function completeBank(bank: AssembledBank): VoiceBank {
   ) as VoiceBank;
 }
 
-function underTestRunner(): boolean {
-  const host = (
-    globalThis as {
-      process?: {
-        env?: Record<string, string | undefined>;
-        execArgv?: string[];
-      };
-    }
-  ).process;
-  if (!host) return false;
-  return (
-    host.env?.NODE_TEST_CONTEXT !== undefined ||
-    host.env?.NODE_ENV === "test" ||
-    host.env?.VITEST !== undefined ||
-    (host.execArgv ?? []).includes("--test")
-  );
-}
-
 const assembled = assembleVoiceBank([
   KEYS_VOICES,
   PLUCKED_VOICES,
@@ -104,12 +79,6 @@ const assembled = assembleVoiceBank([
 export const MISSING_VOICES: readonly VoiceId[] = assembled.missing;
 /** VoiceIds two groups both define. Must be empty. */
 export const DUPLICATE_VOICES: readonly VoiceId[] = assembled.duplicates;
-/** VoiceIds still rendered by a temporary alias (empty once every voice is written). */
-export const ALIASED_VOICES: readonly VoiceId[] = assembled.aliased;
-
-if (bankProblem(assembled) && underTestRunner())
-  throw new Error(bankProblem(assembled));
-
 export const VOICES: VoiceBank = completeBank(assembled);
 
 /**

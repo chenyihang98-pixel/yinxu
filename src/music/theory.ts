@@ -66,13 +66,71 @@ const PARENT_SCALE: Record<ScaleName, ScaleName> = {
   minorPentatonic: "naturalMinor",
 };
 
-const SHARP_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const FLAT_NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+const SHARP_NAMES = [
+  "C",
+  "C#",
+  "D",
+  "D#",
+  "E",
+  "F",
+  "F#",
+  "G",
+  "G#",
+  "A",
+  "A#",
+  "B",
+];
+const FLAT_NAMES = [
+  "C",
+  "Db",
+  "D",
+  "Eb",
+  "E",
+  "F",
+  "Gb",
+  "G",
+  "Ab",
+  "A",
+  "Bb",
+  "B",
+];
 const FLAT_MAJOR_TONICS = new Set([5, 10, 3, 8, 1]);
 const FLAT_MINOR_TONICS = new Set([2, 7, 0, 5, 10, 3]);
 
 export const pitchName = (pc: number, flat: boolean) =>
   (flat ? FLAT_NAMES : SHARP_NAMES)[mod(Math.round(pc), 12)];
+
+const LETTERS = ["C", "D", "E", "F", "G", "A", "B"];
+const LETTER_PITCHES = [0, 2, 4, 5, 7, 9, 11];
+/** names nobody wants to read on a chord chart; the plain enharmonic is used instead */
+const AWKWARD_NAMES = new Set(["E#", "B#", "Cb", "Fb"]);
+
+/**
+ * Name of pitch class `pc` on the letter `steps` letters above the tonic: the
+ * seventh degree of G# minor is an F of some kind (F#), never a Gb. Where the
+ * letter would need a double accidental, or gives E#, B#, Cb or Fb, the
+ * simpler enharmonic of the key's own leaning is used.
+ */
+export function spellPitch(
+  pc: number,
+  steps: number,
+  key: Pick<KeyContext, "name" | "preferFlat">,
+): string {
+  const letter = mod(LETTERS.indexOf(key.name[0]) + steps, 7);
+  const accidental = mod(pc - LETTER_PITCHES[letter] + 6, 12) - 6;
+  const name =
+    LETTERS[letter] +
+    (accidental === 1
+      ? "#"
+      : accidental === -1
+        ? "b"
+        : accidental === 0
+          ? ""
+          : "?");
+  if (Math.abs(accidental) > 1 || AWKWARD_NAMES.has(name))
+    return pitchName(pc, key.preferFlat);
+  return name;
+}
 
 export interface KeyContext {
   /** tonic pitch class 0..11 */
@@ -94,7 +152,9 @@ export interface KeyContext {
 
 export function makeKey(keyName: string, scaleName: ScaleName): KeyContext {
   const parsed = parseKey(keyName);
-  const pcs = SCALES[scaleName].map((interval) => mod(parsed.tonic + interval, 12));
+  const pcs = SCALES[scaleName].map((interval) =>
+    mod(parsed.tonic + interval, 12),
+  );
   const inScale = new Array<boolean>(12).fill(false);
   for (const pc of pcs) inScale[pc] = true;
   const parent = new Array<boolean>(12).fill(false);
@@ -109,12 +169,18 @@ export function makeKey(keyName: string, scaleName: ScaleName): KeyContext {
     pcs,
     inScale,
     parent,
-    preferFlat: (parsed.minor ? FLAT_MINOR_TONICS : FLAT_MAJOR_TONICS).has(parsed.tonic),
+    preferFlat: (parsed.minor ? FLAT_MINOR_TONICS : FLAT_MAJOR_TONICS).has(
+      parsed.tonic,
+    ),
   };
 }
 
 /** Every MIDI note of the scale between low and high (inclusive), ascending. */
-export function scaleLadder(key: KeyContext, low: number, high: number): number[] {
+export function scaleLadder(
+  key: KeyContext,
+  low: number,
+  high: number,
+): number[] {
   const ladder: number[] = [];
   for (let midi = Math.ceil(low); midi <= high; midi++)
     if (key.inScale[mod(midi, 12)]) ladder.push(midi);
@@ -168,9 +234,11 @@ export interface Chord {
 
 const NUMERAL = "(VII|VI|IV|V|III|II|I|vii|vi|iv|v|iii|ii|i)";
 const SUFFIX =
-  "(maj7#11|maj7|maj9|m7b5|dim7|dim|aug|7sus4|sus2|sus4|add9|m11|m9|m7|m6|7b9|69|13|7|9|6|°|ø)";
-/** Superset of defaults.ROMAN: also accepts 7sus4, 7b9, 13, 69, m11, maj7#11 for style banks. */
-const ROMAN_PATTERN = new RegExp(`^([b#]?)${NUMERAL}${SUFFIX}?(?:/([b#]?)${NUMERAL})?$`);
+  "(maj7#11|maj7|maj9|m7b5|dim7|dim|aug|7sus4|sus2|sus4|addb9|add9|m11|m9|m7|m6|7b9|69|13|7|9|6|°|ø)";
+/** Superset of defaults.ROMAN: also accepts 7sus4, 7b9, 13, 69, m11, maj7#11, addb9 for style banks. */
+const ROMAN_PATTERN = new RegExp(
+  `^([b#]?)${NUMERAL}${SUFFIX}?(?:/([b#]?)${NUMERAL})?$`,
+);
 
 const MAJOR_DEGREES = [0, 2, 4, 5, 7, 9, 11];
 const MINOR_DEGREES = [0, 2, 3, 5, 7, 8, 10];
@@ -222,6 +290,8 @@ const QUALITIES: Record<string, Quality> = {
   sus2: quality([0, 2, 7], "sus2"),
   sus4: quality([0, 5, 7], "sus4"),
   add9: quality([0, 4, 7, 14], "add9", [0, 3, 7, 14], "m(add9)"),
+  // the phrygian tonic with its lowered second on top (style banks only)
+  addb9: quality([0, 4, 7, 13], "(addb9)", [0, 3, 7, 13], "m(addb9)"),
 };
 const DIMINISHED_SUFFIXES = new Set(["dim", "°", "dim7", "m7b5", "ø"]);
 
@@ -272,7 +342,8 @@ function functionOf(degree: number, applied: boolean): HarmonicFunction {
 export function parseRoman(roman: string, key: KeyContext): Chord | null {
   const match = ROMAN_PATTERN.exec(roman.trim());
   if (!match) return null;
-  const [, accidental, numeral, suffixRaw, slashAccidental, slashNumeral] = match;
+  const [, accidental, numeral, suffixRaw, slashAccidental, slashNumeral] =
+    match;
   const suffix = suffixRaw ?? "";
   const upperCase = numeral === numeral.toUpperCase();
   const entry = QUALITIES[suffix];
@@ -282,9 +353,19 @@ export function parseRoman(roman: string, key: KeyContext): Chord | null {
   let degree = degreeSemitones(accidental, numeral, key.minor, diminished);
   let bassDegree = degree;
   let applied = false;
+  // letters above the tonic's letter that name the root and the bass
+  let rootLetter = NUMERAL_INDEX[numeral.toUpperCase()];
+  let bassLetter = rootLetter;
   if (slashNumeral) {
-    const target = degreeSemitones(slashAccidental, slashNumeral, key.minor, false);
-    const dominantNumeral = numeral === "V" || (numeral === "vii" && diminished);
+    const target = degreeSemitones(
+      slashAccidental,
+      slashNumeral,
+      key.minor,
+      false,
+    );
+    const targetLetter = NUMERAL_INDEX[slashNumeral.toUpperCase()];
+    const dominantNumeral =
+      numeral === "V" || (numeral === "vii" && diminished);
     // V over the leading tone is the everyday first inversion (G/B in C), not
     // a dominant of the leading tone.
     const firstInversion = numeral === "V" && target === 11;
@@ -292,7 +373,13 @@ export function parseRoman(roman: string, key: KeyContext): Chord | null {
       applied = true;
       degree = mod(target + (numeral === "V" ? 7 : 11), 12);
       bassDegree = degree;
-    } else bassDegree = target;
+      // an applied chord is spelled from its target: a fifth above it, or the leading tone below it
+      rootLetter = targetLetter + (numeral === "V" ? 4 : 6);
+      bassLetter = rootLetter;
+    } else {
+      bassDegree = target;
+      bassLetter = targetLetter;
+    }
   }
   const root = mod(key.tonic + degree, 12);
   const bass = mod(key.tonic + bassDegree, 12);
@@ -302,14 +389,11 @@ export function parseRoman(roman: string, key: KeyContext): Chord | null {
     if (!pitchClasses.includes(pc)) pitchClasses.push(pc);
   }
   if (!pitchClasses.includes(bass)) pitchClasses.push(bass);
-  const flat =
-    accidental === "b" ? true : accidental === "#" ? false : key.preferFlat;
-  // a bass note written without an accidental is spelled the way the key spells it
-  const bassFlat =
-    slashAccidental === "b" ? true : slashAccidental === "#" ? false : key.preferFlat;
+  // by letter name, so one root never gets two names inside one key (Gb next to F#)
   let symbol =
-    pitchName(root, flat) + (upperCase ? entry.upperSymbol : entry.lowerSymbol);
-  if (bass !== root) symbol += `/${pitchName(bass, bassFlat)}`;
+    spellPitch(root, rootLetter, key) +
+    (upperCase ? entry.upperSymbol : entry.lowerSymbol);
+  if (bass !== root) symbol += `/${spellPitch(bass, bassLetter, key)}`;
   return {
     roman: roman.trim(),
     head: `${accidental}${numeral}`,
@@ -327,7 +411,8 @@ export function parseRoman(roman: string, key: KeyContext): Chord | null {
 }
 
 /** Roman numerals of one bar: "ii7 V7" → ["ii7", "V7"]. */
-export const splitBar = (bar: string) => bar.trim().split(/\s+/).filter(Boolean);
+export const splitBar = (bar: string) =>
+  bar.trim().split(/\s+/).filter(Boolean);
 
 /* ------------------------------------------------------------------ */
 /* voicing and voice leading                                           */
@@ -361,7 +446,11 @@ function rankedTones(chord: Chord, rootless: boolean): number[] {
 }
 
 /** Pitch classes (absolute) a voicing of `voices` notes should contain; doubles allowed. */
-export function voicingTones(chord: Chord, style: VoicingStyle, voices: number): number[] {
+export function voicingTones(
+  chord: Chord,
+  style: VoicingStyle,
+  voices: number,
+): number[] {
   const ranked = rankedTones(chord, style === "rootless");
   const fifth = chord.intervals.find((t) => t === 6 || t === 7 || t === 8) ?? 7;
   let offsets: number[];
@@ -372,7 +461,8 @@ export function voicingTones(chord: Chord, style: VoicingStyle, voices: number):
     if (offsets.length < Math.min(3, voices)) offsets.push(fifth);
   } else {
     let pool = ranked;
-    if (style === "rootless" && pool.length >= 4) pool = pool.filter((t) => t !== 0);
+    if (style === "rootless" && pool.length >= 4)
+      pool = pool.filter((t) => t !== 0);
     offsets = pool.slice(0, voices);
     if (style !== "rootless") {
       // spare voices double the root, then the fifth
@@ -384,7 +474,12 @@ export function voicingTones(chord: Chord, style: VoicingStyle, voices: number):
   return offsets.map((offset) => mod(chord.root + offset, 12));
 }
 
-function stacks(pcs: number[], low: number, high: number, open: boolean): number[][] {
+function stacks(
+  pcs: number[],
+  low: number,
+  high: number,
+  open: boolean,
+): number[][] {
   const unique = [...new Set(pcs)];
   const doubles = pcs.length - unique.length;
   const result: number[][] = [];
@@ -446,22 +541,30 @@ function voicingCost(
   }
   if (!previous || !previous.length) return cost;
   if (previous.length !== notes.length) {
-    const previousMean = previous.reduce((sum, note) => sum + note, 0) / previous.length;
+    const previousMean =
+      previous.reduce((sum, note) => sum + note, 0) / previous.length;
     return cost + Math.abs(mean - previousMean) * 1.2;
   }
   let motion = 0;
-  for (let i = 0; i < notes.length; i++) motion += Math.abs(notes[i] - previous[i]);
+  for (let i = 0; i < notes.length; i++)
+    motion += Math.abs(notes[i] - previous[i]);
   cost += motion;
-  cost += Math.abs(notes[notes.length - 1] - previous[previous.length - 1]) * 0.6;
+  cost +=
+    Math.abs(notes[notes.length - 1] - previous[previous.length - 1]) * 0.6;
   for (let i = 0; i < notes.length; i++)
     for (let j = i + 1; j < notes.length; j++) {
       const before = mod(previous[j] - previous[i], 12);
       const after = mod(notes[j] - notes[i], 12);
       const moveLow = notes[i] - previous[i];
       const moveHigh = notes[j] - previous[j];
-      if (before !== after || moveLow === 0 || Math.sign(moveLow) !== Math.sign(moveHigh))
+      if (
+        before !== after ||
+        moveLow === 0 ||
+        Math.sign(moveLow) !== Math.sign(moveHigh)
+      )
         continue;
-      if (after === 7) cost += 6; // parallel fifths
+      if (after === 7)
+        cost += 6; // parallel fifths
       else if (after === 0) cost += 4; // parallel octaves
     }
   return cost;
@@ -498,12 +601,16 @@ export function voiceChord(chord: Chord, options: VoicingOptions): number[] {
   const { style, voices, low, high, previous } = options;
   const centre = (low + high) / 2;
   if (style === "power") {
-    const fifth = chord.intervals.find((t) => t === 6 || t === 7 || t === 8) ?? 7;
+    const fifth =
+      chord.intervals.find((t) => t === 6 || t === 7 || t === 8) ?? 7;
     let best: number[] = [];
     let bestCost = Infinity;
     for (let root = low; root <= high; root++) {
       if (mod(root, 12) !== chord.root) continue;
-      const notes = [root, root + fifth, root + 12].slice(0, Math.max(2, voices));
+      const notes = [root, root + fifth, root + 12].slice(
+        0,
+        Math.max(2, voices),
+      );
       if (notes[notes.length - 1] > high + 5) continue;
       const cost = voicingCost(notes, previous, centre);
       if (cost < bestCost) {
@@ -516,14 +623,18 @@ export function voiceChord(chord: Chord, options: VoicingOptions): number[] {
   const weakBottom =
     style === "rootless"
       ? []
-      : chord.intervals.filter((interval) => interval >= 12).map((interval) => mod(chord.root + interval, 12));
+      : chord.intervals
+          .filter((interval) => interval >= 12)
+          .map((interval) => mod(chord.root + interval, 12));
   const pcs = voicingTones(chord, style, voices);
   let candidates = stacks(pcs, low, high, style === "open");
   if (!candidates.length) candidates = stacks(pcs, low - 5, high + 7, false);
   if (!candidates.length) {
     // degenerate window: stack from the nearest root
     const base = low + mod(chord.root - low, 12);
-    return chord.intervals.slice(0, Math.max(2, voices)).map((interval) => base + interval);
+    return chord.intervals
+      .slice(0, Math.max(2, voices))
+      .map((interval) => base + interval);
   }
   // never a muddy stack while a clean one exists
   const clean = candidates.filter((candidate) => !muddyStack(candidate));
@@ -541,7 +652,12 @@ export function voiceChord(chord: Chord, options: VoicingOptions): number[] {
 }
 
 /** Closest MIDI note with the given pitch class to `near`, kept inside [low, high]. */
-export function nearestPitch(pc: number, near: number, low: number, high: number): number {
+export function nearestPitch(
+  pc: number,
+  near: number,
+  low: number,
+  high: number,
+): number {
   let note = near + mod(pc - near, 12);
   if (note - near > 6) note -= 12;
   while (note < low) note += 12;
@@ -661,8 +777,34 @@ export function numeralForPitch(pc: number, key: KeyContext): string {
   const degree = mod(pc - key.tonic, 12);
   return (
     key.minor
-      ? ["I", "bII", "II", "III", "#III", "IV", "#IV", "V", "VI", "#VI", "VII", "#VII"]
-      : ["I", "bII", "II", "bIII", "III", "IV", "#IV", "V", "bVI", "VI", "bVII", "VII"]
+      ? [
+          "I",
+          "bII",
+          "II",
+          "III",
+          "#III",
+          "IV",
+          "#IV",
+          "V",
+          "VI",
+          "#VI",
+          "VII",
+          "#VII",
+        ]
+      : [
+          "I",
+          "bII",
+          "II",
+          "bIII",
+          "III",
+          "IV",
+          "#IV",
+          "V",
+          "bVI",
+          "VI",
+          "bVII",
+          "VII",
+        ]
   )[degree];
 }
 
@@ -686,7 +828,13 @@ export interface StepPattern {
   hits: StepHit[];
 }
 
-const STEP_VELOCITY: Record<string, number> = { g: 0.22, o: 0.45, x: 0.72, X: 0.95, r: 0.6 };
+const STEP_VELOCITY: Record<string, number> = {
+  g: 0.22,
+  o: 0.45,
+  x: 0.72,
+  X: 0.95,
+  r: 0.6,
+};
 const stepCache = new Map<string, StepPattern>();
 
 /** Parse a step row; malformed rows are padded or cut to whole bars. */

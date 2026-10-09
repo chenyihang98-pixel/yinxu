@@ -16,3 +16,4 @@ export * from "./fm";
 export * from "./saturate";
 export * from "./fft";
 export * from "./voice";
+export * from "./memory";

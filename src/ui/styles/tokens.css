@@ -21,6 +21,8 @@
   --text-soft: #c5c7d1;
   --muted: #a3a5b1;
   --disabled: #70727e;
+  /* a hint inside an empty field: clearly dimmer than a value, still 4.5:1 */
+  --placeholder: #858794;
 
   /* accent */
   --accent: #b8a3fa;
@@ -87,7 +89,8 @@
   --t-16: 16px;
   --t-20: 20px;
   --t-28: 28px;
-  --font: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+  --font:
+    "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
     "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", system-ui,
     sans-serif;
   --font-display: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;

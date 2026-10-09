@@ -37,7 +37,11 @@ import { pathToFileURL } from "node:url";
 import { deflateSync } from "node:zlib";
 import { DRUMS } from "../src/audio/drums";
 import { Biquad, fft } from "../src/audio/dsp";
-import { LoudnessMeter, energyToLufs, integratedFromHops } from "../src/audio/loudness";
+import {
+  LoudnessMeter,
+  energyToLufs,
+  integratedFromHops,
+} from "../src/audio/loudness";
 import type { MasterReport } from "../src/audio/master";
 import { renderScoreWith } from "../src/audio/render";
 import type { RenderReport } from "../src/audio/render";
@@ -46,10 +50,19 @@ import type { RenderedAudio, StereoPcm } from "../src/audio/render-types";
 import { CEILING, KNEE, softClipBuffer } from "../src/audio/softclip";
 import { VOICES } from "../src/audio/voices";
 import { encodeWavFromChannels } from "../src/audio/wav";
-import { STYLE_IDS, isInstrumentId, isKey, isStyleId } from "../src/music/catalog";
+import {
+  STYLE_IDS,
+  isInstrumentId,
+  isKey,
+  isStyleId,
+} from "../src/music/catalog";
 import type { StyleId } from "../src/music/catalog";
 import { compose } from "../src/music/compose";
-import { DEFAULT_CONFIG, clampConfig, stylePreset } from "../src/music/defaults";
+import {
+  DEFAULT_CONFIG,
+  clampConfig,
+  stylePreset,
+} from "../src/music/defaults";
 import { TRACKS } from "../src/music/score";
 import type { Part, PartMix, Score, TrackName } from "../src/music/score";
 import type { MusicConfig } from "../src/types";
@@ -173,7 +186,14 @@ export interface Audit {
     loop: boolean;
     key: string;
     swing: number;
-    sections: { type: string; label: string; bars: number; start: number; end: number; energy: number }[];
+    sections: {
+      type: string;
+      label: string;
+      bars: number;
+      start: number;
+      end: number;
+      energy: number;
+    }[];
     parts: {
       id: string;
       role: string;
@@ -232,13 +252,25 @@ export interface Audit {
      * isolated sample steps (a note or an effect that starts or stops without
      * a fade): how many, the largest against its surroundings, and where
      */
-    clicks: { count: number; worstRatio: number; worstStep: number; at: number };
+    clicks: {
+      count: number;
+      worstRatio: number;
+      worstStep: number;
+      at: number;
+    };
     /** side energy over mid energy, dB */
     sideDb: number;
     spectrum: SpectrumAudit;
     finite: boolean;
   };
-  sections: { label: string; type: string; start: number; end: number; lufs: number; shortTermMax: number }[];
+  sections: {
+    label: string;
+    type: string;
+    start: number;
+    end: number;
+    lufs: number;
+    shortTermMax: number;
+  }[];
   stems: Record<TrackName, StemAudit>;
   /** loops: how the last sample meets the first */
   seam?: {
@@ -272,7 +304,13 @@ export interface Audit {
 export interface AuditOptions {
   soloParts?: boolean;
   /** receive the audio that was measured (mix after the soft clipper, and the raw stems) */
-  onAudio?: (audio: { id: string; mix: StereoPcm; stems: Record<TrackName, StereoPcm>; sampleRate: number; score: Score }) => void;
+  onAudio?: (audio: {
+    id: string;
+    mix: StereoPcm;
+    stems: Record<TrackName, StereoPcm>;
+    sampleRate: number;
+    score: Score;
+  }) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -280,7 +318,8 @@ export interface AuditOptions {
 /* ------------------------------------------------------------------ */
 
 const db = (ratio: number) => (ratio > 0 ? 10 * Math.log10(ratio) : -Infinity);
-const amplitudeDb = (value: number) => (value > 0 ? 20 * Math.log10(value) : -Infinity);
+const amplitudeDb = (value: number) =>
+  value > 0 ? 20 * Math.log10(value) : -Infinity;
 const round = (value: number, digits = 2) => {
   if (!Number.isFinite(value)) return value;
   const scale = 10 ** digits;
@@ -301,7 +340,10 @@ function scratch(name: string, frames: number): Float32Array {
 const FFT_SIZE = 8192;
 const fftRe = new Float64Array(FFT_SIZE);
 const fftIm = new Float64Array(FFT_SIZE);
-const fftWindow = Float64Array.from({ length: FFT_SIZE }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / FFT_SIZE));
+const fftWindow = Float64Array.from(
+  { length: FFT_SIZE },
+  (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / FFT_SIZE),
+);
 const WINDOW_POWER = fftWindow.reduce((sum, value) => sum + value * value, 0);
 /** At most this many FFT frames go into a long-term spectrum (spread evenly over the piece). */
 const SPECTRUM_FRAMES = 220;
@@ -312,7 +354,14 @@ const SPECTRUM_FRAMES = 220;
  * to out[0 .. FFT_SIZE/2]; the window is applied here, `start` may reach
  * outside the signal (zeros).
  */
-function addStereoPower(left: Float32Array, right: Float32Array, frames: number, start: number, out: Float64Array, scale: number): void {
+function addStereoPower(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+  start: number,
+  out: Float64Array,
+  scale: number,
+): void {
   for (let i = 0; i < FFT_SIZE; i++) {
     const at = start + i;
     if (at >= 0 && at < frames) {
@@ -329,24 +378,52 @@ function addStereoPower(left: Float32Array, right: Float32Array, frames: number,
   out[half] += scale * (fftRe[half] * fftRe[half] + fftIm[half] * fftIm[half]);
   for (let k = 1; k < half; k++) {
     const m = FFT_SIZE - k;
-    out[k] += scale * 0.5 * (fftRe[k] * fftRe[k] + fftIm[k] * fftIm[k] + fftRe[m] * fftRe[m] + fftIm[m] * fftIm[m]);
+    out[k] +=
+      scale *
+      0.5 *
+      (fftRe[k] * fftRe[k] +
+        fftIm[k] * fftIm[k] +
+        fftRe[m] * fftRe[m] +
+        fftIm[m] * fftIm[m]);
   }
 }
 
 /** Long-term average power spectrum of a stereo signal (mean of both channels), bins 0..FFT_SIZE/2. */
-function averageSpectrum(left: Float32Array, right: Float32Array, frames: number, out: Float64Array): Float64Array {
+function averageSpectrum(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+  out: Float64Array,
+): Float64Array {
   out.fill(0);
-  const available = Math.max(1, Math.floor((frames - FFT_SIZE) / (FFT_SIZE / 2)) + 1);
+  const available = Math.max(
+    1,
+    Math.floor((frames - FFT_SIZE) / (FFT_SIZE / 2)) + 1,
+  );
   const count = Math.min(available, SPECTRUM_FRAMES);
   const stride = count > 1 ? (frames - FFT_SIZE) / (count - 1) : 0;
-  for (let index = 0; index < count; index++) addStereoPower(left, right, frames, Math.max(0, Math.round(index * stride)), out, 1);
+  for (let index = 0; index < count; index++)
+    addStereoPower(
+      left,
+      right,
+      frames,
+      Math.max(0, Math.round(index * stride)),
+      out,
+      1,
+    );
   // mean square of the signal per bin (one-sided), averaged over frames and the two channels
   const norm = 2 / (FFT_SIZE * WINDOW_POWER * count * 2);
-  for (let k = 0; k <= FFT_SIZE / 2; k++) out[k] *= k === 0 || k === FFT_SIZE / 2 ? norm / 2 : norm;
+  for (let k = 0; k <= FFT_SIZE / 2; k++)
+    out[k] *= k === 0 || k === FFT_SIZE / 2 ? norm / 2 : norm;
   return out;
 }
 
-function powerBetween(power: Float64Array, sampleRate: number, low: number, high: number): number {
+function powerBetween(
+  power: Float64Array,
+  sampleRate: number,
+  low: number,
+  high: number,
+): number {
   const binHz = sampleRate / FFT_SIZE;
   const from = Math.max(0, Math.ceil(low / binHz - 0.5));
   const to = Math.min(power.length - 1, Math.ceil(high / binHz - 0.5) - 1);
@@ -355,14 +432,27 @@ function powerBetween(power: Float64Array, sampleRate: number, low: number, high
   return total;
 }
 
-function describeSpectrum(power: Float64Array, sampleRate: number, reference: number): SpectrumAudit {
+function describeSpectrum(
+  power: Float64Array,
+  sampleRate: number,
+  reference: number,
+): SpectrumAudit {
   const bands = {} as BandLevels;
-  for (const band of BANDS) bands[band.id] = round(db(powerBetween(power, sampleRate, band.low, band.high) / reference), 2);
+  for (const band of BANDS)
+    bands[band.id] = round(
+      db(powerBetween(power, sampleRate, band.low, band.high) / reference),
+      2,
+    );
   // octave bands 63 Hz .. 8 kHz
   const xs: number[] = [];
   const ys: number[] = [];
   for (let centre = 62.5; centre <= 8000; centre *= 2) {
-    const level = powerBetween(power, sampleRate, centre / Math.SQRT2, centre * Math.SQRT2);
+    const level = powerBetween(
+      power,
+      sampleRate,
+      centre / Math.SQRT2,
+      centre * Math.SQRT2,
+    );
     if (level > 0) {
       xs.push(Math.log2(centre));
       ys.push(10 * Math.log10(level));
@@ -387,10 +477,18 @@ function describeSpectrum(power: Float64Array, sampleRate: number, reference: nu
     weighted += k * binHz * power[k];
     total += power[k];
   }
-  return { bands, slopeDbPerOctave: round(slope, 2), centroidHz: round(total > 0 ? weighted / total : 0, 0) };
+  return {
+    bands,
+    slopeDbPerOctave: round(slope, 2),
+    centroidHz: round(total > 0 ? weighted / total : 0, 0),
+  };
 }
 
-function correlation(left: Float32Array, right: Float32Array, frames: number): number {
+function correlation(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+): number {
   let lr = 0;
   let ll = 0;
   let rr = 0;
@@ -403,7 +501,13 @@ function correlation(left: Float32Array, right: Float32Array, frames: number): n
 }
 
 /** Correlation of what a fourth-order Butterworth low-pass at `hz` leaves of both channels, and that part's mean power. */
-function lowCorrelation(left: Float32Array, right: Float32Array, frames: number, sampleRate: number, hz: number): { correlation: number; power: number } {
+function lowCorrelation(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+  sampleRate: number,
+  hz: number,
+): { correlation: number; power: number } {
   const first = new Biquad().setLowpass(hz, 0.5412, sampleRate);
   const second = new Biquad().setLowpass(hz, 1.3066, sampleRate);
   // four sections (two per channel) in one pass, transposed direct form II
@@ -425,7 +529,10 @@ function lowCorrelation(left: Float32Array, right: Float32Array, frames: number,
     ll += l * l;
     rr += r * r;
   }
-  return { correlation: ll > 1e-24 && rr > 1e-24 ? lr / Math.sqrt(ll * rr) : 1, power: (ll + rr) / (2 * Math.max(1, frames)) };
+  return {
+    correlation: ll > 1e-24 && rr > 1e-24 ? lr / Math.sqrt(ll * rr) : 1,
+    power: (ll + rr) / (2 * Math.max(1, frames)),
+  };
 }
 
 /**
@@ -435,7 +542,12 @@ function lowCorrelation(left: Float32Array, right: Float32Array, frames: number,
  * neighbours). Drum strokes, square waves and bit-crushing are full of steep
  * steps but never of a single one, so they do not count.
  */
-export function clicksOf(channels: Float32Array[], frames: number, sampleRate: number, loop: boolean): Audit["mix"]["clicks"] {
+export function clicksOf(
+  channels: Float32Array[],
+  frames: number,
+  sampleRate: number,
+  loop: boolean,
+): Audit["mix"]["clicks"] {
   const reach = Math.round(0.02 * sampleRate);
   const guard = 4;
   let count = 0;
@@ -448,7 +560,8 @@ export function clicksOf(channels: Float32Array[], frames: number, sampleRate: n
   const before = new Float32Array(total);
   const queue = new Int32Array(total);
   for (const data of channels) {
-    for (let i = 0; i < total; i++) steps[i] = Math.abs(data[(i + 1) % frames] - data[i]);
+    for (let i = 0; i < total; i++)
+      steps[i] = Math.abs(data[(i + 1) % frames] - data[i]);
     // highest step in [i − reach, i − guard − 1] (sliding maximum), then the same looking ahead
     for (const direction of [1, -1]) {
       let head = 0;
@@ -457,7 +570,8 @@ export function clicksOf(channels: Float32Array[], frames: number, sampleRate: n
         const i = direction > 0 ? n : total - 1 - n;
         const entering = i - direction * (guard + 1);
         if (entering >= 0 && entering < total) {
-          while (tail > head && steps[queue[tail - 1]] <= steps[entering]) tail--;
+          while (tail > head && steps[queue[tail - 1]] <= steps[entering])
+            tail--;
           queue[tail++] = entering;
         }
         while (tail > head && Math.abs(queue[head] - i) > reach) head++;
@@ -480,10 +594,20 @@ export function clicksOf(channels: Float32Array[], frames: number, sampleRate: n
       }
     }
   }
-  return { count, worstRatio: round(worstRatio, 1), worstStep: round(worstStep, 4), at: round(at, 4) };
+  return {
+    count,
+    worstRatio: round(worstRatio, 1),
+    worstStep: round(worstStep, 4),
+    at: round(at, 4),
+  };
 }
 
-function rms(left: Float32Array, right: Float32Array, from: number, to: number): number {
+function rms(
+  left: Float32Array,
+  right: Float32Array,
+  from: number,
+  to: number,
+): number {
   let sum = 0;
   const a = Math.max(0, Math.floor(from));
   const b = Math.max(a, Math.floor(to));
@@ -494,12 +618,22 @@ function rms(left: Float32Array, right: Float32Array, from: number, to: number):
 /** Loudness range (EBU Tech 3342) from short-term loudness values. */
 function loudnessRange(shortTerm: Float64Array): number {
   const energies: number[] = [];
-  for (const value of shortTerm) if (value > -70) energies.push(10 ** (value / 10));
+  for (const value of shortTerm)
+    if (value > -70) energies.push(10 ** (value / 10));
   if (energies.length < 2) return 0;
-  const gate = 10 * Math.log10(energies.reduce((a, b) => a + b, 0) / energies.length) - 20;
-  const kept = Array.from(shortTerm).filter((value) => value > -70 && value > gate).sort((a, b) => a - b);
+  const gate =
+    10 * Math.log10(energies.reduce((a, b) => a + b, 0) / energies.length) - 20;
+  const kept = Array.from(shortTerm)
+    .filter((value) => value > -70 && value > gate)
+    .sort((a, b) => a - b);
   if (kept.length < 2) return 0;
-  const at = (fraction: number) => kept[Math.min(kept.length - 1, Math.max(0, Math.round(fraction * (kept.length - 1))))];
+  const at = (fraction: number) =>
+    kept[
+      Math.min(
+        kept.length - 1,
+        Math.max(0, Math.round(fraction * (kept.length - 1))),
+      )
+    ];
   return at(0.95) - at(0.1);
 }
 
@@ -511,13 +645,18 @@ const TRUE_PEAK_KERNEL = (() => {
     for (let k = -TRUE_PEAK_TAPS + 1; k <= TRUE_PEAK_TAPS; k++) {
       const x = phase / 4 - k;
       kernel[(phase - 1) * 2 * TRUE_PEAK_TAPS + k + TRUE_PEAK_TAPS - 1] =
-        (Math.sin(Math.PI * x) / (Math.PI * x)) * (0.5 + 0.5 * Math.cos((Math.PI * x) / TRUE_PEAK_TAPS));
+        (Math.sin(Math.PI * x) / (Math.PI * x)) *
+        (0.5 + 0.5 * Math.cos((Math.PI * x) / TRUE_PEAK_TAPS));
     }
   return kernel;
 })();
 
 /** Highest value of the band-limited signal between the samples (4× windowed-sinc), looked for near the sample peaks. */
-function truePeak(channels: Float32Array[], frames: number, samplePeak: number): number {
+function truePeak(
+  channels: Float32Array[],
+  frames: number,
+  samplePeak: number,
+): number {
   const taps = TRUE_PEAK_TAPS;
   let best = samplePeak;
   const threshold = samplePeak * 0.8;
@@ -525,11 +664,13 @@ function truePeak(channels: Float32Array[], frames: number, samplePeak: number):
     for (let i = taps; i < frames - taps - 1; i++) {
       const a = data[i];
       const b = data[i + 1];
-      if ((a < 0 ? -a : a) < threshold && (b < 0 ? -b : b) < threshold) continue;
+      if ((a < 0 ? -a : a) < threshold && (b < 0 ? -b : b) < threshold)
+        continue;
       for (let phase = 0; phase < 3; phase++) {
         let sum = 0;
         const base = phase * 2 * taps;
-        for (let k = 0; k < 2 * taps; k++) sum += data[i - taps + 1 + k] * TRUE_PEAK_KERNEL[base + k];
+        for (let k = 0; k < 2 * taps; k++)
+          sum += data[i - taps + 1 + k] * TRUE_PEAK_KERNEL[base + k];
         if (sum < 0) sum = -sum;
         if (sum > best) best = sum;
       }
@@ -539,10 +680,22 @@ function truePeak(channels: Float32Array[], frames: number, samplePeak: number):
 
 function percentile(values: Float64Array, fraction: number): number {
   const sorted = Float64Array.from(values).sort();
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(fraction * (sorted.length - 1))))] ?? 0;
+  return (
+    sorted[
+      Math.min(
+        sorted.length - 1,
+        Math.max(0, Math.round(fraction * (sorted.length - 1))),
+      )
+    ] ?? 0
+  );
 }
 
-function seamOf(left: Float32Array, right: Float32Array, frames: number, sampleRate: number): NonNullable<Audit["seam"]> {
+function seamOf(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+  sampleRate: number,
+): NonNullable<Audit["seam"]> {
   const span = Math.min(Math.floor(frames / 2), Math.round(0.04 * sampleRate));
   let jump = 0;
   let jumpRatio = 0;
@@ -555,15 +708,25 @@ function seamOf(left: Float32Array, right: Float32Array, frames: number, sampleR
       around[span + i] = data[i];
     }
     const steps = new Float64Array(span * 2 - 1);
-    for (let i = 0; i < steps.length; i++) steps[i] = Math.abs(around[i + 1] - around[i]);
+    for (let i = 0; i < steps.length; i++)
+      steps[i] = Math.abs(around[i + 1] - around[i]);
     const kinks = new Float64Array(span * 2 - 2);
-    for (let i = 0; i < kinks.length; i++) kinks[i] = Math.abs(around[i + 2] - 2 * around[i + 1] + around[i]);
+    for (let i = 0; i < kinks.length; i++)
+      kinks[i] = Math.abs(around[i + 2] - 2 * around[i + 1] + around[i]);
     const step = steps[span - 1];
     const kink = Math.max(kinks[span - 2], kinks[span - 1]);
     jump = Math.max(jump, step);
     // a wrap in near silence cannot click, whatever the ratio says
-    if (step > 1e-4) jumpRatio = Math.max(jumpRatio, step / Math.max(1e-9, percentile(steps, 0.99)));
-    if (kink > 1e-4) kinkRatio = Math.max(kinkRatio, kink / Math.max(1e-9, percentile(kinks, 0.99)));
+    if (step > 1e-4)
+      jumpRatio = Math.max(
+        jumpRatio,
+        step / Math.max(1e-9, percentile(steps, 0.99)),
+      );
+    if (kink > 1e-4)
+      kinkRatio = Math.max(
+        kinkRatio,
+        kink / Math.max(1e-9, percentile(kinks, 0.99)),
+      );
   }
   const short = Math.round(0.03 * sampleRate);
   const long = Math.round(0.3 * sampleRate);
@@ -574,11 +737,21 @@ function seamOf(left: Float32Array, right: Float32Array, frames: number, sampleR
     kinkRatio: round(kinkRatio, 2),
     beforeDb: round(amplitudeDb(before), 1),
     afterDb: round(amplitudeDb(rms(left, right, 0, short)), 1),
-    endDipDb: round(amplitudeDb(before / Math.max(1e-12, rms(left, right, frames - long, frames))), 1),
+    endDipDb: round(
+      amplitudeDb(
+        before / Math.max(1e-12, rms(left, right, frames - long, frames)),
+      ),
+      1,
+    ),
   };
 }
 
-function edgesOf(left: Float32Array, right: Float32Array, frames: number, sampleRate: number): NonNullable<Audit["edges"]> {
+function edgesOf(
+  left: Float32Array,
+  right: Float32Array,
+  frames: number,
+  sampleRate: number,
+): NonNullable<Audit["edges"]> {
   const floor = 10 ** (-60 / 20);
   let lastLoud = -1;
   for (let i = frames - 1; i >= 0; i--)
@@ -589,8 +762,14 @@ function edgesOf(left: Float32Array, right: Float32Array, frames: number, sample
   return {
     firstSample: round(Math.max(Math.abs(left[0]), Math.abs(right[0])), 6),
     startDb: round(amplitudeDb(rms(left, right, 0, 0.002 * sampleRate)), 1),
-    endDb: round(amplitudeDb(rms(left, right, frames - 0.05 * sampleRate, frames)), 1),
-    lastSample: round(Math.max(Math.abs(left[frames - 1]), Math.abs(right[frames - 1])), 6),
+    endDb: round(
+      amplitudeDb(rms(left, right, frames - 0.05 * sampleRate, frames)),
+      1,
+    ),
+    lastSample: round(
+      Math.max(Math.abs(left[frames - 1]), Math.abs(right[frames - 1])),
+      6,
+    ),
     silentTail: round((frames - 1 - lastLoud) / sampleRate, 3),
   };
 }
@@ -607,8 +786,20 @@ const BANKS = { voices: VOICES, drums: DRUMS };
 
 function partFacts(part: Part): Audit["score"]["parts"][number] {
   if (part.kind === "drums") {
-    const velocity = part.hits.reduce((sum, hit) => sum + hit.vel, 0) / Math.max(1, part.hits.length);
-    return { id: part.id, role: part.role, track: part.track, voice: `${part.kit} kit`, events: part.hits.length, heldSeconds: 0, range: null, meanVelocity: round(velocity, 3), mix: part.mix };
+    const velocity =
+      part.hits.reduce((sum, hit) => sum + hit.vel, 0) /
+      Math.max(1, part.hits.length);
+    return {
+      id: part.id,
+      role: part.role,
+      track: part.track,
+      voice: `${part.kit} kit`,
+      events: part.hits.length,
+      heldSeconds: 0,
+      range: null,
+      meanVelocity: round(velocity, 3),
+      mix: part.mix,
+    };
   }
   let low = Infinity;
   let high = -Infinity;
@@ -642,13 +833,19 @@ export function auditId(config: MusicConfig): string {
 /* ------------------------------------------------------------------ */
 
 /** Compose and render `config`, then measure the mix, the stems and (optionally) every part. */
-export async function auditConfig(input: MusicConfig, options: AuditOptions = {}): Promise<Audit> {
+export async function auditConfig(
+  input: MusicConfig,
+  options: AuditOptions = {},
+): Promise<Audit> {
   const config = clampConfig(input);
   const id = auditId(config);
   const score = compose(config);
   let report: RenderReport | undefined;
   const started = performance.now();
-  const audio = await renderScoreWith(score, BANKS, { onReport: (value) => (report = value), measureAmbience: true });
+  const audio = await renderScoreWith(score, BANKS, {
+    onReport: (value) => (report = value),
+    measureAmbience: true,
+  });
   const seconds = (performance.now() - started) / 1000;
   const done = report as RenderReport;
   const { frames, sampleRate } = audio;
@@ -673,7 +870,8 @@ export async function auditConfig(input: MusicConfig, options: AuditOptions = {}
   for (const data of [mixLeft, mixRight])
     for (let i = 0; i < frames; i++) {
       const value = data[i];
-      if (value !== value || value === Infinity || value === -Infinity) finite = false;
+      if (value !== value || value === Infinity || value === -Infinity)
+        finite = false;
       const magnitude = value < 0 ? -value : value;
       if (magnitude > prePeak) prePeak = magnitude;
       if (magnitude > KNEE) pastKnee++;
@@ -702,11 +900,22 @@ export async function auditConfig(input: MusicConfig, options: AuditOptions = {}
   }
   const mixRms = Math.sqrt(squares / (2 * frames));
   const peak = meter.peak;
-  const mixPower = averageSpectrum(mixLeft, mixRight, frames, new Float64Array(FFT_SIZE / 2 + 1));
+  const mixPower = averageSpectrum(
+    mixLeft,
+    mixRight,
+    frames,
+    new Float64Array(FFT_SIZE / 2 + 1),
+  );
   let mixTotal = 0;
   for (let k = 0; k < mixPower.length; k++) mixTotal += mixPower[k];
   const mixSpectrum = describeSpectrum(mixPower, sampleRate, mixTotal);
-  const lowEnd = lowCorrelation(mixLeft, mixRight, frames, sampleRate, LOW_END_HZ);
+  const lowEnd = lowCorrelation(
+    mixLeft,
+    mixRight,
+    frames,
+    sampleRate,
+    LOW_END_HZ,
+  );
   const mix: Audit["mix"] = {
     lufs: round(lufs, 2),
     ungatedLufs: round(ungated, 2),
@@ -717,7 +926,10 @@ export async function auditConfig(input: MusicConfig, options: AuditOptions = {}
     peak: round(peak, 4),
     peakDb: round(amplitudeDb(peak), 2),
     prePeak: round(prePeak, 4),
-    truePeakDb: round(amplitudeDb(truePeak([mixLeft, mixRight], frames, peak)), 2),
+    truePeakDb: round(
+      amplitudeDb(truePeak([mixLeft, mixRight], frames, peak)),
+      2,
+    ),
     rmsDb: round(amplitudeDb(mixRms), 2),
     crestDb: round(amplitudeDb(peak / Math.max(1e-12, mixRms)), 2),
     kneeShare: round(pastKnee / (2 * frames), 5),
@@ -737,7 +949,12 @@ export async function auditConfig(input: MusicConfig, options: AuditOptions = {}
     const from = Math.min(hops.length, Math.round(section.start * 10));
     const to = Math.min(hops.length, Math.round(section.end * 10));
     let loudest = -Infinity;
-    for (let i = Math.max(0, from - 29); i < to - 29 && i < shortTerm.length; i++) loudest = Math.max(loudest, shortTerm[i]);
+    for (
+      let i = Math.max(0, from - 29);
+      i < to - 29 && i < shortTerm.length;
+      i++
+    )
+      loudest = Math.max(loudest, shortTerm[i]);
     return {
       label: section.label,
       type: section.type,
@@ -754,7 +971,11 @@ export async function auditConfig(input: MusicConfig, options: AuditOptions = {}
   for (const track of TRACKS) {
     const [left, right] = audio.stems[track];
     const fader = REFERENCE_VOLUMES[track];
-    const empty = !score.parts.some((part) => part.track === track && (part.kind === "notes" ? part.notes.length : part.hits.length) > 0);
+    const empty = !score.parts.some(
+      (part) =>
+        part.track === track &&
+        (part.kind === "notes" ? part.notes.length : part.hits.length) > 0,
+    );
     const stemMeter = new LoudnessMeter(sampleRate);
     stemMeter.push(left, right, frames);
     const rawLufs = stemMeter.integrated;
@@ -765,7 +986,11 @@ export async function auditConfig(input: MusicConfig, options: AuditOptions = {}
     if (stemMeter.peak > 0) {
       averageSpectrum(left, right, frames, stemPower);
       // at the reference fader, against the mix
-      spectrum = describeSpectrum(stemPower, sampleRate, mixTotal / (fader * fader));
+      spectrum = describeSpectrum(
+        stemPower,
+        sampleRate,
+        mixTotal / (fader * fader),
+      );
     }
     stems[track] = {
       empty,
@@ -781,41 +1006,91 @@ export async function auditConfig(input: MusicConfig, options: AuditOptions = {}
         const to = Math.min(stemHops.length, Math.round(section.end * 10));
         let sum = 0;
         for (let i = from; i < to; i++) sum += stemHops[i];
-        return to > from && sum > 0 ? round(energyToLufs(sum / (to - from)) + 20 * Math.log10(fader), 2) : -Infinity;
+        return to > from && sum > 0
+          ? round(energyToLufs(sum / (to - from)) + 20 * Math.log10(fader), 2)
+          : -Infinity;
       }),
-      reverbDb: round(energy && energy.dry > 0 ? db(energy.reverb / energy.dry) : -Infinity, 1),
-      delayDb: round(energy && energy.dry > 0 ? db(energy.delay / energy.dry) : -Infinity, 1),
+      reverbDb: round(
+        energy && energy.dry > 0 ? db(energy.reverb / energy.dry) : -Infinity,
+        1,
+      ),
+      delayDb: round(
+        energy && energy.dry > 0 ? db(energy.delay / energy.dry) : -Infinity,
+        1,
+      ),
       correlation: round(correlation(left, right, frames), 3),
     };
   }
 
   /* ---- the ends ---- */
-  const seam = score.loop ? seamOf(mixLeft, mixRight, frames, sampleRate) : undefined;
-  const edges = score.loop ? undefined : edgesOf(mixLeft, mixRight, frames, sampleRate);
+  const seam = score.loop
+    ? seamOf(mixLeft, mixRight, frames, sampleRate)
+    : undefined;
+  const edges = score.loop
+    ? undefined
+    : edgesOf(mixLeft, mixRight, frames, sampleRate);
 
   /* ---- flags ---- */
   if (!finite) flags.push("non-finite samples");
-  if (!(Math.abs(lufs - score.master.targetLufs) <= LIMITS.lufsTolerance)) flags.push(`mix at ${round(lufs, 2)} LUFS (target ${score.master.targetLufs})`);
-  if (peak > CEILING + 1e-6) flags.push(`peak ${round(peak, 4)} above the clipper ceiling`);
-  if (mix.kneeShare > LIMITS.kneeShare) flags.push(`${round(mix.kneeShare * 100, 2)} % of the samples past the clipper knee`);
-  if (Math.max(Math.abs(mix.dc[0]), Math.abs(mix.dc[1])) > LIMITS.dc) flags.push(`DC offset ${mix.dc.join(" / ")}`);
-  if (!(mix.correlation > 0)) flags.push(`stereo correlation ${mix.correlation}`);
+  if (!(Math.abs(lufs - score.master.targetLufs) <= LIMITS.lufsTolerance))
+    flags.push(
+      `mix at ${round(lufs, 2)} LUFS (target ${score.master.targetLufs})`,
+    );
+  if (peak > CEILING + 1e-6)
+    flags.push(`peak ${round(peak, 4)} above the clipper ceiling`);
+  if (mix.kneeShare > LIMITS.kneeShare)
+    flags.push(
+      `${round(mix.kneeShare * 100, 2)} % of the samples past the clipper knee`,
+    );
+  if (Math.max(Math.abs(mix.dc[0]), Math.abs(mix.dc[1])) > LIMITS.dc)
+    flags.push(`DC offset ${mix.dc.join(" / ")}`);
+  if (!(mix.correlation > 0))
+    flags.push(`stereo correlation ${mix.correlation}`);
   // (a mix with next to nothing down there has no low end to keep in the middle)
-  if (mix.lowEndDb > LIMITS.lowEndFloorDb && !(mix.correlationLow >= LIMITS.lowCorrelation)) flags.push(`low-end correlation ${mix.correlationLow} (below ${LOW_END_HZ} Hz)`);
-  if (mix.clicks.count > 0) flags.push(`${mix.clicks.count} click(s): a step of ${mix.clicks.worstStep} at ${mix.clicks.at} s, ${mix.clicks.worstRatio}× its surroundings`);
+  if (
+    mix.lowEndDb > LIMITS.lowEndFloorDb &&
+    !(mix.correlationLow >= LIMITS.lowCorrelation)
+  )
+    flags.push(
+      `low-end correlation ${mix.correlationLow} (below ${LOW_END_HZ} Hz)`,
+    );
+  if (mix.clicks.count > 0)
+    flags.push(
+      `${mix.clicks.count} click(s): a step of ${mix.clicks.worstStep} at ${mix.clicks.at} s, ${mix.clicks.worstRatio}× its surroundings`,
+    );
   for (const band of BANDS)
-    if (10 ** (mixSpectrum.bands[band.id] / 10) > LIMITS.bandShare) flags.push(`${band.id} band carries ${round(10 ** (mixSpectrum.bands[band.id] / 10) * 100, 0)} % of the energy`);
+    if (10 ** (mixSpectrum.bands[band.id] / 10) > LIMITS.bandShare)
+      flags.push(
+        `${band.id} band carries ${round(10 ** (mixSpectrum.bands[band.id] / 10) * 100, 0)} % of the energy`,
+      );
   for (const track of TRACKS) {
     const stem = stems[track];
     if (stem.empty) continue;
-    if (!(stem.momentaryMax > LIMITS.audibleLufs)) flags.push(`${track} is inaudible (its loudest 400 ms reach ${stem.momentaryMax} LUFS)`);
-    if (stem.belowMixLu < -LIMITS.stemOverMixLu) flags.push(`${track} alone is ${-stem.belowMixLu} LU louder than the mix it is part of`);
+    if (!(stem.momentaryMax > LIMITS.audibleLufs))
+      flags.push(
+        `${track} is inaudible (its loudest 400 ms reach ${stem.momentaryMax} LUFS)`,
+      );
+    if (stem.belowMixLu < -LIMITS.stemOverMixLu)
+      flags.push(
+        `${track} alone is ${-stem.belowMixLu} LU louder than the mix it is part of`,
+      );
   }
-  if (seam && seam.jumpRatio > LIMITS.seamRatio) flags.push(`loop seam steps ${seam.jumpRatio}× the usual sample step (${seam.jump})`);
-  if (seam && seam.endDipDb < -30) flags.push(`the loop's last 30 ms are ${seam.endDipDb} dB under the last 300 ms (a rest there, or an end that was faded)`);
-  if (edges && edges.firstSample > LIMITS.startSample) flags.push(`the piece starts at sample value ${edges.firstSample}`);
-  if (edges && edges.endDb > LIMITS.endDb) flags.push(`the piece ends at ${edges.endDb} dBFS`);
-  if (done.master.shortfallLu > 0.05) flags.push(`master stayed ${round(done.master.shortfallLu, 2)} LU short of the target`);
+  if (seam && seam.jumpRatio > LIMITS.seamRatio)
+    flags.push(
+      `loop seam steps ${seam.jumpRatio}× the usual sample step (${seam.jump})`,
+    );
+  if (seam && seam.endDipDb < -30)
+    flags.push(
+      `the loop's last 30 ms are ${seam.endDipDb} dB under the last 300 ms (a rest there, or an end that was faded)`,
+    );
+  if (edges && edges.firstSample > LIMITS.startSample)
+    flags.push(`the piece starts at sample value ${edges.firstSample}`);
+  if (edges && edges.endDb > LIMITS.endDb)
+    flags.push(`the piece ends at ${edges.endDb} dBFS`);
+  if (done.master.shortfallLu > 0.05)
+    flags.push(
+      `master stayed ${round(done.master.shortfallLu, 2)} LU short of the target`,
+    );
 
   /* ---- every part on its own, before the master ---- */
   let parts: PartAudit[] | undefined;
@@ -835,12 +1110,19 @@ export async function auditConfig(input: MusicConfig, options: AuditOptions = {}
     }
     const rawMeter = new LoudnessMeter(sampleRate);
     rawMeter.push(rawLeft, rawRight, frames);
-    const rawPower = averageSpectrum(rawLeft, rawRight, frames, new Float64Array(FFT_SIZE / 2 + 1));
+    const rawPower = averageSpectrum(
+      rawLeft,
+      rawRight,
+      frames,
+      new Float64Array(FFT_SIZE / 2 + 1),
+    );
     let rawTotal = 0;
     for (let k = 0; k < rawPower.length; k++) rawTotal += rawPower[k];
     parts = [];
     for (const part of score.parts) {
-      const solo = await renderScoreWith({ ...score, parts: [part] }, BANKS, { master: false });
+      const solo = await renderScoreWith({ ...score, parts: [part] }, BANKS, {
+        master: false,
+      });
       const [left, right] = solo.stems[part.track];
       const fader = REFERENCE_VOLUMES[part.track];
       const partMeter = new LoudnessMeter(sampleRate);
@@ -855,12 +1137,22 @@ export async function auditConfig(input: MusicConfig, options: AuditOptions = {}
         rawLufs: round(partLufs, 2),
         relLu: round(partLufs - rawMeter.integrated, 2),
         peak: round(partMeter.peak * fader, 4),
-        bands: describeSpectrum(stemPower, sampleRate, rawTotal / (fader * fader)).bands,
+        bands: describeSpectrum(
+          stemPower,
+          sampleRate,
+          rawTotal / (fader * fader),
+        ).bands,
       });
     }
   }
 
-  options.onAudio?.({ id, mix: [mixLeft, mixRight], stems: audio.stems, sampleRate, score });
+  options.onAudio?.({
+    id,
+    mix: [mixLeft, mixRight],
+    stems: audio.stems,
+    sampleRate,
+    score,
+  });
 
   const { prompt: _prompt, volumes: _volumes, ...shownConfig } = config;
   return {
@@ -939,12 +1231,17 @@ const CRC_TABLE = (() => {
 
 function crc32(bytes: Uint8Array): number {
   let crc = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  for (let i = 0; i < bytes.length; i++)
+    crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
 }
 
 /** Encode 8-bit RGB pixels (row-major, 3 bytes per pixel) as a PNG file. */
-export function encodePng(width: number, height: number, rgb: Uint8Array): Uint8Array {
+export function encodePng(
+  width: number,
+  height: number,
+  rgb: Uint8Array,
+): Uint8Array {
   const chunk = (type: string, data: Uint8Array) => {
     const out = new Uint8Array(12 + data.length);
     const view = new DataView(out.buffer);
@@ -961,7 +1258,11 @@ export function encodePng(width: number, height: number, rgb: Uint8Array): Uint8
   header[8] = 8; // bit depth
   header[9] = 2; // colour type: RGB
   const raw = new Uint8Array((width * 3 + 1) * height);
-  for (let y = 0; y < height; y++) raw.set(rgb.subarray(y * width * 3, (y + 1) * width * 3), y * (width * 3 + 1) + 1);
+  for (let y = 0; y < height; y++)
+    raw.set(
+      rgb.subarray(y * width * 3, (y + 1) * width * 3),
+      y * (width * 3 + 1) + 1,
+    );
   const parts = [
     Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk("IHDR", header),
@@ -995,7 +1296,10 @@ const PALETTE = (() => {
     const position = (i / 255) * (COLOUR_STOPS.length - 1);
     const index = Math.min(COLOUR_STOPS.length - 2, Math.floor(position));
     const t = position - index;
-    for (let c = 0; c < 3; c++) palette[i * 3 + c] = Math.round(COLOUR_STOPS[index][c] * (1 - t) + COLOUR_STOPS[index + 1][c] * t);
+    for (let c = 0; c < 3; c++)
+      palette[i * 3 + c] = Math.round(
+        COLOUR_STOPS[index][c] * (1 - t) + COLOUR_STOPS[index + 1][c] * t,
+      );
   }
   return palette;
 })();
@@ -1019,7 +1323,15 @@ const GLYPHS: Record<string, number[]> = {
   " ": [0, 0, 0, 0, 0],
 };
 
-const SPECTROGRAM = { left: 44, bottom: 16, top: 4, right: 4, height: 480, lowHz: 20, floorDb: -100 };
+const SPECTROGRAM = {
+  left: 44,
+  bottom: 16,
+  top: 4,
+  right: 4,
+  height: 480,
+  lowHz: 20,
+  floorDb: -100,
+};
 
 /**
  * Log-frequency spectrogram (20 Hz – Nyquist, 100 dB range) of a stereo
@@ -1042,7 +1354,8 @@ export function spectrogram(
   const nyquist = sampleRate / 2;
   const binHz = sampleRate / FFT_SIZE;
   const ratio = nyquist / SPECTROGRAM.lowHz;
-  const rowHz = (row: number) => SPECTROGRAM.lowHz * ratio ** (1 - row / plotHeight);
+  const rowHz = (row: number) =>
+    SPECTROGRAM.lowHz * ratio ** (1 - row / plotHeight);
   // bins each row looks at (a row narrower than a bin interpolates between two)
   const rowFrom = new Float64Array(plotHeight);
   const rowTo = new Float64Array(plotHeight);
@@ -1052,7 +1365,7 @@ export function spectrogram(
   }
   const power = new Float64Array(FFT_SIZE / 2 + 1);
   // a full-scale sine reads 0 dB
-  const norm = 4 / (fftWindow.reduce((sum, value) => sum + value, 0) ** 2);
+  const norm = 4 / fftWindow.reduce((sum, value) => sum + value, 0) ** 2;
   for (let column = 0; column < plotWidth; column++) {
     const centre = Math.round(((column + 0.5) / plotWidth) * frames);
     const start = centre - FFT_SIZE / 2;
@@ -1064,15 +1377,29 @@ export function spectrogram(
       const to = rowTo[row];
       if (Math.floor(to) > Math.ceil(from)) {
         value = 0;
-        for (let k = Math.ceil(from); k <= Math.min(FFT_SIZE / 2, Math.floor(to)); k++) if (power[k] > value) value = power[k];
+        for (
+          let k = Math.ceil(from);
+          k <= Math.min(FFT_SIZE / 2, Math.floor(to));
+          k++
+        )
+          if (power[k] > value) value = power[k];
       } else {
         const position = Math.min(FFT_SIZE / 2 - 1, (from + to) / 2);
         const k = Math.floor(position);
         value = power[k] + (power[k + 1] - power[k]) * (position - k);
       }
       const level = value > 0 ? 10 * Math.log10(value) : -Infinity;
-      const shade = Math.max(0, Math.min(255, Math.round(((level - SPECTROGRAM.floorDb) / -SPECTROGRAM.floorDb) * 255)));
-      const pixel = ((SPECTROGRAM.top + row) * width + SPECTROGRAM.left + column) * 3;
+      const shade = Math.max(
+        0,
+        Math.min(
+          255,
+          Math.round(
+            ((level - SPECTROGRAM.floorDb) / -SPECTROGRAM.floorDb) * 255,
+          ),
+        ),
+      );
+      const pixel =
+        ((SPECTROGRAM.top + row) * width + SPECTROGRAM.left + column) * 3;
       rgb[pixel] = PALETTE[shade * 3];
       rgb[pixel + 1] = PALETTE[shade * 3 + 1];
       rgb[pixel + 2] = PALETTE[shade * 3 + 2];
@@ -1081,7 +1408,8 @@ export function spectrogram(
   const put = (x: number, y: number, value: number, blend = 1) => {
     if (x < 0 || y < 0 || x >= width || y >= height) return;
     const pixel = (y * width + x) * 3;
-    for (let c = 0; c < 3; c++) rgb[pixel + c] = Math.round(rgb[pixel + c] * (1 - blend) + value * blend);
+    for (let c = 0; c < 3; c++)
+      rgb[pixel + c] = Math.round(rgb[pixel + c] * (1 - blend) + value * blend);
   };
   const text = (label: string, x: number, y: number) => {
     let at = x;
@@ -1090,29 +1418,42 @@ export function spectrogram(
       for (let row = 0; row < 5; row++)
         for (let column = 0; column < 3; column++)
           if (glyph[row] & (4 >> column))
-            for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) put(at + column * 2 + dx, y + row * 2 + dy, 210);
+            for (let dy = 0; dy < 2; dy++)
+              for (let dx = 0; dx < 2; dx++)
+                put(at + column * 2 + dx, y + row * 2 + dy, 210);
       at += 8;
     }
   };
-  const rowOf = (hz: number) => Math.round(plotHeight * (1 - Math.log(hz / SPECTROGRAM.lowHz) / Math.log(ratio)));
+  const rowOf = (hz: number) =>
+    Math.round(
+      plotHeight * (1 - Math.log(hz / SPECTROGRAM.lowHz) / Math.log(ratio)),
+    );
   for (const hz of [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]) {
     if (hz >= nyquist) continue;
     const y = SPECTROGRAM.top + rowOf(hz);
-    for (let x = SPECTROGRAM.left; x < SPECTROGRAM.left + plotWidth; x += 4) put(x, y, 255, 0.28);
+    for (let x = SPECTROGRAM.left; x < SPECTROGRAM.left + plotWidth; x += 4)
+      put(x, y, 255, 0.28);
     const label = hz >= 1000 ? `${hz / 1000}k` : String(hz);
     text(label, SPECTROGRAM.left - 4 - label.length * 8, y - 5);
   }
-  const columnOf = (seconds: number) => SPECTROGRAM.left + Math.round((seconds / duration) * plotWidth);
+  const columnOf = (seconds: number) =>
+    SPECTROGRAM.left + Math.round((seconds / duration) * plotWidth);
   const step = duration > 60 ? 10 : 5;
   for (let seconds = 0; seconds < duration; seconds += step) {
     const x = columnOf(seconds);
-    for (let y = SPECTROGRAM.top + plotHeight; y < SPECTROGRAM.top + plotHeight + 3; y++) put(x, y, 210);
+    for (
+      let y = SPECTROGRAM.top + plotHeight;
+      y < SPECTROGRAM.top + plotHeight + 3;
+      y++
+    )
+      put(x, y, 210);
     text(`${seconds}s`, x + 2, SPECTROGRAM.top + plotHeight + 4);
   }
   for (const seconds of marks) {
     if (!(seconds > 0 && seconds < duration)) continue;
     const x = columnOf(seconds);
-    for (let y = SPECTROGRAM.top; y < SPECTROGRAM.top + plotHeight; y += 3) put(x, y, 255, 0.5);
+    for (let y = SPECTROGRAM.top; y < SPECTROGRAM.top + plotHeight; y += 3)
+      put(x, y, 255, 0.5);
   }
   return { width, height, rgb };
 }
@@ -1157,9 +1498,19 @@ interface Arguments {
 }
 
 function parseArguments(argv: string[]): Arguments {
-  const result: Arguments = { styles: [...STYLE_IDS], modes: [true], seeds: [1234], overrides: { duration: 30 }, pngStems: false, soloParts: false, quiet: false };
+  const result: Arguments = {
+    styles: [...STYLE_IDS],
+    modes: [true],
+    seeds: [1234],
+    overrides: { duration: 30 },
+    pngStems: false,
+    soloParts: false,
+    quiet: false,
+  };
   const fail = (message: string): never => {
-    console.error(`audio-audit: ${message}\n(see the comment at the top of scripts/audio-audit.ts for the options)`);
+    console.error(
+      `audio-audit: ${message}\n(see the comment at the top of scripts/audio-audit.ts for the options)`,
+    );
     process.exit(2);
   };
   for (let i = 0; i < argv.length; i++) {
@@ -1174,7 +1525,9 @@ function parseArguments(argv: string[]): Arguments {
         const text = value();
         if (text !== "all") {
           const ids = text.split(",").map((item) => item.trim());
-          for (const item of ids) if (!isStyleId(item)) fail(`unknown style "${item}" (${STYLE_IDS.join(", ")})`);
+          for (const item of ids)
+            if (!isStyleId(item))
+              fail(`unknown style "${item}" (${STYLE_IDS.join(", ")})`);
           result.styles = ids as StyleId[];
         }
         break;
@@ -1192,7 +1545,9 @@ function parseArguments(argv: string[]): Arguments {
         result.overrides.duration = number();
         break;
       case "--seed":
-        result.seeds = value().split(",").map((item) => Number(item) >>> 0);
+        result.seeds = value()
+          .split(",")
+          .map((item) => Number(item) >>> 0);
         break;
       case "--energy":
         result.overrides.energy = number();
@@ -1214,7 +1569,8 @@ function parseArguments(argv: string[]): Arguments {
       }
       case "--key": {
         const text = value();
-        if (!isKey(text)) fail(`unknown key "${text}" (for example "C major", "F# minor")`);
+        if (!isKey(text))
+          fail(`unknown key "${text}" (for example "C major", "F# minor")`);
         result.overrides.key = text;
         break;
       }
@@ -1255,15 +1611,23 @@ function parseArguments(argv: string[]): Arguments {
   return result;
 }
 
-const cell = (value: number, width: number, digits = 1) => (Number.isFinite(value) ? value.toFixed(digits) : value > 0 ? "inf" : "-inf").padStart(width);
+const cell = (value: number, width: number, digits = 1) =>
+  (Number.isFinite(value)
+    ? value.toFixed(digits)
+    : value > 0
+      ? "inf"
+      : "-inf"
+  ).padStart(width);
 
 const HEADER =
   "style      mode bars   bpm    dur pt  render |   LUFS  LRA peakdB crest knee%  corr   <80 slope |  sub bass lmid  mid pres  air | LUFS mel   chd   bas   drm | reverb dB mel chd bas drm | ends";
 
 export function formatRow(audit: Audit): string {
   const bands = audit.mix.spectrum.bands;
-  const stem = (track: TrackName) => (audit.stems[track].empty ? "    –" : cell(audit.stems[track].lufs, 5));
-  const wet = (track: TrackName) => (audit.stems[track].empty ? "  –" : cell(audit.stems[track].reverbDb, 3, 0));
+  const stem = (track: TrackName) =>
+    audit.stems[track].empty ? "    –" : cell(audit.stems[track].lufs, 5);
+  const wet = (track: TrackName) =>
+    audit.stems[track].empty ? "  –" : cell(audit.stems[track].reverbDb, 3, 0);
   const ends = audit.seam
     ? `seam ×${audit.seam.jumpRatio} (${audit.seam.jump})`
     : audit.edges
@@ -1311,29 +1675,56 @@ export function formatRow(audit: Audit): string {
 
 async function main() {
   const args = parseArguments(process.argv.slice(2));
-  for (const directory of [args.wav, args.png]) if (directory) mkdirSync(resolve(directory), { recursive: true });
+  for (const directory of [args.wav, args.png])
+    if (directory) mkdirSync(resolve(directory), { recursive: true });
   const audits: Audit[] = [];
   if (!args.quiet) console.log(HEADER);
   const started = performance.now();
   for (const style of args.styles)
     for (const loop of args.modes)
       for (const seed of args.seeds) {
-        const config: MusicConfig = { ...DEFAULT_CONFIG, ...stylePreset(style), ...args.overrides, loop, seed };
+        const config: MusicConfig = {
+          ...DEFAULT_CONFIG,
+          ...stylePreset(style),
+          ...args.overrides,
+          loop,
+          seed,
+        };
         const audit = await auditConfig(config, {
           soloParts: args.soloParts,
           onAudio: ({ id, mix, stems, sampleRate, score }) => {
             if (args.wav) {
-              writeFileSync(join(resolve(args.wav), `${id}-mix.wav`), new Uint8Array(encodeWavFromChannels(mix, sampleRate)));
-              for (const track of TRACKS) writeFileSync(join(resolve(args.wav), `${id}-${track}.wav`), new Uint8Array(encodeWavFromChannels(stems[track], sampleRate)));
+              writeFileSync(
+                join(resolve(args.wav), `${id}-mix.wav`),
+                new Uint8Array(encodeWavFromChannels(mix, sampleRate)),
+              );
+              for (const track of TRACKS)
+                writeFileSync(
+                  join(resolve(args.wav), `${id}-${track}.wav`),
+                  new Uint8Array(
+                    encodeWavFromChannels(stems[track], sampleRate),
+                  ),
+                );
             }
             if (args.png) {
               const marks = score.sections.map((section) => section.start);
               const image = spectrogram(mix[0], mix[1], sampleRate, marks);
-              writeFileSync(join(resolve(args.png), `${id}-spectrogram.png`), encodePng(image.width, image.height, image.rgb));
+              writeFileSync(
+                join(resolve(args.png), `${id}-spectrogram.png`),
+                encodePng(image.width, image.height, image.rgb),
+              );
               if (args.pngStems)
                 for (const track of TRACKS) {
-                  const picture = spectrogram(stems[track][0], stems[track][1], sampleRate, marks);
-                  writeFileSync(join(resolve(args.png), `${id}-${track}-spectrogram.png`), encodePng(picture.width, picture.height, picture.rgb));
+                  const picture = spectrogram(
+                    stems[track][0],
+                    stems[track][1],
+                    sampleRate,
+                    marks,
+                  );
+                  writeFileSync(
+                    join(resolve(args.png), `${id}-${track}-spectrogram.png`),
+                    encodePng(picture.width, picture.height, picture.rgb),
+                  );
                 }
             }
           },
@@ -1344,22 +1735,43 @@ async function main() {
           for (const flag of audit.flags) console.log(`           ! ${flag}`);
           if (audit.parts)
             for (const part of audit.parts)
-              console.log(`           · ${part.id.padEnd(8)} ${part.voice.padEnd(14)} ${part.track.padEnd(7)} ${cell(part.relLu, 6)} LU vs raw mix, peak ${part.peak.toFixed(3)}`);
+              console.log(
+                `           · ${part.id.padEnd(8)} ${part.voice.padEnd(14)} ${part.track.padEnd(7)} ${cell(part.relLu, 6)} LU vs raw mix, peak ${part.peak.toFixed(3)}`,
+              );
         }
       }
   if (args.json) {
     mkdirSync(resolve(args.json, ".."), { recursive: true });
-    const text = JSON.stringify({ tool: "audio-audit", referenceVolumes: REFERENCE_VOLUMES, limits: LIMITS, bands: BANDS.map((band) => ({ ...band, high: Number.isFinite(band.high) ? band.high : null })), audits }, (_key, value) => (value === -Infinity ? "-inf" : value === Infinity ? "inf" : value), 1);
+    const text = JSON.stringify(
+      {
+        tool: "audio-audit",
+        referenceVolumes: REFERENCE_VOLUMES,
+        limits: LIMITS,
+        bands: BANDS.map((band) => ({
+          ...band,
+          high: Number.isFinite(band.high) ? band.high : null,
+        })),
+        audits,
+      },
+      (_key, value) =>
+        value === -Infinity ? "-inf" : value === Infinity ? "inf" : value,
+      1,
+    );
     writeFileSync(resolve(args.json), text);
   }
   const flagged = audits.filter((audit) => audit.flags.length).length;
-  const loudness = audits.map((audit) => audit.mix.lufs).filter(Number.isFinite);
+  const loudness = audits
+    .map((audit) => audit.mix.lufs)
+    .filter(Number.isFinite);
   console.log(
     `${audits.length} render(s) in ${((performance.now() - started) / 1000).toFixed(1)} s — LUFS ${Math.min(...loudness).toFixed(2)} … ${Math.max(...loudness).toFixed(2)}, ${flagged} flagged${args.json ? `, JSON → ${args.json}` : ""}${args.wav ? `, WAV → ${args.wav}` : ""}${args.png ? `, PNG → ${args.png}` : ""}`,
   );
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+)
   main().catch((error) => {
     console.error(error);
     process.exit(1);

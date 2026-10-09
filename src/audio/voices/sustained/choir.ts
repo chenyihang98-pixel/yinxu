@@ -165,8 +165,7 @@ export const choir: Voice = {
       spectrumLeft += p * gl * gl;
       spectrumRight += p * gr * gr;
     }
-    const power =
-      0.5 * (spectrumLeft * powerLeft + spectrumRight * powerRight);
+    const power = 0.5 * (spectrumLeft * powerLeft + spectrumRight * powerRight);
     // the loudest 400 ms of six beating voices sit a little above their mean
     const gain = (REFERENCE_RMS * velocityGain(vel) * 0.91) / Math.sqrt(power);
 

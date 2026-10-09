@@ -12,6 +12,8 @@ import { DEFAULT_CONFIG, stylePreset } from "../src/music/defaults";
 import { TRACKS } from "../src/music/score";
 import { CEILING, KNEE, softClip } from "../src/audio/softclip";
 import {
+  ENGINE_ERROR_TEXT,
+  EngineError,
   REFERENCE_VOLUMES,
   computePeaks,
   configureEngine,
@@ -21,7 +23,12 @@ import {
   prewarm,
   renderMusic,
 } from "../src/audio/engine";
-import type { EngineRenderResult, WorkerLike } from "../src/audio/engine";
+import type {
+  EngineErrorCode,
+  EngineRenderResult,
+  RenderPhase,
+  WorkerLike,
+} from "../src/audio/engine";
 import { integratedLoudness } from "../src/audio/loudness";
 import type { WorkerRequest, WorkerResponse } from "../src/audio/render-types";
 import { PROGRESS_INTERVAL_MS, attachWorker } from "../src/audio/worker";
@@ -34,18 +41,28 @@ class TestAudioBuffer {
   readonly numberOfChannels: number;
   readonly duration: number;
   private readonly channels: Float32Array[];
-  constructor(options: { length: number; sampleRate: number; numberOfChannels: number }) {
+  constructor(options: {
+    length: number;
+    sampleRate: number;
+    numberOfChannels: number;
+  }) {
     this.length = options.length;
     this.sampleRate = options.sampleRate;
     this.numberOfChannels = options.numberOfChannels;
     this.duration = options.length / options.sampleRate;
-    this.channels = Array.from({ length: options.numberOfChannels }, () => new Float32Array(options.length));
+    this.channels = Array.from(
+      { length: options.numberOfChannels },
+      () => new Float32Array(options.length),
+    );
   }
   getChannelData(channel: number) {
     return this.channels[channel];
   }
 }
-Object.defineProperty(globalThis, "AudioBuffer", { value: TestAudioBuffer, configurable: true });
+Object.defineProperty(globalThis, "AudioBuffer", {
+  value: TestAudioBuffer,
+  configurable: true,
+});
 
 after(() => configureEngine());
 
@@ -56,42 +73,77 @@ after(() => configureEngine());
 type Stems = Record<TrackName, AudioBuffer>;
 
 const LOOP: MusicConfig = { ...DEFAULT_CONFIG, duration: 15, loop: true };
-const SONG: MusicConfig = { ...DEFAULT_CONFIG, ...stylePreset("chill"), duration: 15, loop: false, seed: 99 };
+const SONG: MusicConfig = {
+  ...DEFAULT_CONFIG,
+  ...stylePreset("chill"),
+  duration: 15,
+  loop: false,
+  seed: 99,
+};
 
 function hashBuffers(buffers: AudioBuffer[]): string {
   const hash = createHash("sha256");
   for (const buffer of buffers)
     for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
       const data = buffer.getChannelData(channel);
-      hash.update(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+      hash.update(
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      );
     }
   return hash.digest("hex");
 }
-const hashStems = (stems: Stems) => hashBuffers(TRACKS.map((track) => stems[track]));
+const hashStems = (stems: Stems) =>
+  hashBuffers(TRACKS.map((track) => stems[track]));
 
 function isAbortError(error: unknown): boolean {
-  assert.ok(error instanceof DOMException, `expected a DOMException, got ${String(error)}`);
+  assert.ok(
+    error instanceof DOMException,
+    `expected a DOMException, got ${String(error)}`,
+  );
   assert.equal(error.name, "AbortError");
   assert.equal(error.message, "已取消生成");
   return true;
 }
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-function bufferOf(left: ArrayLike<number>, right: ArrayLike<number> = left, sampleRate = 48000): AudioBuffer {
-  const buffer = new AudioBuffer({ length: left.length, numberOfChannels: 2, sampleRate });
+function bufferOf(
+  left: ArrayLike<number>,
+  right: ArrayLike<number> = left,
+  sampleRate = 48000,
+): AudioBuffer {
+  const buffer = new AudioBuffer({
+    length: left.length,
+    numberOfChannels: 2,
+    sampleRate,
+  });
   buffer.getChannelData(0).set(left);
   buffer.getChannelData(1).set(right);
   return buffer;
 }
 
 function assertProgress(values: number[], label: string) {
-  assert.ok(values.length >= 2, `${label}: only ${values.length} progress calls`);
+  assert.ok(
+    values.length >= 2,
+    `${label}: only ${values.length} progress calls`,
+  );
   for (let i = 0; i < values.length; i++) {
-    assert.ok(values[i] >= 0 && values[i] <= 1, `${label}: progress ${values[i]}`);
-    if (i) assert.ok(values[i] > values[i - 1], `${label}: progress went ${values[i - 1]} → ${values[i]}`);
+    assert.ok(
+      values[i] >= 0 && values[i] <= 1,
+      `${label}: progress ${values[i]}`,
+    );
+    if (i)
+      assert.ok(
+        values[i] > values[i - 1],
+        `${label}: progress went ${values[i - 1]} → ${values[i]}`,
+      );
   }
-  assert.equal(values[values.length - 1], 1, `${label}: progress must end with 1`);
+  assert.equal(
+    values[values.length - 1],
+    1,
+    `${label}: progress must end with 1`,
+  );
 }
 
 /** Reference renders on the plain in-thread path, made once and reused. */
@@ -114,7 +166,9 @@ test("engine 2: four finished stems, waveform outlines, the Score's exact length
   configureEngine();
   assert.equal(engineStatus().worker, "idle");
   const progress: number[] = [];
-  const result = await renderMusic(LOOP, { onProgress: (value) => progress.push(value) });
+  const result = await renderMusic(LOOP, {
+    onProgress: (value) => progress.push(value),
+  });
   const score = compose(LOOP);
 
   assert.deepEqual(Object.keys(result.stems).sort(), [...TRACKS].sort());
@@ -133,7 +187,8 @@ test("engine 2: four finished stems, waveform outlines, the Score's exact length
     let power = 0;
     for (let channel = 0; channel < 2; channel++)
       for (const sample of stem.getChannelData(channel)) {
-        if (!Number.isFinite(sample)) assert.fail(`${track} has a non-finite sample`);
+        if (!Number.isFinite(sample))
+          assert.fail(`${track} has a non-finite sample`);
         power += sample * sample;
       }
     assert.ok(power > 1, `${track} is silent`);
@@ -142,13 +197,25 @@ test("engine 2: four finished stems, waveform outlines, the Score's exact length
   assert.equal(result.peaks.length, 140);
   assert.ok(result.peaks.every((value) => value >= 0 && value <= 1));
   assert.equal(Math.max(...result.peaks), 1);
-  assert.ok(result.peaks.filter((value) => value > 0.05).length > 100, "the outline of a full mix is mostly empty");
+  assert.ok(
+    result.peaks.filter((value) => value > 0.05).length > 100,
+    "the outline of a full mix is mostly empty",
+  );
   for (const track of TRACKS) {
     assert.equal(result.stemPeaks[track].length, 48);
-    assert.ok(result.stemPeaks[track].every((value) => value >= 0 && value <= 1));
-    assert.ok(Math.max(...result.stemPeaks[track]) > 0.02, `${track} outline is flat`);
+    assert.ok(
+      result.stemPeaks[track].every((value) => value >= 0 && value <= 1),
+    );
+    assert.ok(
+      Math.max(...result.stemPeaks[track]) > 0.02,
+      `${track} outline is flat`,
+    );
   }
-  assert.equal(Math.max(...TRACKS.flatMap((track) => result.stemPeaks[track])), 1, "stem outlines are relative to the loudest stem");
+  assert.equal(
+    Math.max(...TRACKS.flatMap((track) => result.stemPeaks[track])),
+    1,
+    "stem outlines are relative to the loudest stem",
+  );
 
   const arrangement = result.arrangement;
   assert.ok(arrangement);
@@ -156,25 +223,52 @@ test("engine 2: four finished stems, waveform outlines, the Score's exact length
   assert.equal(arrangement.bpm, score.bpm);
   assert.equal(arrangement.duration, score.duration);
   assert.deepEqual(arrangement.sections, score.sections);
-  assert.ok(arrangement.chords.length >= 4 && arrangement.instruments.length >= 3 && arrangement.notes.length >= 3);
+  assert.ok(
+    arrangement.chords.length >= 4 &&
+      arrangement.instruments.length >= 3 &&
+      arrangement.notes.length >= 3,
+  );
 
   // without a Worker global the job ran here, and the engine remembers that
   const diagnostics = result.diagnostics;
   assert.equal(diagnostics.path, "main");
   assert.equal(engineStatus().worker, "unavailable");
   assert.equal(engineStatus().pending, 0);
-  assert.ok(diagnostics.notes > 50 && diagnostics.hits > 20 && diagnostics.renderMs > 0);
-  assert.equal(diagnostics.bufferBytes % (frames * 4), 0);
+  assert.ok(
+    diagnostics.notes > 50 && diagnostics.hits > 20 && diagnostics.renderMs > 0,
+  );
+  // the most the render held at once: 4 stereo stems and the part bus at the very least, the sends and the scratch on top
+  assert.ok(
+    diagnostics.bufferBytes >= 10 * frames * 4 &&
+      diagnostics.bufferBytes < 14 * frames * 4 + 8e6,
+    `bufferBytes ${diagnostics.bufferBytes}`,
+  );
   assert.ok(diagnostics.master);
   assert.equal(diagnostics.master.targetLufs, -16);
-  assert.ok(Math.abs(diagnostics.master.lufs + 16) < 0.7, `mix at ${diagnostics.master.lufs} LUFS`);
-  assert.ok(diagnostics.master.shortfallLu >= 0 && diagnostics.master.shortfallLu <= 0.5);
+  assert.ok(
+    Math.abs(diagnostics.master.lufs + 16) < 0.7,
+    `mix at ${diagnostics.master.lufs} LUFS`,
+  );
+  assert.ok(
+    diagnostics.master.shortfallLu >= 0 &&
+      diagnostics.master.shortfallLu <= 0.5,
+  );
   assert.ok(diagnostics.master.peak > 0.1 && diagnostics.master.peak <= 1);
-  assert.ok(diagnostics.master.limiter.activeRatio >= 0 && diagnostics.master.limiter.activeRatio <= 1);
+  assert.ok(
+    diagnostics.master.limiter.activeRatio >= 0 &&
+      diagnostics.master.limiter.activeRatio <= 1,
+  );
   // the diagnostics describe the audio that was returned
   const mix = mixStems(result.stems, REFERENCE_VOLUMES, 2);
-  const measured = integratedLoudness(mix.getChannelData(0), mix.getChannelData(1), 48000);
-  assert.ok(Math.abs(measured - diagnostics.master.lufs) < 0.05, `diagnostics say ${diagnostics.master.lufs}, the mix measures ${measured}`);
+  const measured = integratedLoudness(
+    mix.getChannelData(0),
+    mix.getChannelData(1),
+    48000,
+  );
+  assert.ok(
+    Math.abs(measured - diagnostics.master.lufs) < 0.05,
+    `diagnostics say ${diagnostics.master.lufs}, the mix measures ${measured}`,
+  );
 
   assertProgress(progress, "in-thread");
 });
@@ -187,25 +281,37 @@ test("engine 2 is deterministic: the same config gives the same samples, another
   assert.deepEqual(again.peaks, first.peaks);
   assert.deepEqual(again.stemPeaks, first.stemPeaks);
   // faders are not part of the audio: stems are the same, only the outline of the mix moves
-  const quiet = await renderMusic({ ...LOOP, volumes: { melody: 0.2, chords: 1, bass: 0, drums: 1 } });
+  const quiet = await renderMusic({
+    ...LOOP,
+    volumes: { melody: 0.2, chords: 1, bass: 0, drums: 1 },
+  });
   assert.equal(hashStems(quiet.stems), hashStems(first.stems));
   assert.notDeepEqual(quiet.peaks, first.peaks);
 
   const varied = await renderMusic({ ...LOOP, seed: LOOP.seed + 1 });
   assert.equal(varied.duration, first.duration);
   assert.notEqual(hashStems(varied.stems), hashStems(first.stems));
-  assert.notEqual(hashBuffers([varied.stems.melody]), hashBuffers([first.stems.melody]));
+  assert.notEqual(
+    hashBuffers([varied.stems.melody]),
+    hashBuffers([first.stems.melody]),
+  );
 });
 
 test("loop and non-loop lengths: a loop is whole bars and closes on itself, a piece that ends has the requested length and dies away", async () => {
   const loop = await reference(LOOP);
   const loopScore = compose(LOOP);
   assert.ok(loopScore.loop);
-  assert.ok(Math.abs(loop.duration - (loopScore.bars * 240) / loopScore.bpm) <= 0.5 / 48000);
+  assert.ok(
+    Math.abs(loop.duration - (loopScore.bars * 240) / loopScore.bpm) <=
+      0.5 / 48000,
+  );
   assert.equal(loopScore.bars % 2, 0);
   for (const track of TRACKS) {
     const data = loop.stems[track].getChannelData(0);
-    assert.ok(Math.abs(data[0] - data[data.length - 1]) < 0.05, `${track}: the loop seam jumps`);
+    assert.ok(
+      Math.abs(data[0] - data[data.length - 1]) < 0.05,
+      `${track}: the loop seam jumps`,
+    );
   }
   // the reverb tail of the end is already sounding at the start
   const head = loop.stems.melody.getChannelData(0).subarray(0, 480);
@@ -219,12 +325,21 @@ test("loop and non-loop lengths: a loop is whole bars and closes on itself, a pi
     for (const track of TRACKS)
       for (let channel = 0; channel < 2; channel++) {
         const data = stems[track].getChannelData(channel);
-        for (let i = Math.round(from * 48000); i < Math.round(to * 48000); i++) sum += data[i] * data[i];
+        for (let i = Math.round(from * 48000); i < Math.round(to * 48000); i++)
+          sum += data[i] * data[i];
       }
     return sum;
   };
-  assert.ok(energy(song.stems, 14.9, 15) < energy(song.stems, 5, 5.1) * 1e-4, "the piece does not die away");
-  for (const track of TRACKS) assert.equal(song.stems[track].getChannelData(0)[15 * 48000 - 1], 0, `${track} ends off zero`);
+  assert.ok(
+    energy(song.stems, 14.9, 15) < energy(song.stems, 5, 5.1) * 1e-4,
+    "the piece does not die away",
+  );
+  for (const track of TRACKS)
+    assert.equal(
+      song.stems[track].getChannelData(0)[15 * 48000 - 1],
+      0,
+      `${track} ends off zero`,
+    );
   // other requested lengths
   configureEngine({ worker: false });
   const longer = await renderMusic({ ...SONG, duration: 23 });
@@ -248,8 +363,14 @@ test("rendering on the calling thread keeps giving the event loop its turn", asy
   const elapsed = performance.now() - started;
   clearInterval(timer);
   assert.equal(result.diagnostics.path, "main");
-  assert.ok(ticks >= Math.min(20, elapsed / 40), `only ${ticks} timer ticks in ${elapsed.toFixed(0)} ms`);
-  assert.ok(longest < 250, `the event loop was held for ${longest.toFixed(0)} ms`);
+  assert.ok(
+    ticks >= Math.min(20, elapsed / 40),
+    `only ${ticks} timer ticks in ${elapsed.toFixed(0)} ms`,
+  );
+  assert.ok(
+    longest < 250,
+    `the event loop was held for ${longest.toFixed(0)} ms`,
+  );
 });
 
 test("abort: before the render, while it waits in the queue and in the middle of it — always an AbortError, and the next render is clean", async () => {
@@ -260,7 +381,10 @@ test("abort: before the render, while it waits in the queue and in the middle of
   const already = new AbortController();
   already.abort();
   let called = 0;
-  await assert.rejects(renderMusic(LOOP, { signal: already.signal, onProgress: () => called++ }), isAbortError);
+  await assert.rejects(
+    renderMusic(LOOP, { signal: already.signal, onProgress: () => called++ }),
+    isAbortError,
+  );
   assert.equal(called, 0);
   assert.equal(engineStatus().pending, 0);
 
@@ -278,7 +402,10 @@ test("abort: before the render, while it waits in the queue and in the middle of
   await assert.rejects(interrupted, isAbortError);
   const stoppedAfter = performance.now() - started;
   const count = seen.length;
-  assert.ok(count >= 1 && seen[count - 1] < 1, "the render finished before it could be cancelled");
+  assert.ok(
+    count >= 1 && seen[count - 1] < 1,
+    "the render finished before it could be cancelled",
+  );
   await sleep(30);
   assert.equal(seen.length, count, "progress kept coming after the cancel");
   assert.equal(engineStatus().pending, 0);
@@ -286,19 +413,28 @@ test("abort: before the render, while it waits in the queue and in the middle of
   // the interrupted job left voices, effects and the master mid-note: the next render must not hear that
   const next = await renderMusic(LOOP);
   assert.equal(hashStems(next.stems), hashStems(clean.stems));
-  assert.ok(stoppedAfter < next.diagnostics.renderMs + 400, `cancel took ${stoppedAfter.toFixed(0)} ms`);
+  assert.ok(
+    stoppedAfter < next.diagnostics.renderMs + 400,
+    `cancel took ${stoppedAfter.toFixed(0)} ms`,
+  );
 
   // while waiting behind another render: dropped at once, never started, the running one unharmed
   const queued = new AbortController();
   let queuedProgress = 0;
   const running = renderMusic(SONG);
-  const waiting = renderMusic(LOOP, { signal: queued.signal, onProgress: () => queuedProgress++ });
+  const waiting = renderMusic(LOOP, {
+    signal: queued.signal,
+    onProgress: () => queuedProgress++,
+  });
   assert.equal(engineStatus().pending, 2);
   queued.abort();
   await assert.rejects(waiting, isAbortError);
   assert.equal(engineStatus().pending, 1);
   const finished = await running;
-  assert.equal(hashStems(finished.stems), hashStems((await reference(SONG)).stems));
+  assert.equal(
+    hashStems(finished.stems),
+    hashStems((await reference(SONG)).stems),
+  );
   assert.equal(queuedProgress, 0);
   assert.equal(engineStatus().pending, 0);
 });
@@ -321,9 +457,16 @@ test("overlapping renders are queued: each resolves with its own music, one afte
   const [loop, song] = [await reference(LOOP), await reference(SONG)];
   configureEngine({ worker: false });
   const order: string[] = [];
-  const a = renderMusic(LOOP, { onProgress: (value) => order.push(`a${value === 1 ? "!" : ""}`) });
-  const b = renderMusic(SONG, { onProgress: (value) => order.push(`b${value === 1 ? "!" : ""}`) });
-  const c = renderMusic({ ...LOOP, seed: 5 }, { onProgress: (value) => order.push(`c${value === 1 ? "!" : ""}`) });
+  const a = renderMusic(LOOP, {
+    onProgress: (value) => order.push(`a${value === 1 ? "!" : ""}`),
+  });
+  const b = renderMusic(SONG, {
+    onProgress: (value) => order.push(`b${value === 1 ? "!" : ""}`),
+  });
+  const c = renderMusic(
+    { ...LOOP, seed: 5 },
+    { onProgress: (value) => order.push(`c${value === 1 ? "!" : ""}`) },
+  );
   assert.equal(engineStatus().pending, 3);
   const [first, second, third] = await Promise.all([a, b, c]);
   assert.equal(hashStems(first.stems), hashStems(loop.stems));
@@ -347,8 +490,13 @@ interface TransferProbe {
 }
 
 /** src/audio/worker.ts on a real thread, behind the Worker interface the engine uses. */
-function threadWorker(): WorkerLike & { thread: ThreadWorker; probes: TransferProbe[] } {
-  const thread = new ThreadWorker(new URL("./fixtures/engine-worker.node.ts", import.meta.url));
+function threadWorker(): WorkerLike & {
+  thread: ThreadWorker;
+  probes: TransferProbe[];
+} {
+  const thread = new ThreadWorker(
+    new URL("./fixtures/engine-worker.node.ts", import.meta.url),
+  );
   const like: WorkerLike & { thread: ThreadWorker; probes: TransferProbe[] } = {
     thread,
     probes: [],
@@ -382,7 +530,9 @@ test("worker: the job runs on another thread with the same samples, progress at 
   let ticks = 0;
   const timer = setInterval(() => ticks++, 2);
   const started = performance.now();
-  const first = await renderMusic(LOOP, { onProgress: (value) => progress.push({ value, at: performance.now() }) });
+  const first = await renderMusic(LOOP, {
+    onProgress: (value) => progress.push({ value, at: performance.now() }),
+  });
   const elapsed = performance.now() - started;
   clearInterval(timer);
   assert.equal(first.diagnostics.path, "worker");
@@ -393,23 +543,39 @@ test("worker: the job runs on another thread with the same samples, progress at 
   assert.deepEqual(first.arrangement, loop.arrangement);
   assert.deepEqual(first.diagnostics.master, loop.diagnostics.master);
   assert.equal(first.diagnostics.notes, loop.diagnostics.notes);
-  assertProgress(progress.map((entry) => entry.value), "worker");
+  assertProgress(
+    progress.map((entry) => entry.value),
+    "worker",
+  );
   for (let i = 1; i < progress.length - 1; i++)
-    assert.ok(progress[i].at - progress[i - 1].at >= PROGRESS_INTERVAL_MS - 8, `progress ${i} came ${(progress[i].at - progress[i - 1].at).toFixed(1)} ms after the one before`);
+    assert.ok(
+      progress[i].at - progress[i - 1].at >= PROGRESS_INTERVAL_MS - 8,
+      `progress ${i} came ${(progress[i].at - progress[i - 1].at).toFixed(1)} ms after the one before`,
+    );
   // this thread was free the whole time
-  assert.ok(ticks > elapsed / 20, `${ticks} timer ticks in ${elapsed.toFixed(0)} ms`);
+  assert.ok(
+    ticks > elapsed / 20,
+    `${ticks} timer ticks in ${elapsed.toFixed(0)} ms`,
+  );
   // the eight stem channels crossed the thread boundary by transfer: the worker no longer has them
   await sleep(20);
-  assert.deepEqual(made[0].probes, [{ type: "probe", transferred: 8, detached: true }]);
+  assert.deepEqual(made[0].probes, [
+    { type: "probe", transferred: 8, detached: true },
+  ]);
 
   // the same worker serves the next renders — also when they overlap
-  const [second, third] = await Promise.all([renderMusic(SONG), renderMusic(LOOP)]);
+  const [second, third] = await Promise.all([
+    renderMusic(SONG),
+    renderMusic(LOOP),
+  ]);
   assert.equal(made.length, 1);
   assert.equal(second.diagnostics.path, "worker");
   assert.equal(hashStems(second.stems), hashStems(song.stems));
   assert.equal(hashStems(third.stems), hashStems(loop.stems));
   // warm: nothing had to be compiled again
-  assert.ok(third.diagnostics.renderMs < first.diagnostics.renderMs * 1.5 + 100);
+  assert.ok(
+    third.diagnostics.renderMs < first.diagnostics.renderMs * 1.5 + 100,
+  );
 
   // prewarm on a running worker is harmless, and a render right behind it is still right
   prewarm();
@@ -434,27 +600,39 @@ test("worker: cancelling mid-render terminates the worker at once; the next rend
   const controller = new AbortController();
   let abortedAt = 0;
   const seen: number[] = [];
-  const cancelled = renderMusic({ ...LOOP, duration: 120 }, {
-    signal: controller.signal,
-    onProgress: (value) => {
-      seen.push(value);
-      if (!abortedAt && value > 0.05) {
-        abortedAt = performance.now();
-        controller.abort();
-      }
+  const cancelled = renderMusic(
+    { ...LOOP, duration: 120 },
+    {
+      signal: controller.signal,
+      onProgress: (value) => {
+        seen.push(value);
+        if (!abortedAt && value > 0.05) {
+          abortedAt = performance.now();
+          controller.abort();
+        }
+      },
     },
-  });
+  );
   // a second render queued behind it must survive the terminate
   const behind = renderMusic(LOOP);
   await assert.rejects(cancelled, isAbortError);
   const latency = performance.now() - abortedAt;
-  assert.ok(abortedAt > 0 && latency < 50, `the cancel took ${latency.toFixed(1)} ms to reject`);
+  assert.ok(
+    abortedAt > 0 && latency < 50,
+    `the cancel took ${latency.toFixed(1)} ms to reject`,
+  );
   assert.ok(seen[seen.length - 1] < 0.9);
-  const exit = await new Promise<number>((resolve) => made[0].thread.once("exit", resolve));
+  const exit = await new Promise<number>((resolve) =>
+    made[0].thread.once("exit", resolve),
+  );
   assert.equal(typeof exit, "number");
 
   const next = await behind;
-  assert.equal(made.length, 2, "a fresh worker is started lazily for the next render");
+  assert.equal(
+    made.length,
+    2,
+    "a fresh worker is started lazily for the next render",
+  );
   assert.equal(next.diagnostics.path, "worker");
   assert.equal(hashStems(next.stems), hashStems(loop.stems));
   assert.equal(engineStatus().worker, "ready");
@@ -484,10 +662,28 @@ class ScriptedWorker implements WorkerLike {
    * "serve": the real protocol, run on this thread · "mute": never says a
    * word · "refused": fires an error before any message (what a CSP or
    * file:// refusal looks like) · "stall": says it is ready, reports some
-   * progress and then hangs · "crash": ready, then an error mid-render
+   * progress and then hangs · "crash": ready, then an error mid-render ·
+   * "fail": ready, and answers every render with an error message, the way
+   * worker.ts does when the job throws
+   *
+   * `startAfterMs`: the worker's script takes this long to arrive — nothing
+   * is heard and nothing is handled before that (a slow connection).
    */
-  constructor(readonly script: "serve" | "mute" | "refused" | "stall" | "crash") {
-    if (script === "refused") setTimeout(() => this.onerror?.({ message: "Refused to create a worker" }), 0);
+  constructor(
+    readonly script: "serve" | "mute" | "refused" | "stall" | "crash" | "fail",
+    readonly startAfterMs = 0,
+    readonly failure: { code: EngineErrorCode; detail: string } = {
+      code: "engine-failed",
+      detail:
+        "TypeError: Cannot read properties of undefined (reading 'length')",
+    },
+    readonly crashMessage = "Uncaught TypeError: voice.render is not a function",
+  ) {
+    if (script === "refused")
+      setTimeout(
+        () => this.onerror?.({ message: "Refused to create a worker" }),
+        0,
+      );
     else if (script === "serve") {
       const emit = (message: WorkerResponse) => this.emit(message);
       const assign = (handler: typeof this.handler) => (this.handler = handler);
@@ -507,15 +703,23 @@ class ScriptedWorker implements WorkerLike {
   private emit(message: WorkerResponse) {
     setTimeout(() => {
       if (!this.terminated) this.onmessage?.({ data: message });
-    }, 0);
+    }, this.startAfterMs);
   }
 
   postMessage(message: WorkerRequest) {
     this.requests.push(message);
     if (this.terminated) return;
-    if (this.script === "serve") setTimeout(() => this.handler?.({ data: structuredClone(message) }), 0);
-    else if (this.script === "stall") this.emit({ type: "progress", id: message.id, fraction: 0.3 });
-    else if (this.script === "crash") setTimeout(() => this.onerror?.({ message: "out of memory" }), 5);
+    // what is posted before the script has arrived waits for it, as in a real worker; and as there, the
+    // message is cloned on the spot (a message that cannot be cloned throws here, in postMessage)
+    if (this.script === "serve") {
+      const data = structuredClone(message);
+      setTimeout(() => this.handler?.({ data }), this.startAfterMs);
+    } else if (this.script === "stall")
+      this.emit({ type: "progress", id: message.id, fraction: 0.3 });
+    else if (this.script === "crash")
+      setTimeout(() => this.onerror?.({ message: this.crashMessage }), 5);
+    else if (this.script === "fail" && message.type === "render")
+      this.emit({ type: "error", id: message.id, ...this.failure });
   }
 
   terminate() {
@@ -523,7 +727,7 @@ class ScriptedWorker implements WorkerLike {
   }
 }
 
-test("worker unavailable: a constructor that throws, an error before the first message or a worker that never starts all fall back to this thread — and it is remembered", async () => {
+test("worker unavailable: a constructor that throws or an error before the first message fall back to this thread — and it is remembered; a worker that is only silent is not given up on", async () => {
   const loop = await reference(LOOP);
 
   // the constructor throws (a CSP that forbids workers)
@@ -540,7 +744,11 @@ test("worker unavailable: a constructor that throws, an error before the first m
   assert.equal(engineStatus().worker, "unavailable");
   await renderMusic(LOOP);
   prewarm();
-  assert.equal(attempts, 1, "the engine keeps trying to start a worker that cannot exist");
+  assert.equal(
+    attempts,
+    1,
+    "the engine keeps trying to start a worker that cannot exist",
+  );
 
   // an error event before any message (a file:// or CSP refusal reported asynchronously)
   const refused: ScriptedWorker[] = [];
@@ -551,7 +759,9 @@ test("worker unavailable: a constructor that throws, an error before the first m
     },
   });
   const progress: number[] = [];
-  const afterRefusal = await renderMusic(LOOP, { onProgress: (value) => progress.push(value) });
+  const afterRefusal = await renderMusic(LOOP, {
+    onProgress: (value) => progress.push(value),
+  });
   assert.equal(afterRefusal.diagnostics.path, "main");
   assert.equal(hashStems(afterRefusal.stems), hashStems(loop.stems));
   assertProgress(progress, "after a refusal");
@@ -560,7 +770,8 @@ test("worker unavailable: a constructor that throws, an error before the first m
   assert.equal((await renderMusic(LOOP)).diagnostics.path, "main");
   assert.equal(refused.length, 1);
 
-  // a worker that never posts anything: given up on after the start-up time
+  // a worker that never posts anything: the render waits for it for the start-up time and then runs here.
+  // Nothing was handed to it, it is neither terminated nor replaced, and later renders do not wait again.
   const mute: ScriptedWorker[] = [];
   configureEngine({
     createWorker: () => {
@@ -574,14 +785,40 @@ test("worker unavailable: a constructor that throws, an error before the first m
   assert.equal(afterSilence.diagnostics.path, "main");
   assert.ok(performance.now() - started >= 35);
   assert.equal(hashStems(afterSilence.stems), hashStems(loop.stems));
-  assert.ok(mute[0].terminated);
-  assert.deepEqual(mute[0].requests.map((request) => request.type), ["render"]);
-  assert.equal((await renderMusic(LOOP)).diagnostics.path, "main");
+  assert.equal(
+    mute[0].terminated,
+    false,
+    "a silent worker may still be loading",
+  );
+  assert.deepEqual(
+    mute[0].requests,
+    [],
+    "a job that will run here must not also be left with the worker",
+  );
+  assert.equal(engineStatus().worker, "starting");
+  const phases: RenderPhase[] = [];
+  const again = performance.now();
+  const second = await renderMusic(LOOP, {
+    onPhase: (phase) => phases.push(phase),
+  });
+  assert.equal(second.diagnostics.path, "main");
+  assert.deepEqual(
+    phases,
+    ["rendering"],
+    "its start-up time is over: nothing is waited for",
+  );
+  assert.ok(
+    performance.now() - again <
+      second.diagnostics.renderMs + second.diagnostics.composeMs + 400,
+  );
   assert.equal(mute.length, 1);
 
   // worker: false never asks for one
   let asked = 0;
-  configureEngine({ worker: false, createWorker: () => (asked++, new ScriptedWorker("serve")) });
+  configureEngine({
+    worker: false,
+    createWorker: () => (asked++, new ScriptedWorker("serve")),
+  });
   assert.equal((await renderMusic(LOOP)).diagnostics.path, "main");
   assert.equal(asked, 0);
 });
@@ -600,11 +837,16 @@ test("worker protocol: served renders, a worker that hangs is terminated on canc
   prewarm();
   assert.equal(engineStatus().worker, "starting");
   const progress: number[] = [];
-  const served = await renderMusic(LOOP, { onProgress: (value) => progress.push(value) });
+  const served = await renderMusic(LOOP, {
+    onProgress: (value) => progress.push(value),
+  });
   assert.equal(served.diagnostics.path, "worker");
   assert.equal(hashStems(served.stems), hashStems(loop.stems));
   assert.equal(progress[progress.length - 1], 1);
-  assert.deepEqual(serving[0].requests.map((request) => request.type), ["warm", "render"]);
+  assert.deepEqual(
+    serving[0].requests.map((request) => request.type),
+    ["warm", "render"],
+  );
   assert.equal(engineStatus().worker, "ready");
   assert.equal(serving.length, 1);
 
@@ -613,12 +855,19 @@ test("worker protocol: served renders, a worker that hangs is terminated on canc
   const sequence: ScriptedWorker[] = [];
   configureEngine({
     createWorker: () => {
-      sequence.push(new ScriptedWorker(scripts[Math.min(sequence.length, scripts.length - 1)]));
+      sequence.push(
+        new ScriptedWorker(
+          scripts[Math.min(sequence.length, scripts.length - 1)],
+        ),
+      );
       return sequence[sequence.length - 1];
     },
   });
   const controller = new AbortController();
-  const hanging = renderMusic(LOOP, { signal: controller.signal, onProgress: () => controller.abort() });
+  const hanging = renderMusic(LOOP, {
+    signal: controller.signal,
+    onProgress: () => controller.abort(),
+  });
   await assert.rejects(hanging, isAbortError);
   assert.ok(sequence[0].terminated);
   assert.equal(engineStatus().worker, "idle");
@@ -636,9 +885,12 @@ test("worker protocol: served renders, a worker that hangs is terminated on canc
       return crashing[crashing.length - 1];
     },
   });
-  await assert.rejects(renderMusic(LOOP), /本地引擎出错：out of memory/);
+  await assert.rejects(
+    renderMusic(LOOP),
+    isEngineError("engine-crashed", /voice\.render is not a function/),
+  );
   assert.equal(engineStatus().worker, "idle");
-  await assert.rejects(renderMusic(LOOP), /本地引擎出错/);
+  await assert.rejects(renderMusic(LOOP), isEngineError("engine-crashed"));
   assert.equal(crashing.length, 2);
   assert.equal(engineStatus().worker, "unavailable");
   const afterCrashes = await renderMusic(LOOP);
@@ -647,13 +899,349 @@ test("worker protocol: served renders, a worker that hangs is terminated on canc
   assert.equal(crashing.length, 2);
 });
 
+test("a worker that is slow to start: the render says so, waits a moment and runs here — the worker is adopted when it is up (ENG-2)", async () => {
+  const loop = await reference(LOOP);
+  // its script takes 150 ms to arrive; renders wait 40 ms for a starting worker
+  const slow: ScriptedWorker[] = [];
+  configureEngine({
+    createWorker: () => {
+      slow.push(new ScriptedWorker("serve", 150));
+      return slow[slow.length - 1];
+    },
+    startupTimeoutMs: 40,
+  });
+  prewarm();
+  const events: string[] = [];
+  const started = performance.now();
+  let firstProgressAt = 0;
+  const first = await renderMusic(LOOP, {
+    onPhase: (phase) => events.push(`${phase}@${engineStatus().worker}`),
+    onProgress: (value) => {
+      if (!firstProgressAt) firstProgressAt = performance.now() - started;
+      if (events[events.length - 1] !== "progress") events.push("progress");
+      if (value === 1) events.push("done");
+    },
+  });
+  // told at once that the engine is starting, then rendered here: no bar standing at 0 % for the whole start-up
+  assert.deepEqual(events, [
+    "starting@starting",
+    "rendering@starting",
+    "progress",
+    "done",
+  ]);
+  assert.equal(first.diagnostics.path, "main");
+  assert.equal(hashStems(first.stems), hashStems(loop.stems));
+  assert.ok(
+    firstProgressAt >= 35 && firstProgressAt < 140,
+    `first progress after ${firstProgressAt.toFixed(0)} ms`,
+  );
+  // the slow worker was left alone: not terminated, not replaced, and not handed the job that ran here
+  assert.equal(slow.length, 1);
+  assert.equal(slow[0].terminated, false);
+  assert.deepEqual(
+    slow[0].requests.map((request) => request.type),
+    ["warm"],
+  );
+  // (the render above took longer than the worker's start-up)
+  for (let i = 0; i < 200 && engineStatus().worker !== "ready"; i++)
+    await sleep(5);
+  assert.equal(
+    engineStatus().worker,
+    "ready",
+    "the worker is adopted once it has started",
+  );
+  const phases: RenderPhase[] = [];
+  const second = await renderMusic(LOOP, {
+    onPhase: (phase) => phases.push(phase),
+  });
+  assert.equal(
+    second.diagnostics.path,
+    "worker",
+    "a slow start must not cost the worker for the whole session",
+  );
+  assert.deepEqual(phases, ["rendering"]);
+  assert.equal(hashStems(second.stems), hashStems(loop.stems));
+  assert.equal(slow.length, 1);
+  assert.deepEqual(
+    slow[0].requests.map((request) => request.type),
+    ["warm", "render"],
+  );
+
+  // a worker that is up in time is waited for: the job runs there, and "starting" was said meanwhile
+  const quick: ScriptedWorker[] = [];
+  configureEngine({
+    createWorker: () => {
+      quick.push(new ScriptedWorker("serve", 30));
+      return quick[quick.length - 1];
+    },
+    startupTimeoutMs: 2000,
+  });
+  const quickPhases: RenderPhase[] = [];
+  const waited = await renderMusic(LOOP, {
+    onPhase: (phase) => quickPhases.push(phase),
+  });
+  assert.equal(waited.diagnostics.path, "worker");
+  assert.deepEqual(quickPhases, ["starting", "rendering"]);
+  assert.equal(hashStems(waited.stems), hashStems(loop.stems));
+
+  // cancelling while the worker is still starting: an AbortError at once, and the worker goes on starting
+  const patient: ScriptedWorker[] = [];
+  configureEngine({
+    createWorker: () => {
+      patient.push(new ScriptedWorker("serve", 60));
+      return patient[patient.length - 1];
+    },
+    startupTimeoutMs: 5000,
+  });
+  const controller = new AbortController();
+  const cancelled = renderMusic(LOOP, {
+    signal: controller.signal,
+    onPhase: (phase) =>
+      phase === "starting" && setTimeout(() => controller.abort(), 5),
+  });
+  const cancelStarted = performance.now();
+  await assert.rejects(cancelled, isAbortError);
+  assert.ok(
+    performance.now() - cancelStarted < 50,
+    "the cancel did not wait for the worker",
+  );
+  assert.equal(patient[0].terminated, false);
+  assert.deepEqual(patient[0].requests, []);
+  assert.equal(engineStatus().pending, 0);
+  const afterCancel = await renderMusic(LOOP);
+  assert.equal(afterCancel.diagnostics.path, "worker");
+  assert.equal(patient.length, 1);
+  assert.equal(hashStems(afterCancel.stems), hashStems(loop.stems));
+  configureEngine();
+});
+
+/** The rejection of a failed render: an EngineError with this code, a message fit for the user, the exception text only in `detail`. */
+function isEngineError(code: EngineErrorCode, detail?: RegExp) {
+  return (error: unknown): boolean => {
+    assert.ok(
+      error instanceof EngineError,
+      `expected an EngineError, got ${String(error)}`,
+    );
+    assert.equal(error.name, "EngineError");
+    assert.equal(error.code, code);
+    assert.equal(error.message, ENGINE_ERROR_TEXT[code]);
+    // Chinese, and nothing of the exception in it: no Latin word, no punctuation of a stack trace
+    assert.match(error.message, /^[\u4e00-\u9fff，。；、]+$/, error.message);
+    assert.ok(error.message.length >= 12 && error.message.length <= 60);
+    if (detail) assert.match(error.detail, detail);
+    return true;
+  };
+}
+
+test("a render that fails rejects with a coded EngineError: a Chinese sentence for the user, the exception text only in `detail` (CORE-08)", async () => {
+  const loop = await reference(LOOP);
+  const exception =
+    "TypeError: Cannot read properties of undefined (reading 'length')";
+
+  // an exception inside the worker's job, as worker.ts reports it
+  const failing = (failure: { code: EngineErrorCode; detail: string }) =>
+    configureEngine({
+      createWorker: () => new ScriptedWorker("fail", 0, failure),
+    });
+  failing({ code: "engine-failed", detail: exception });
+  await assert.rejects(
+    renderMusic(LOOP),
+    isEngineError("engine-failed", /Cannot read properties of undefined/),
+  );
+  // the worker survived its job's exception and serves on; nothing is "remembered"
+  assert.equal(engineStatus().worker, "ready");
+  failing({
+    code: "out-of-memory",
+    detail: "RangeError: Array buffer allocation failed",
+  });
+  await assert.rejects(
+    renderMusic(LOOP),
+    isEngineError("out-of-memory", /allocation failed/),
+  );
+
+  // what the worker itself sends when a job throws: the code and the original text, no sentence
+  const posted: WorkerResponse[] = [];
+  let deliver: ((event: { data: WorkerRequest }) => void) | null = null;
+  attachWorker({
+    postMessage: (message) => void posted.push(message),
+    get onmessage(): WorkerScope["onmessage"] {
+      return null;
+    },
+    set onmessage(handler) {
+      deliver = handler;
+    },
+  });
+  const throwing = (error: Error) =>
+    new Proxy(
+      { ...LOOP },
+      {
+        get(target, key, receiver) {
+          if (key === "seed") throw error;
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    ) as MusicConfig;
+  assert.ok(deliver);
+  (deliver as (event: { data: WorkerRequest }) => void)({
+    data: {
+      type: "render",
+      id: 7,
+      config: throwing(
+        new TypeError("Cannot read properties of undefined (reading 'length')"),
+      ),
+    },
+  });
+  (deliver as (event: { data: WorkerRequest }) => void)({
+    data: {
+      type: "render",
+      id: 8,
+      config: throwing(new RangeError("Array buffer allocation failed")),
+    },
+  });
+  (deliver as (event: { data: WorkerRequest }) => void)({
+    data: {
+      type: "render",
+      id: 9,
+      config: throwing(
+        new RangeError("Invalid typed array length: 4294967296"),
+      ),
+    },
+  });
+  for (let i = 0; i < 200 && posted.length < 4; i++) await sleep(5);
+  assert.deepEqual(posted, [
+    { type: "ready" },
+    { type: "error", id: 7, code: "engine-failed", detail: exception },
+    {
+      type: "error",
+      id: 8,
+      code: "out-of-memory",
+      detail: "RangeError: Array buffer allocation failed",
+    },
+    {
+      type: "error",
+      id: 9,
+      code: "out-of-memory",
+      detail: "RangeError: Invalid typed array length: 4294967296",
+    },
+  ]);
+
+  // the same job on the calling thread (a config that cannot be cloned for the worker falls back to it; so does no worker at all)
+  for (const worker of [true, false]) {
+    configureEngine(
+      worker
+        ? { createWorker: () => new ScriptedWorker("serve") }
+        : { worker: false },
+    );
+    await assert.rejects(
+      renderMusic(
+        throwing(
+          new TypeError(
+            "Cannot read properties of undefined (reading 'length')",
+          ),
+        ),
+      ),
+      isEngineError(
+        "engine-failed",
+        /^TypeError: Cannot read properties of undefined/,
+      ),
+    );
+    await assert.rejects(
+      renderMusic(throwing(new RangeError("Array buffer allocation failed"))),
+      isEngineError(
+        "out-of-memory",
+        /^RangeError: Array buffer allocation failed$/,
+      ),
+    );
+    assert.equal(engineStatus().pending, 0);
+    // and the next render is clean
+    assert.equal(
+      hashStems((await renderMusic(LOOP)).stems),
+      hashStems(loop.stems),
+    );
+  }
+
+  // the legacy engine fails the same way
+  configureEngine({ worker: false });
+  const legacy = new Proxy(
+    { ...LOOP, engine: 1 as const },
+    {
+      get(target, key, receiver) {
+        if (key === "bpm") throw new ReferenceError("tempo is not defined");
+        return Reflect.get(target, key, receiver);
+      },
+    },
+  ) as MusicConfig;
+  await assert.rejects(
+    renderMusic(legacy),
+    isEngineError("engine-failed", /^ReferenceError: tempo is not defined$/),
+  );
+
+  // a worker that dies mid-render with the runtime's out-of-memory message says so in plain words
+  configureEngine({
+    createWorker: () =>
+      new ScriptedWorker(
+        "crash",
+        0,
+        undefined,
+        "Uncaught RangeError: Array buffer allocation failed",
+      ),
+  });
+  await assert.rejects(
+    renderMusic(LOOP),
+    isEngineError("out-of-memory", /Array buffer allocation failed/),
+  );
+
+  // what is NOT an engine failure stays what it was: a cancel is an AbortError, the caller's own handler error is the caller's
+  configureEngine({ worker: false });
+  const controller = new AbortController();
+  await assert.rejects(
+    renderMusic(LOOP, {
+      signal: controller.signal,
+      onProgress: () => controller.abort(),
+    }),
+    isAbortError,
+  );
+  for (const worker of [true, false]) {
+    configureEngine(
+      worker
+        ? { createWorker: () => new ScriptedWorker("serve") }
+        : { worker: false },
+    );
+    const own = new TypeError(
+      "Cannot read properties of undefined (reading 'bar')",
+    );
+    await assert.rejects(
+      renderMusic(LOOP, {
+        onProgress: () => {
+          throw own;
+        },
+      }),
+      (error) => error === own,
+    );
+    await assert.rejects(
+      renderMusic(LOOP, {
+        onPhase: () => {
+          throw own;
+        },
+      }),
+      (error) => error === own,
+    );
+    assert.equal(engineStatus().pending, 0);
+  }
+  configureEngine();
+});
+
 /* ------------------------------------------------------------------ */
 /* mixing, outlines, export                                            */
 /* ------------------------------------------------------------------ */
 
 test("mixStems: engine 2 is softClip(Σ stem × fader) and never passes the ceiling; `only` isolates a stem; faders at 0 are silent", async () => {
   const n = 4800;
-  const tone = (hz: number, level: number) => Float32Array.from({ length: n }, (_, i) => level * Math.sin((2 * Math.PI * hz * i) / 48000));
+  const tone = (hz: number, level: number) =>
+    Float32Array.from(
+      { length: n },
+      (_, i) => level * Math.sin((2 * Math.PI * hz * i) / 48000),
+    );
   const stems: Stems = {
     melody: bufferOf(tone(440, 0.9), tone(441, 0.9)),
     chords: bufferOf(tone(220, 0.9), tone(221, 0.8)),
@@ -670,39 +1258,80 @@ test("mixStems: engine 2 is softClip(Σ stem × fader) and never passes the ceil
     const data = mix.getChannelData(channel);
     for (let i = 0; i < n; i++) {
       let sum = 0;
-      for (const track of TRACKS) sum += stems[track].getChannelData(channel)[i] * volumes[track];
-      assert.ok(Math.abs(data[i] - softClip(Math.fround(sum))) < 2e-6, `sample ${i}`);
+      for (const track of TRACKS)
+        sum += stems[track].getChannelData(channel)[i] * volumes[track];
+      assert.ok(
+        Math.abs(data[i] - softClip(Math.fround(sum))) < 2e-6,
+        `sample ${i}`,
+      );
       peak = Math.max(peak, Math.abs(data[i]));
       if (Math.abs(sum) > 1) past++;
     }
   }
   assert.ok(past > 100, "the test mix never overloads the clipper");
-  assert.ok(peak <= CEILING + 1e-7 && peak > CEILING - 0.01, `peak ${peak} against a ceiling of ${CEILING}`);
+  assert.ok(
+    peak <= CEILING + 1e-7 && peak > CEILING - 0.01,
+    `peak ${peak} against a ceiling of ${CEILING}`,
+  );
   assert.ok(CEILING < 0.9 && CEILING > KNEE);
   // far past full scale still ends at the ceiling
-  const hot = mixStems({ ...stems, melody: bufferOf(tone(440, 30)) }, { melody: 1, chords: 1, bass: 1, drums: 1 }, 2);
-  assert.ok(hot.getChannelData(0).every((value) => Math.abs(value) <= CEILING + 1e-7));
+  const hot = mixStems(
+    { ...stems, melody: bufferOf(tone(440, 30)) },
+    { melody: 1, chords: 1, bass: 1, drums: 1 },
+    2,
+  );
+  assert.ok(
+    hot.getChannelData(0).every((value) => Math.abs(value) <= CEILING + 1e-7),
+  );
 
   // only: one stem at its fader, through the same clipper
   const solo = mixStems(stems, volumes, 2, "chords");
   for (let channel = 0; channel < 2; channel++) {
     const source = stems.chords.getChannelData(channel);
     const data = solo.getChannelData(channel);
-    for (let i = 0; i < n; i++) assert.ok(Math.abs(data[i] - softClip(Math.fround(source[i] * 0.5))) < 1e-6);
+    for (let i = 0; i < n; i++)
+      assert.ok(
+        Math.abs(data[i] - softClip(Math.fround(source[i] * 0.5))) < 1e-6,
+      );
   }
   assert.notDeepEqual(solo.getChannelData(0), solo.getChannelData(1));
 
   // faders: 0 is silence, and anything outside 0..1 is clamped
-  const silent = mixStems(stems, { melody: 0, chords: 0, bass: 0, drums: 0 }, 2);
-  assert.ok(silent.getChannelData(0).every((value) => value === 0) && silent.getChannelData(1).every((value) => value === 0));
-  assert.ok(mixStems(stems, volumes, 2, "bass").getChannelData(0).some((value) => value !== 0));
-  assert.ok(mixStems(stems, { ...volumes, bass: 0 }, 2, "bass").getChannelData(0).every((value) => value === 0));
+  const silent = mixStems(
+    stems,
+    { melody: 0, chords: 0, bass: 0, drums: 0 },
+    2,
+  );
+  assert.ok(
+    silent.getChannelData(0).every((value) => value === 0) &&
+      silent.getChannelData(1).every((value) => value === 0),
+  );
+  assert.ok(
+    mixStems(stems, volumes, 2, "bass")
+      .getChannelData(0)
+      .some((value) => value !== 0),
+  );
+  assert.ok(
+    mixStems(stems, { ...volumes, bass: 0 }, 2, "bass")
+      .getChannelData(0)
+      .every((value) => value === 0),
+  );
   assert.deepEqual(
-    mixStems(stems, { melody: 5, chords: -3, bass: 0, drums: 0 }, 2).getChannelData(0),
-    mixStems(stems, { melody: 1, chords: 0, bass: 0, drums: 0 }, 2).getChannelData(0),
+    mixStems(
+      stems,
+      { melody: 5, chords: -3, bass: 0, drums: 0 },
+      2,
+    ).getChannelData(0),
+    mixStems(
+      stems,
+      { melody: 1, chords: 0, bass: 0, drums: 0 },
+      2,
+    ).getChannelData(0),
   );
   // the result is a new buffer; the stems are untouched
-  assert.ok(Math.abs(stems.melody.getChannelData(0)[25] - tone(440, 0.9)[25]) < 1e-7);
+  assert.ok(
+    Math.abs(stems.melody.getChannelData(0)[25] - tone(440, 0.9)[25]) < 1e-7,
+  );
 
   // engine 1 keeps the v0.2 rule: a plain sum, scaled down as a whole only when it would clip
   const gentle = { melody: 0.2, chords: 0.2, bass: 0.2, drums: 0.2 };
@@ -714,8 +1343,13 @@ test("mixStems: engine 2 is softClip(Σ stem × fader) and never passes the ceil
   }
   const loud = mixStems(stems, { melody: 1, chords: 1, bass: 1, drums: 1 }, 1);
   let loudPeak = 0;
-  for (let channel = 0; channel < 2; channel++) for (const value of loud.getChannelData(channel)) loudPeak = Math.max(loudPeak, Math.abs(value));
-  assert.ok(Math.abs(loudPeak - 0.96) < 1e-6, `legacy mix peaks at ${loudPeak}`);
+  for (let channel = 0; channel < 2; channel++)
+    for (const value of loud.getChannelData(channel))
+      loudPeak = Math.max(loudPeak, Math.abs(value));
+  assert.ok(
+    Math.abs(loudPeak - 0.96) < 1e-6,
+    `legacy mix peaks at ${loudPeak}`,
+  );
 });
 
 test("a rendered mix stays under the soft clipper's ceiling and exports as 16-bit stereo WAV of the exact length", async () => {
@@ -724,7 +1358,9 @@ test("a rendered mix stays under the soft clipper's ceiling and exports as 16-bi
   for (const volumes of [REFERENCE_VOLUMES, full]) {
     const mix = mixStems(result.stems, volumes, 2);
     let peak = 0;
-    for (let channel = 0; channel < 2; channel++) for (const value of mix.getChannelData(channel)) peak = Math.max(peak, Math.abs(value));
+    for (let channel = 0; channel < 2; channel++)
+      for (const value of mix.getChannelData(channel))
+        peak = Math.max(peak, Math.abs(value));
     assert.ok(peak <= CEILING + 1e-7 && peak > 0.2, `mix peaks at ${peak}`);
   }
   const mix = mixStems(result.stems, REFERENCE_VOLUMES, 2);
@@ -742,40 +1378,70 @@ test("a rendered mix stays under the soft clipper's ceiling and exports as 16-bi
   assert.equal(view.getUint16(34, true), 16);
   assert.equal(view.getUint32(40, true), frames * 4);
   // a stem on its own exports to the same length
-  assert.equal(encodeWav(mixStems(result.stems, REFERENCE_VOLUMES, 2, "drums")).byteLength, wav.byteLength);
+  assert.equal(
+    encodeWav(mixStems(result.stems, REFERENCE_VOLUMES, 2, "drums")).byteLength,
+    wav.byteLength,
+  );
 });
 
 test("computePeaks: one value per bin, the largest sample of the weighted sum, silent or muted buffers stay flat", () => {
   const ramp = Float32Array.from({ length: 1000 }, (_, i) => i / 1000);
-  const buffer = bufferOf(ramp, ramp.map((value) => -value * 0.5));
+  const buffer = bufferOf(
+    ramp,
+    ramp.map((value) => -value * 0.5),
+  );
   const peaks = computePeaks([{ buffer, gain: 1 }], 10);
   assert.equal(peaks.length, 10);
   for (let bin = 1; bin < 10; bin++) assert.ok(peaks[bin] > peaks[bin - 1]);
   assert.ok(Math.abs(peaks[9] - 0.999) < 0.02);
-  assert.deepEqual(computePeaks([{ buffer, gain: 0.5 }], 10), peaks.map((value) => value * 0.5));
+  assert.deepEqual(
+    computePeaks([{ buffer, gain: 0.5 }], 10),
+    peaks.map((value) => value * 0.5),
+  );
   assert.deepEqual(computePeaks([{ buffer, gain: 0 }], 4), [0, 0, 0, 0]);
   assert.equal(computePeaks([{ buffer, gain: 1 }]).length, 140);
   assert.equal(computePeaks([], 3).length, 3);
   // two buffers are summed before the peak is taken
-  const inverse = bufferOf(ramp.map((value) => -value), ramp.map((value) => value * 0.5));
-  assert.ok(computePeaks([{ buffer, gain: 1 }, { buffer: inverse, gain: 1 }], 5).every((value) => value < 1e-6));
+  const inverse = bufferOf(
+    ramp.map((value) => -value),
+    ramp.map((value) => value * 0.5),
+  );
+  assert.ok(
+    computePeaks(
+      [
+        { buffer, gain: 1 },
+        { buffer: inverse, gain: 1 },
+      ],
+      5,
+    ).every((value) => value < 1e-6),
+  );
 });
 
 /* ------------------------------------------------------------------ */
 /* engine 1                                                            */
 /* ------------------------------------------------------------------ */
 
-// SHA-256 of the v0.2 output, made from the baseline commit itself:
-//   git show 634c650:src/audio/engine.ts > .scratch/engine-int/v02/audio/engine.ts   (and src/types.ts next to it)
-//   npx tsx .scratch/engine-int/v02/hash.ts
+// SHA-256 of the v0.2 output, made by rendering these configurations with
+// src/audio/engine.ts of the baseline commit itself (634c650, v0.2.0).
 // "stems" hashes the eight stem channels (melody, chords, bass, drums; left then right), "mix" the two
 // channels of RenderResult.buffer, which v0.2 made with mixStems(stems, config.volumes).
-const LEGACY: Record<string, { config: MusicConfig; frames: number; stems: string; mix: string }> = {
+const LEGACY: Record<
+  string,
+  { config: MusicConfig; frames: number; stems: string; mix: string }
+> = {
   loop: {
     config: {
       prompt: "青春欢快，像晴天散步一样轻松，适合日常 Vlog",
-      mood: "bright", bpm: 112, duration: 15, key: "C major", instrument: "piano",
-      energy: 0.62, complexity: 0.5, reverb: 0.25, seed: 42017, loop: true,
+      mood: "bright",
+      bpm: 112,
+      duration: 15,
+      key: "C major",
+      instrument: "piano",
+      energy: 0.62,
+      complexity: 0.5,
+      reverb: 0.25,
+      seed: 42017,
+      loop: true,
       volumes: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.56 },
       engine: 1,
     },
@@ -786,8 +1452,16 @@ const LEGACY: Record<string, { config: MusicConfig; frames: number; stems: strin
   song: {
     config: {
       prompt: "复古电子，夜晚的霓虹街道",
-      mood: "retro", bpm: 128, duration: 17, key: "A minor", instrument: "synth",
-      energy: 0.8, complexity: 0.7, reverb: 0.5, seed: 7, loop: false,
+      mood: "retro",
+      bpm: 128,
+      duration: 17,
+      key: "A minor",
+      instrument: "synth",
+      energy: 0.8,
+      complexity: 0.7,
+      reverb: 0.5,
+      seed: 7,
+      loop: false,
       volumes: { melody: 1, chords: 0.5, bass: 0.9, drums: 0.3 },
       engine: 1,
     },
@@ -800,36 +1474,69 @@ const LEGACY: Record<string, { config: MusicConfig; frames: number; stems: strin
 test("engine 1: old works render through the frozen v0.2 synthesizer, bit for bit", async () => {
   // a worker is on offer and must not be used: the legacy engine stays on this thread
   let asked = 0;
-  configureEngine({ createWorker: () => (asked++, new ScriptedWorker("serve")) });
+  configureEngine({
+    createWorker: () => (asked++, new ScriptedWorker("serve")),
+  });
   for (const [name, expected] of Object.entries(LEGACY)) {
     const progress: number[] = [];
-    const result = await renderMusic(expected.config, { onProgress: (value) => progress.push(value) });
+    const result = await renderMusic(expected.config, {
+      onProgress: (value) => progress.push(value),
+    });
     assert.equal(result.sampleRate, 32000, name);
     assert.equal(result.duration, expected.config.duration, name);
-    for (const track of TRACKS) assert.equal(result.stems[track].length, expected.frames, name);
-    assert.equal(hashStems(result.stems), expected.stems, `${name}: the stems differ from v0.2`);
-    assert.equal(hashBuffers([mixStems(result.stems, expected.config.volumes, 1)]), expected.mix, `${name}: the mix differs from v0.2`);
+    for (const track of TRACKS)
+      assert.equal(result.stems[track].length, expected.frames, name);
+    assert.equal(
+      hashStems(result.stems),
+      expected.stems,
+      `${name}: the stems differ from v0.2`,
+    );
+    assert.equal(
+      hashBuffers([mixStems(result.stems, expected.config.volumes, 1)]),
+      expected.mix,
+      `${name}: the mix differs from v0.2`,
+    );
     assert.equal(result.arrangement, undefined);
     assert.equal(result.diagnostics.path, "legacy");
     assert.equal(result.diagnostics.master, undefined);
     assert.equal(result.peaks.length, 140);
     assert.equal(Math.max(...result.peaks), 1);
-    for (const track of TRACKS) assert.equal(result.stemPeaks[track].length, 48);
+    for (const track of TRACKS)
+      assert.equal(result.stemPeaks[track].length, 48);
     assertProgress(progress, `legacy ${name}`);
   }
   assert.equal(asked, 0);
 
   // styles and instruments v0.2 did not have fall back the way the frozen engine always did
-  const foreign = await renderMusic({ ...LEGACY.loop.config, mood: "jazz", instrument: "vibes" });
-  assert.equal(hashStems(foreign.stems), hashStems((await renderMusic({ ...LEGACY.loop.config, mood: "bright", instrument: "piano" })).stems));
+  const foreign = await renderMusic({
+    ...LEGACY.loop.config,
+    mood: "jazz",
+    instrument: "vibes",
+  });
+  assert.equal(
+    hashStems(foreign.stems),
+    hashStems(
+      (
+        await renderMusic({
+          ...LEGACY.loop.config,
+          mood: "bright",
+          instrument: "piano",
+        })
+      ).stems,
+    ),
+  );
 });
 
 test("engine 1 shares the queue and the cancel behaviour of engine 2", async () => {
   configureEngine({ worker: false });
   const loop = await reference(LOOP);
   const order: string[] = [];
-  const modern = renderMusic(LOOP, { onProgress: (value) => order.push(value === 1 ? "2!" : "2") });
-  const legacy = renderMusic(LEGACY.loop.config, { onProgress: (value) => order.push(value === 1 ? "1!" : "1") });
+  const modern = renderMusic(LOOP, {
+    onProgress: (value) => order.push(value === 1 ? "2!" : "2"),
+  });
+  const legacy = renderMusic(LEGACY.loop.config, {
+    onProgress: (value) => order.push(value === 1 ? "1!" : "1"),
+  });
   const [a, b] = await Promise.all([modern, legacy]);
   assert.equal(hashStems(a.stems), hashStems(loop.stems));
   assert.equal(hashStems(b.stems), LEGACY.loop.stems);
@@ -837,10 +1544,16 @@ test("engine 1 shares the queue and the cancel behaviour of engine 2", async () 
 
   const before = new AbortController();
   before.abort();
-  await assert.rejects(renderMusic(LEGACY.song.config, { signal: before.signal }), isAbortError);
+  await assert.rejects(
+    renderMusic(LEGACY.song.config, { signal: before.signal }),
+    isAbortError,
+  );
   const during = new AbortController();
   await assert.rejects(
-    renderMusic(LEGACY.song.config, { signal: during.signal, onProgress: (value) => value > 0.2 && during.abort() }),
+    renderMusic(LEGACY.song.config, {
+      signal: during.signal,
+      onProgress: (value) => value > 0.2 && during.abort(),
+    }),
     isAbortError,
   );
   const next = await renderMusic(LEGACY.song.config);
