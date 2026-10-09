@@ -731,7 +731,7 @@ npm run test:packaged   # 校验值没改对会在第一步失败
 - 第四轮里门户那边做到了哪一步（来自那一轮的报告，这次没有重跑）：导入了当时的 v0.3.0 网页版，按最终的应用和 `docs/QA.md` 重写了页面，`verify-embed.cjs`（10 / 10）和 `verify-behaviour.cjs`（33 / 33）在导入的真实构建上通过；发布说明里校验值的读取改成了按行解析（所以发布说明不再需要任何额外的隐藏内容）；`downloads` 仍为空、页面标着「Windows 版待发布」。
 - **最后一轮之后已重新导入**：克隆里 `public/play/yinxu/` 是最终的 `dist-web/`（`index-DcAQ4BEN.js`、`index-DrdnUZdD.css`、`worker-BrbxvWFD.js`，共约 1.42 MB），页面上的测试数字已更新为 1048 = 796 + 252、云端 23 步（网页 27、界面 14、发行程序 23）；`verify-embed.cjs` 10 / 10、`verify-behaviour.cjs` 33 / 33、校验值解析自检 37 / 37 在这份构建上通过。克隆仍然全部没有提交和推送，交接说明在 `.scratch/site-kit/NOTES.md`。注意：发布说明里已经没有隐藏注释，所以门户必须先用上这个分支里按行解析的 `sync-releases.mjs`，再同步音序的发布。
 - 剩下的步骤（详见 NOTES）：
-  1. 在门户仓库里重新 `npm run import:yinxu`（把现在的 `dist-web/` 灌进 `public/play/yinxu/`）、更新 `content/tools.json` 里 `yinxu` 的测试数字、`npm run build`、`npm run preview`，再跑 `verify-embed.cjs` 和 `verify-behaviour.cjs`。
+  1. （已完成，见上一条）以后应用再有改动时：`npm run build:web`，然后在门户仓库里 `npm run import:yinxu`、核对 `content/tools.json` 里 `yinxu` 的测试数字、`npm run build`、`npm run preview`，再跑 `verify-embed.cjs` 和 `verify-behaviour.cjs`。
   2. GitHub release 存在之后，在 `content/tools.json` 的 `yinxu` 项里补上 `github` 和 `releasesUrl`，换掉「Windows 版待发布」的标记，`npm run sync:releases`（它没有对着真实的 release 跑过）。
   3. 决定安装版是否仍然作为首选下载：它从未运行过，被测试的是便携版和 `win-unpacked`。
   4. 提交、推送分支、合并；Cloudflare Pages 的真实构建和响应头没有验证过。
