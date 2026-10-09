@@ -2,12 +2,17 @@
  * 风格: "自动" plus the 22 styles. Wraps on wide screens; one scrolling row
  * below 720 px, with a 全部风格 sheet that shows every style with its
  * description.
+ *
+ * The row is one stop for the Tab key: Tab lands on the chosen chip (or 自动),
+ * the arrow keys, Home and End move between chips, Enter / Space picks.
  */
 import { memo, useEffect, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import { Check, LayoutGrid, Sparkles } from "lucide-react";
 import { STYLES, styleInfo } from "../../music/catalog";
 import type { StyleId } from "../../music/catalog";
 import { coverGradient } from "../../state/format";
+import { rovingIndex } from "../logic/focus";
 import { Cover } from "../primitives/Art";
 import { LinkButton } from "../primitives/Button";
 import { Chip } from "../primitives/Controls";
@@ -83,6 +88,26 @@ export const StyleChips = memo(function StyleChips(props: StyleChipsProps) {
   const { mood, disabled, onPick } = props;
   const [sheet, setSheet] = useState(false);
   const row = useRef<HTMLDivElement>(null);
+  /** the chip the arrow keys last moved to; null = follow the chosen style */
+  const [roved, setRoved] = useState<number | null>(null);
+  const chosen = mood ? STYLES.findIndex((style) => style.id === mood) + 1 : 0;
+  // Exactly one chip takes Tab: the one being navigated, else the chosen one.
+  const stop = roved ?? chosen;
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const chips = [
+      ...(row.current?.querySelectorAll<HTMLButtonElement>("button.chip") ??
+        []),
+    ];
+    const current = chips.indexOf(document.activeElement as HTMLButtonElement);
+    if (current < 0) return;
+    const next = rovingIndex(event.key, current, chips.length);
+    if (next === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setRoved(next);
+    chips[next]?.focus();
+  };
 
   // In the one-row layout keep the chosen chip in sight.
   useEffect(() => {
@@ -119,22 +144,30 @@ export const StyleChips = memo(function StyleChips(props: StyleChipsProps) {
         className="style-chips"
         role="group"
         aria-labelledby="style-picker-label"
+        onKeyDown={onKeyDown}
+        onBlur={(event) => {
+          // Leaving the row: the next Tab comes back to the chosen style.
+          if (!event.currentTarget.contains(event.relatedTarget))
+            setRoved(null);
+        }}
       >
         <Chip
           data-testid="style-chip-auto"
           pressed={!mood}
           disabled={disabled}
+          tabIndex={stop === 0 ? 0 : -1}
           description="由制作人根据描述决定风格"
           onClick={() => onPick(undefined)}
         >
           自动
         </Chip>
-        {STYLES.map((style) => (
+        {STYLES.map((style, index) => (
           <Chip
             key={style.id}
             data-testid={`style-chip-${style.id}`}
             pressed={mood === style.id}
             disabled={disabled}
+            tabIndex={stop === index + 1 ? 0 : -1}
             swatch={coverGradient(style.id)}
             description={style.description}
             onClick={() => onPick(mood === style.id ? undefined : style.id)}

@@ -105,6 +105,14 @@ const Turn = memo(function Turn(props: {
             ))}
           </ul>
         )}
+        {turn.note && (
+          // The model's own words. The answer above is written by the app
+          // from what really changed; this is clearly a second voice.
+          <p className="turn-note" data-testid="turn-note">
+            <span className="turn-note-label">模型说明：</span>
+            {turn.note}
+          </p>
+        )}
         {note?.fallbackReason && (
           <p className="turn-fallback" data-testid="turn-fallback">
             <TriangleAlert size={14} aria-hidden />
@@ -122,9 +130,10 @@ const Turn = memo(function Turn(props: {
                 v{turn.revision} · 当前
               </Badge>
             ) : (
+              // the pill stays small; the button around it is a full-size target
               <button
                 type="button"
-                className="badge"
+                className="badge-btn"
                 data-testid="turn-version"
                 disabled={!version || busy}
                 data-tip={
@@ -132,7 +141,7 @@ const Turn = memo(function Turn(props: {
                 }
                 onClick={() => version && void actions.openProject(version.id)}
               >
-                v{turn.revision}
+                <span className="badge">v{turn.revision}</span>
               </button>
             ))}
           <time className="turn-time tabular" dateTime={turn.at}>
@@ -163,6 +172,8 @@ export interface ProducerThreadProps {
   provider: Provider;
   activeBrain: BrainKind;
   platform: Platform;
+  /** a question from the app is open: nothing here starts another one */
+  asking: boolean;
   actions: AppActions;
 }
 
@@ -207,7 +218,7 @@ export const ProducerThread = memo(function ProducerThread(
   const hidden = showAll ? 0 : Math.max(0, thread.length - VISIBLE_TURNS);
   const visible = hidden ? thread.slice(hidden) : thread;
   const generating = job?.kind === "generate";
-  const canSend = !busy && !!props.composerText.trim();
+  const canSend = !busy && !props.asking && !!props.composerText.trim();
   const send = () => {
     if (canSend) void actions.send();
   };
@@ -319,7 +330,7 @@ export const ProducerThread = memo(function ProducerThread(
               <Chip
                 key={text}
                 data-testid="suggestion-chip"
-                disabled={busy}
+                disabled={busy || props.asking}
                 // With a cloud engine a chip only fills the input: one click
                 // is never a paid request.
                 data-tip={paid ? "填入输入框，不会直接发送" : undefined}

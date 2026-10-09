@@ -1,8 +1,9 @@
 /* 创作: the new-piece composer, and the studio with a work loaded. */
 
 /* ---------- new piece ---------- */
+/* wide enough for the options row with a cloud engine's full name in it */
 .hero {
-  max-width: 904px;
+  max-width: 936px;
 }
 
 .hero-head h1 {
@@ -244,6 +245,11 @@
 .option-select select {
   max-width: 220px;
   field-sizing: content;
+}
+
+/* engine and producer: their options end in what matters (按服务商计费) */
+.option-select-wide select {
+  max-width: 300px;
 }
 
 .composer-send {
@@ -1005,6 +1011,21 @@
   color: var(--warn);
 }
 
+/* the model's own words: a second, quieter voice under the app's answer */
+.turn-note {
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--muted);
+  font-size: var(--t-12);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.turn-note-label {
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
 .turn-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1218,6 +1239,12 @@
     grid-column: 1 / -1;
     width: 100%;
     margin: 4px 0 0;
+  }
+  /* on a phone the engine's name ends in what matters (按服务商计费): a row of its own */
+  @media (max-width: 599px) {
+    .composer-options .option-select-wide {
+      grid-column: 1 / -1;
+    }
   }
 
   .composer-send kbd {
@@ -1759,6 +1786,80 @@
   }
 }
 
+/*
+ * One-column layouts: edits wait in a card that may be far below. A pill at
+ * the end of the visible page says so and leads there. The dock takes no
+ * room; it sticks to the bottom of the page's scroll area.
+ */
+.pending-dock {
+  position: sticky;
+  z-index: 5;
+  bottom: var(--s-3);
+  display: flex;
+  justify-content: flex-end;
+  max-width: 960px;
+  height: 0;
+  margin-inline: auto;
+  pointer-events: none;
+}
+
+.pending-pill {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-pill);
+  background: #2b2740;
+  box-shadow: var(--shadow-pop);
+  color: var(--accent-hi);
+  font-size: var(--t-13);
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: auto;
+  /*
+   * It appears a moment after it is called for, and is not there at all
+   * until then: whether the inspector is on screen is learnt a frame late,
+   * and for that frame the pill must not lie over the buttons it leads to.
+   */
+  animation: pill-in var(--slow) var(--ease) 160ms both;
+  transition: background-color var(--fast) var(--ease);
+}
+
+@keyframes pill-in {
+  from {
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    visibility: visible;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.pending-pill:hover {
+  background: #353052;
+}
+
+@media (max-width: 719px) {
+  .pending-pill {
+    right: var(--s-3);
+  }
+}
+
+@media (pointer: coarse) {
+  .pending-pill {
+    height: 40px;
+  }
+}
+
 /* ---------- billing notice, version note, style hint ---------- */
 .paid-notice {
   padding: 8px 10px;
@@ -1790,8 +1891,10 @@
   min-width: 0;
 }
 
+/* inside the description box, under the preview line and aligned with its text */
 .style-hint {
-  margin-top: var(--s-2);
+  margin-top: -6px;
+  padding: 0 16px 12px 37px;
   color: var(--muted);
   font-size: var(--t-12);
   line-height: 1.55;

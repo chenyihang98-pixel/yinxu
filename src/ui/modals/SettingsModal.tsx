@@ -23,7 +23,11 @@ import { LLM_PRESETS, llmPreset } from "../../agent/llm-presets";
 import { INSTRUMENT_LIST, KEYS, STYLES } from "../../music/catalog";
 import { CLOUD_PROVIDERS } from "../../providers";
 import type { CloudProviderInfo } from "../../providers";
-import { MODEL_NAME_SHAPES, modelNameHint } from "../../state/content";
+import {
+  MODEL_NAME_SHAPES,
+  keyShapeWarning,
+  modelNameHint,
+} from "../../state/content";
 import { useApp } from "../../state/context";
 import { formatBytes } from "../../state/format";
 import { joinText } from "../../state/logic";
@@ -434,6 +438,7 @@ function LlmTab() {
         }`
       : "";
   const shape = MODEL_NAME_SHAPES[preset.id];
+  const keyWarning = needsKey ? keyShapeWarning(preset.id, apiKey) : "";
   const run = async (task: () => Promise<ActionResult>) => {
     setWorking(true);
     setError("");
@@ -458,7 +463,7 @@ function LlmTab() {
           {preset.kind === "ollama"
             ? "本机 Ollama：你的描述文字只发给这台电脑上的 Ollama，不经过网络，也不需要密钥。"
             : "你的描述文字会发送给所选服务商；密钥由 Windows 加密保存，不会回显。"}
-          模型不可用时，制作人会自动改用离线规则。
+          模型不可用时，制作人会改用离线规则；选了云端生成时会先问你。
         </span>
       </p>
       <p className="llm-status" data-testid="llm-status">
@@ -487,22 +492,7 @@ function LlmTab() {
           htmlFor={`${ids}-model`}
           hint={
             preset.models.length > 0 ? undefined : (
-              <span data-testid="llm-model-hint">
-                {modelNameHint(preset)}
-                {preset.keyUrl && (
-                  <>
-                    {" "}
-                    <LinkButton
-                      className="field-link"
-                      data-testid="llm-console-link"
-                      onClick={() => actions.openLink(preset.keyUrl ?? "")}
-                    >
-                      打开服务商控制台
-                      <ExternalLink size={12} aria-hidden />
-                    </LinkButton>
-                  </>
-                )}
-              </span>
+              <span data-testid="llm-model-hint">{modelNameHint(preset)}</span>
             )
           }
         >
@@ -568,8 +558,18 @@ function LlmTab() {
                 rekey ? "已加密保存 · 修改设置时需要重新填写" : preset.keyHint
               }
               disabled={locked}
+              aria-describedby={keyWarning ? `${ids}-key-warning` : undefined}
               onChange={(event) => setApiKey(event.target.value)}
             />
+            {keyWarning && (
+              <p
+                className="field-hint field-warning"
+                id={`${ids}-key-warning`}
+                data-testid="llm-key-warning"
+              >
+                {keyWarning}
+              </p>
+            )}
           </Field>
         )}
         {preset.kind !== "anthropic" && (

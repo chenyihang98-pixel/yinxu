@@ -16,6 +16,7 @@
 import type {
   AgentTurn,
   BrainKind,
+  LlmKind,
   LlmSettingsInput,
   LlmStatus,
 } from "../agent/types";
@@ -66,13 +67,15 @@ export interface DialogChoice {
 
 /**
  * A question the core needs answered before it goes on: a paid request, a
- * failed language model before a paid request, leaving an unsaved result.
+ * failed language model before a paid request, leaving an unsaved result,
+ * a paid result that still has to be fetched (before something else is
+ * started, and before it is given up), a length the service does not offer.
  * Answer with `actions.answerDialog(dialog.id, choice.id, remember)`.
  * data-testid: dialog-<kind>
  */
 export interface Dialog {
   id: number;
-  kind: "paid" | "fallback" | "unsaved";
+  kind: "paid" | "fallback" | "unsaved" | "pending" | "discard" | "duration";
   title: string;
   /** paragraphs */
   body: string[];
@@ -190,6 +193,11 @@ export interface Job {
   provider: Provider;
   /** which producer is planning (generate jobs) */
   brain: BrainKind;
+  /**
+   * brain "llm": where that model runs. A model on this computer (ollama)
+   * can take minutes to answer; a hosted one answers in seconds.
+   */
+  llm?: LlmKind;
   /** ready-to-show Chinese status, e.g. "正在作曲与合成" */
   phase: string;
   /** 0..1, or null when the length of the wait is unknown */
@@ -213,6 +221,33 @@ export interface TurnNote {
   model?: string;
   /** set when the LLM failed and the offline rules answered instead */
   fallbackReason?: string;
+}
+
+/**
+ * A paid result that exists — the service made it and billed for it — but
+ * whose file is not here: the download failed, was cancelled, or the task
+ * was never collected. The main process can still fetch it (重新下载, nothing
+ * is billed again) until the next cloud request or until the app closes.
+ * Shown as a banner on every page until it is fetched or knowingly given up.
+ * data-testid: pending-banner / pending-download / pending-discard
+ */
+export interface PendingResult {
+  provider: CloudProvider;
+  /** "腾讯云 TokenHub" */
+  name: string;
+  /** ready to show: what happened and what 重新下载 does */
+  text: string;
+}
+
+/**
+ * A paid result that arrived after its job was cancelled and could not be
+ * stored: it is not the loaded work, and it exists only in this window.
+ * data-testid: stray-banner / stray-retry / stray-export
+ */
+export interface StrayResult {
+  id: string;
+  title: string;
+  provider: CloudProvider;
 }
 
 /** Why the current work was loaded; `seq` changes on every load. */
@@ -262,6 +297,10 @@ export interface StudioState {
   /** an export is being prepared or written */
   exporting: boolean;
   lastLoad: LoadEvent | null;
+  /** the paid result that still has to be fetched, if any */
+  pending: PendingResult | null;
+  /** paid results that exist only in this window and are not the loaded work */
+  strays: StrayResult[];
 }
 
 export interface EngineOption {
@@ -327,6 +366,17 @@ export interface StudioView extends StudioState {
   applyHint: string;
   /** label of the 换一版旋律 button for the selected engine */
   variationLabel: string;
+  /**
+   * The pending inspector edits would sound exactly like the loaded version:
+   * 应用调整 would make nothing (`applyHint` says so) — show it disabled.
+   */
+  applyInaudible: boolean;
+  /**
+   * The lengths (seconds) the selected engine accepts, when it enforces a
+   * range; null when any length the app offers is fine. Options outside it
+   * are shown as unavailable, and a request for one asks first.
+   */
+  durationRange: readonly [number, number] | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -377,6 +427,11 @@ export interface SettingsState {
   /** desktop: where works and settings are stored */
   dataPath: string;
   version: string;
+  /**
+   * The service whose paid result the desktop shell still holds (its file
+   * was never delivered to this page), as last reported by the shell.
+   */
+  pendingResult: CloudProvider | null;
 }
 
 export type SettingsView = SettingsState;
@@ -531,6 +586,21 @@ export interface AppActions {
   exportWork(request: ExportRequest): Promise<boolean>;
   /** 重试保存: store the loaded work whose save failed. */
   retrySave(): Promise<boolean>;
+  /**
+   * 重新下载: fetch the paid result that is still waiting (`studio.pending`)
+   * and file it like any fresh result — stored, decoded, loaded. Nothing is
+   * submitted and nothing is billed. Resolves true when the work arrived.
+   */
+  downloadPending(): Promise<boolean>;
+  /**
+   * 放弃这次结果: asks first (it was already billed); on yes the result is
+   * no longer offered. Resolves true when it was given up.
+   */
+  discardPending(): Promise<boolean>;
+  /** A stray result (`studio.strays`): try to store it again. */
+  retryStray(id: string): Promise<boolean>;
+  /** A stray result: save its audio exactly as the service sent it. */
+  exportStray(id: string): Promise<boolean>;
   /** Import one project JSON (local recipes), then open it. */
   importFile(file: ImportSource): Promise<boolean>;
   /** Damaged records: save the raw stored data as JSON (never contains audio). */

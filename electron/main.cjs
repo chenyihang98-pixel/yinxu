@@ -82,6 +82,8 @@ const music = createMusicService({ fetchImpl, submitFetch });
 const agent = createAgentService({ fetchImpl });
 const closeGuard = createCloseGuard({
   isGenerating: () => music.busy,
+  // From this process's own state: it holds whatever the page reports or has forgotten.
+  pendingResult: () => music.pendingResult?.kind ?? null,
   ask: async (reason) => {
     const options = closePromptOptions(reason);
     const { response } = await (mainWindow
@@ -106,11 +108,14 @@ function registerHandlers() {
   trustedHandler("muse:get-settings", async () => {
     // One read of the credential file; a damaged entry is reported per service and never fails the call.
     const { providers, llm } = await keyStore.getOverview();
+    const waiting = music.pendingResult;
     return {
       providers,
       llm,
       dataPath: app.getPath("userData"),
       version: app.getVersion(),
+      // A paid result this process still holds; retryLastDownload(provider) collects it.
+      pendingResult: waiting ? { provider: waiting.provider } : null,
     };
   });
   trustedHandler("muse:save-provider", (provider, credentials) =>
@@ -120,13 +125,19 @@ function registerHandlers() {
     keyStore.deleteCredentials(provider),
   );
   // Credentials are read inside the job, after the lock is taken, so cancelling during the read works.
+  // While a paid result is waiting to be collected the service refuses, unless input.discardPending is true.
   trustedHandler("muse:generate-music", (input) =>
     music.generate(input, () => keyStore.getCredentials(input?.provider)),
   );
   trustedHandler("muse:cancel-generation", () => music.cancel());
-  // Fetches the last finished result again; takes a service id only - the address stays in the main process.
+  // Collects the paid result the service still holds (downloads it again, or goes on waiting for a task
+  // that had not finished); takes a service id only - the address stays in the main process.
   trustedHandler("muse:retry-download", (provider) =>
     music.retryLastDownload(provider),
+  );
+  // The user gives that result up: nothing is fetched, and closing or generating no longer asks about it.
+  trustedHandler("muse:discard-pending", (provider) =>
+    music.discardPending(provider),
   );
   // The renderer is holding a paid result that is not in the library yet: closing asks first.
   trustedHandler("muse:set-unsaved-work", (value) => {
@@ -186,6 +197,27 @@ function registerHandlers() {
     }
     return { saved: true, path: filePath };
   });
+}
+
+/** The credential file was damaged and has been set aside: say so once, whatever the page is showing. */
+function reportQuarantine({ backupName }) {
+  const options = {
+    type: "warning",
+    title: "音序 Muse",
+    message: "之前保存的密钥需要重新填写",
+    detail: `保存密钥的文件已损坏，无法读取。原文件已另存为数据目录里的「${backupName}」，应用已从空白的凭据重新开始：刚才的操作已经生效，其他服务的密钥和大模型设置请在设置中重新填写。`,
+    buttons: ["知道了"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
+  void Promise.resolve()
+    .then(() =>
+      mainWindow
+        ? dialog.showMessageBox(mainWindow, options)
+        : dialog.showMessageBox(options),
+    )
+    .catch(() => {});
 }
 
 function cancelJobs() {
@@ -255,7 +287,9 @@ else {
   app
     .whenReady()
     .then(() => {
-      keyStore = createKeyStore(app.getPath("userData"), safeStorage);
+      keyStore = createKeyStore(app.getPath("userData"), safeStorage, {
+        onQuarantine: reportQuarantine,
+      });
       for (const each of [
         session.defaultSession,
         session.fromPartition(BILLING_PARTITION),

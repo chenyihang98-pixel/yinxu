@@ -137,18 +137,58 @@ export const sweetSpot = (ctx: Pick<Ctx, "config" | "style">) =>
 const nearestOctave = (semitones: number) => mod(semitones + 6, 12) - 6;
 
 /**
- * The compass of a tune around its centre, in semitones: the verse lives in
- * about a tenth, the chorus up to a fifth above it, a breakdown a third
- * below. The compass is measured from the tune's centre and the centre from
- * the tonic, so in every key the tune has the same notes to choose from; an
- * instrument too narrow to hold the whole compass in some key cuts it off at
- * its own range there, which only the highest and lowest notes can notice.
+ * The widest compass a tune has around its centre, in semitones: the verse
+ * lives in about a tenth, the chorus up to a fifth above it, a breakdown a
+ * third below.
  */
 export const TUNE_BELOW = 10;
 export const TUNE_ABOVE = 15;
-/** the verse's own tenth inside that compass: beyond it lie the peaks of the chorus and the ends of cadence walks */
-const VERSE_BELOW = 8;
-const VERSE_ABOVE = 9;
+/**
+ * Where most of a tune's notes lie inside that compass: the verse's own tenth
+ * and the chorus a fourth above it. Beyond lie only the peaks of the chorus
+ * and the ends of cadence walks.
+ */
+const BODY_BELOW = 8;
+const BODY_ABOVE = 12;
+
+/** Where a tune sits on an instrument and how far it reaches from there. */
+export interface TuneCompass {
+  /** where the instrument puts the centre of the tune when the key leaves it free */
+  centre: number;
+  /** semitones the tune may reach below and above its centre */
+  below: number;
+  above: number;
+}
+
+/**
+ * The compass of a tune on this instrument: what the instrument has around
+ * the tune's natural centre, up to a fifth above the verse's tenth and a
+ * third below it. It belongs to the instrument, the style and a register
+ * hint (which slides the centre by a fourth, as far as the instrument goes)
+ * and never to the key: in every key the tune has the same notes to choose
+ * from, so another key is the same tune transposed, to the last note. Where
+ * the key puts that compass a little past the end of the instrument, the few
+ * notes out there are played an octave nearer (see composeLead) — they are
+ * not redrawn.
+ */
+export function tuneCompass(
+  instrument: InstrumentId,
+  style: StyleDef,
+  register?: "low" | "mid" | "high",
+): TuneCompass {
+  const trait = LEAD_TRAITS[instrument];
+  const slide = register === "low" ? -5 : register === "high" ? 5 : 0;
+  const centre = clamp(
+    naturalCentre(instrument, style) + slide,
+    trait.low + 7,
+    trait.high - 7,
+  );
+  return {
+    centre,
+    below: Math.min(TUNE_BELOW, centre - trait.low),
+    above: Math.min(TUNE_ABOVE, trait.high - centre),
+  };
+}
 
 /**
  * Where the tune sits, so the accompaniment can keep out of its way.
@@ -156,44 +196,52 @@ const VERSE_ABOVE = 9;
  * The tune is anchored to the TONIC, not to the instrument: its centre lies a
  * fixed interval from the tonic (the interval the style's own key and lead
  * give, where the centre is the instrument's sweet spot), and the tonic is
- * taken in the octave that brings this centre closest to the sweet spot of
- * the instrument in use. Another key therefore moves the whole tune by the
- * shorter way round instead of re-drawing it around a fixed pitch, and
- * another lead instrument moves it by octaves only. The shorter way is not
- * taken at any price: every semitone of the tune's compass that an octave
- * would push out of the instrument's range counts against it (those of the
- * verse far more than the peaks of the chorus), and an instrument that
- * already sings high (bells, a music box, a flute) is rather taken down than
- * up. A register hint slides the centre along the scale by a fourth.
+ * taken in the octave that brings this centre closest to where the
+ * instrument in use would put it (tuneCompass). Another key therefore moves
+ * the whole tune by the shorter way round instead of re-drawing it around a
+ * fixed pitch, and another lead instrument moves it by octaves only. The
+ * shorter way is not taken at any price: every semitone of the tune's
+ * compass that an octave would push out of the instrument's range counts
+ * against it — the notes out there have to be played an octave nearer — and
+ * those the body of the tune lives on (BODY_BELOW … BODY_ABOVE) count far
+ * more than the peaks of the chorus and the ends of cadence walks. An
+ * instrument that already sings high (bells, a music box, a flute) is rather
+ * taken down than up.
  */
 export function leadCentre(ctx: Pick<Ctx, "config" | "style" | "key">): number {
   const home = styleInfo(ctx.style.id);
   const homeCentre = naturalCentre(home.instrument, ctx.style);
   const offset = nearestOctave(homeCentre - parseKey(home.key).tonic);
-  const trait = LEAD_TRAITS[ctx.config.instrument];
-  const wanted = naturalCentre(ctx.config.instrument, ctx.style) - offset;
-  const near = wanted + nearestOctave(ctx.key.tonic - wanted);
+  const instrument = ctx.config.instrument;
+  const trait = LEAD_TRAITS[instrument];
+  const compass = tuneCompass(
+    instrument,
+    ctx.style,
+    ctx.config.arrangement?.melody?.register,
+  );
+  // (a register hint slides the centre along the scale, away from the tonic's own interval)
+  const slide = compass.centre - naturalCentre(instrument, ctx.style);
+  const wanted = compass.centre;
+  const near = wanted + nearestOctave(ctx.key.tonic + offset + slide - wanted);
   // going up costs more the higher the instrument already sits
   const shrill = 1 + clamp((trait.centre - 72) / 4, 0, 2);
-  const cost = (tonic: number) => {
-    const centre = tonic + offset;
-    const compass =
-      Math.max(0, centre + TUNE_ABOVE - trait.high) +
-      Math.max(0, trait.low - (centre - TUNE_BELOW));
-    const verse =
-      Math.max(0, centre + VERSE_ABOVE - trait.high) +
-      Math.max(0, trait.low - (centre - VERSE_BELOW));
-    const away = tonic - wanted;
-    return (
-      (away > 0 ? away * shrill : -away) + 1.5 * (compass - verse) + 4 * verse
+  const outside = (centre: number, below: number, above: number) =>
+    Math.max(0, centre + above - trait.high) +
+    Math.max(0, trait.low - (centre - below));
+  const cost = (centre: number) => {
+    const all = outside(centre, compass.below, compass.above);
+    const body = outside(
+      centre,
+      Math.min(BODY_BELOW, compass.below),
+      Math.min(BODY_ABOVE, compass.above),
     );
+    const away = centre - wanted;
+    return (away > 0 ? away * shrill : -away) + 1.5 * (all - body) + 6 * body;
   };
-  let tonic = near;
+  let centre = near;
   for (const other of [near - 12, near + 12])
-    if (cost(other) < cost(tonic)) tonic = other;
-  const hint = ctx.config.arrangement?.melody?.register;
-  const shift = hint === "low" ? -5 : hint === "high" ? 5 : 0;
-  return clamp(tonic + offset + shift, trait.low + 7, trait.high - 7);
+    if (cost(other) < cost(centre)) centre = other;
+  return centre;
 }
 
 const DEFAULT_EXTENSIONS: ExtensionTable = {

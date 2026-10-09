@@ -31,13 +31,32 @@ import {
 import type { AgentPlan, AgentRequest } from "./types";
 import {
   AMOUNT_LABELS,
+  CHIP_SLOTS,
+  FIELD_LABELS,
   TRACK_LABELS,
   buildCloudPrompt,
   describeChanges,
   describeChoices,
   keyLabel,
-  melodyNote,
+  changeLines,
+  packChips,
+  tellChanges,
+  type ChangeField,
 } from "./cloudPrompt";
+import {
+  besideCue,
+  boundCue,
+  complaintCue,
+  directionsIn,
+  fitsUnit,
+  pairKind,
+  positionCue,
+  rejectCue,
+  signOf,
+  targetCue,
+  totalCue,
+  trailingDirection,
+} from "./amounts";
 import {
   STYLE_COORDS,
   STYLE_LEADS,
@@ -47,10 +66,19 @@ import {
   type Analysis,
   type Dim,
   type Lex,
+  type Quantity,
   type Target,
 } from "./lexicon";
 import { describePins, readPins, withPins } from "./pins";
-import { read, type Clause, type Mode, type Word } from "./reading";
+import {
+  isVerbal,
+  read,
+  strangers,
+  type Clause,
+  type Mode,
+  type Word,
+} from "./reading";
+import type { Lock } from "./vetoes";
 
 const TRACKS: TrackName[] = ["melody", "chords", "bass", "drums"];
 const isTrack = (target: Target): target is TrackName =>
@@ -140,6 +168,7 @@ const MODE_LEAD =
 const MODE_TAIL =
   /^(?:吧|呢|啊|呀|嘛|哦|的|了|试试|看看|就行|就好|即可|好了|可以吗|行吗|怎么样|如何|\s)*$/;
 const MODE_COLOUR = /^\s*的?\s*(?:感觉|色彩|味道|调式|音阶|氛围|感|味)/;
+const MODE_OF = /^的[一-鿿]{2,}/;
 const MODE_PARTIAL =
   /(?:来点|来一点|加点|加一点|带点|带一点|有点|一点|一些|更|再|偏向|偏)\s*$/;
 /** Punctuation, or a number or key the lexicon already took out of the text. */
@@ -153,6 +182,8 @@ function modeInstruction(lower: string, word: Word): boolean {
   if (MODE_VERB.test(before)) return true;
   const alone = MODE_LEAD.test(before.replace(MODE_TURN, ""));
   if (alone && MODE_TAIL.test(after)) return true;
+  // "小调的欢快曲子", "大调的悲伤": said first, of the piece that follows
+  if (alone && !before.trim() && MODE_OF.test(after)) return true;
   return MODE_COLOUR.test(after) && (alone || MODE_PARTIAL.test(before));
 }
 
@@ -160,18 +191,40 @@ function modeInstruction(lower: string, word: Word): boolean {
 const needsModifier = (word: Word) =>
   (word.text.length === 1 || word.text === "long" || word.text === "short") &&
   !!(word.lex.dim || word.lex.mode || word.lex.length);
-const modified = (word: Word) =>
-  !!(word.compared || word.too || word.neg || word.very);
+/**
+ * "很快的摇滚" describes a new piece; of a piece that exists, "很快" alone is
+ * a remark ("回复很快") — there only a comparative or a complaint instructs.
+ */
+const modified = (word: Word, mode: Mode) =>
+  !!(word.compared || word.too || word.neg || (word.very && mode === "new"));
+/** What must stand in front of a describing word for it to be a wish: "要安静", "改得欢快". */
+const WISH =
+  /(?:要|想要?|希望|让它?|使它?|弄得?|改得?|调得?|变得?|做得?|显得|听起来|来点?|make it|be|sound|feel|get)\s*(?:更|再|稍微?|有点|a bit|a little)?\s*$/;
+/** How a lead is asked for when no "换成" stands in front: "用吉他", "on guitar". */
+const LEAD_CUE =
+  /^(?:[\s\u0001\u0002]|还是|那就|就|也|可以|请|麻烦|帮我|给我|把|让|这次|最好|试试|再|想|我|它|please|can you|could you|let's|lets|it|just)*(?:用|使用|采用|改用|换成?|改成?|要|来点?|上|加点?|弹|吹|拉|演奏|主奏|by|on|use|using|with|to|play(?:ed)? (?:it )?(?:on|by))\s*(?:一?[个把架台]|a|an|the)?\s*$/;
 
 /* ---------- what a request asks for ---------- */
 
 interface TrackAsk {
   track: TrackName;
-  kind: "mute" | "restore" | "add" | "only" | "set" | "step" | "scale" | "keep";
-  /** set: 0..1 · step: signed fader units · scale: factor */
+  kind:
+    | "mute"
+    | "restore"
+    | "add"
+    | "only"
+    | "set"
+    | "step"
+    | "scale"
+    | "keep"
+    | "cap"
+    | "floor";
+  /** set / cap / floor: 0..1 · step: signed fader units · scale: factor */
   value?: number;
   /** "only": the tracks that stay */
   group?: TrackName[];
+  /** asked for with a number ("鼓 40%", "鼓加大 20%") */
+  exact?: boolean;
 }
 
 /** What the request asks for, before it is applied to a configuration. */
@@ -212,6 +265,23 @@ interface Intent {
   /** exact changes ("混响加 20%") and exact values ("能量 80%") of the three sliders */
   amountBy: Partial<Record<Amount, number>>;
   amountSet: Partial<Record<Amount, number>>;
+  /** "情绪能量减半" */
+  amountFactor: Partial<Record<Amount, number>>;
+  /** "混响不要超过 30%" */
+  amountBound: Partial<Record<Amount, { cap?: number; floor?: number }>>;
+  /** values the user does not want ("不要 120 bpm"); never the value that is set */
+  rejected: { subject: Target | "duration"; value: number }[];
+  /** values complained about that the piece does not have ("120 太快" at 112) */
+  complained: { subject: Target | "duration"; value: number }[];
+  /** keys named and wanted, in order; keys named and rejected */
+  keys: string[];
+  keysRejected: string[];
+  /** what the message says must stay as it is ("别换乐器", "速度不变") */
+  locks: Set<Lock>;
+  /** something was forbidden or kept without naming what */
+  keptAsIs: boolean;
+  /** clauses that named a thing the app could not act on with confidence */
+  unsure: string[];
   /** "混响恢复": sliders (or the tempo) that go back to the style's own value */
   restored: Set<Dim>;
   /** a new piece: "安静的…" keeps the slider inside a band instead of moving it */
@@ -220,6 +290,8 @@ interface Intent {
     set?: number;
     by?: number;
     factor?: number;
+    cap?: number;
+    floor?: number;
     pos?: number;
     own?: number;
   };
@@ -279,8 +351,24 @@ function emptyScores(): Record<StyleId, number> {
   >;
 }
 
-function interpret(text: string, mode: Mode): Intent {
-  const { analysis, words, clauses } = read(text, mode);
+const TOTAL_SUBJECT = /时长|长度|总长度?|全长|总时长|duration|length|runtime/;
+/** A clause that speaks of the way the piece ends, and does not decline an ending. */
+const ENDING_WISH =
+  /^(?!.*(?:不要|不用|不需要|没有|无|别要|no |without |not ).{0,4}(?:结尾|收尾|结束|ending|outro))(?=.*(?:结尾|收尾|结束的时候|完整的结束|终止感|有头有尾|有始有终|\bending\b|\bends? (?:properly|naturally|cleanly|nicely)|\bclear end|\bproper end)).*(?:要|需要|得|有|带|干净|利落|漂亮|完整|自然|突然|终止|明确|\bwith\b|\bclear\b|\bproper|\bends?\b|\bneeds?\b|\bshould\b)/;
+const subjectLabel = (subject: Target | "duration") =>
+  subject === "tempo"
+    ? "速度"
+    : subject === "duration"
+      ? "时长"
+      : isTrack(subject)
+        ? `${TRACK_LABELS[subject]}音量`
+        : AMOUNT_LABELS[subject];
+const subjectUnit = (subject: Target | "duration") =>
+  subject === "tempo" ? " BPM" : subject === "duration" ? " 秒" : "%";
+
+function interpret(text: string, mode: Mode, current?: MusicConfig): Intent {
+  const reading = read(text, mode);
+  const { analysis, words, clauses, masked } = reading;
   const { lower } = analysis;
   const intent: Intent = {
     analysis,
@@ -313,6 +401,15 @@ function interpret(text: string, mode: Mode): Intent {
     delta: { energy: 0, complexity: 0, reverb: 0, tempo: 0 },
     amountBy: {},
     amountSet: {},
+    amountFactor: {},
+    amountBound: {},
+    rejected: [],
+    complained: [],
+    keys: [],
+    keysRejected: [],
+    locks: reading.locks,
+    keptAsIs: reading.general,
+    unsure: [],
     restored: new Set(),
     band: {},
     tempo: {},
@@ -357,8 +454,16 @@ function interpret(text: string, mode: Mode): Intent {
     reverb: 0,
     tempo: 0,
   };
-  const bump = (dim: Dim, value: number) => {
+  /** "别太吵": a limit — it lowers the piece by itself, but only caps a wish for more */
+  const limit: Record<Dim, number> = {
+    energy: 0,
+    complexity: 0,
+    reverb: 0,
+    tempo: 0,
+  };
+  const bump = (dim: Dim, value: number, asLimit = false) => {
     if (value > 0) up[dim] = Math.max(up[dim], value);
+    else if (asLimit) limit[dim] = Math.min(limit[dim], value);
     else down[dim] = Math.min(down[dim], value);
   };
   let longer = 0;
@@ -372,23 +477,41 @@ function interpret(text: string, mode: Mode): Intent {
     intent.tracks.add(entry.track);
     intent.trackAsks.push(entry);
   };
+  /** Is anything left to act on after a pair of numbers ("… 之间鼓小一点")? */
+  const strangersAfter = (start: number, end: number) =>
+    masked
+      .slice(start, end)
+      .replace(/之间|之内|范围|区间|左右|[\s的吧啊呢了]/g, "").length > 0;
+  /** A clause that is nothing but a number and particles ("降到 90" is not: it has a verb). */
+  const lonelyNumber = (clause: Clause, word: Word) => {
+    const around = strangers(reading, clause, word.start, word.end);
+    return !around.before && !around.after;
+  };
 
-  /* ----- numbers: a total, a change, a bound or a point in time ----- */
-  const TO = /到|至|成|为|是|在|=|:|\bto\b|\bat\b/;
-  const directionOf = (word: Word): 1 | -1 | undefined =>
-    word.lex.length ??
-    (word.lex.dim === "tempo" ? word.lex.dir : undefined) ??
-    (word.lex.op === "up" || word.lex.op === "add"
-      ? 1
-      : word.lex.op === "down"
-        ? -1
-        : undefined);
-  /** Tracks (through a list: "鼓和贝斯各 40%") or the slider a word stands for. */
-  const subjectsAt = (index: number): Target[] => {
+  /* ----- numbers: a difference, a target, a bound, a total, a place in time — or not wanted ----- */
+  type Subject = Target | "duration";
+  const names = (word: Word) =>
+    !!(word.lex.target || word.lex.about || (word.lex.inst && !word.lex.cat));
+  /** Does the word ask for anything by itself? */
+  const isInstruction = (word: Word) =>
+    !!(
+      word.lex.op ||
+      word.lex.dim ||
+      word.lex.neg ||
+      word.lex.inst ||
+      word.lex.arr ||
+      word.lex.target ||
+      word.lex.change ||
+      word.lex.seed ||
+      word.lex.loop !== undefined
+    );
+  /** Tracks (through a list: "鼓和贝斯各 40%") or the control a word stands for. */
+  const subjectsAt = (index: number): Subject[] => {
     const lex = words[index].lex;
+    if (lex.about) return ["duration"];
     if (lex.inst && !lex.cat) return ["melody"];
-    if (!lex.target) return lex.dim ? [lex.dim] : [];
-    const found: Target[] = [lex.target];
+    if (!lex.target) return [];
+    const found: Subject[] = [lex.target];
     let first = index;
     while (
       words[first - 1]?.lex.link &&
@@ -402,202 +525,531 @@ function interpret(text: string, mode: Mode): Intent {
     }
     return found;
   };
+  const unitFits = (unit: Quantity["unit"], subject: Subject) =>
+    unit === "bpm"
+      ? subject === "tempo"
+      : unit === "s"
+        ? subject === "duration"
+        : unit === "db"
+          ? subject !== "duration" && isTrack(subject)
+          : true;
+  /** "快一倍" doubles, "慢一半" halves, "慢两倍" halves as well. */
+  const factorOf = (value: number, dir: 1 | -1 | undefined) =>
+    dir === -1 && value > 1
+      ? 1 / value
+      : dir === 1 && value < 1
+        ? 1 + value
+        : value;
+  /** percentage points as a fraction; "0.3" is already one */
+  const fractionOf = (qty: Quantity) =>
+    qty.unit === "n" && qty.decimal && qty.value <= 1
+      ? qty.value
+      : qty.value / 100;
 
-  words.forEach((word, i) => {
-    const qty = word.lex.qty;
-    if (!qty || word.used) return;
-    word.used = true;
+  type Sense = "set" | "by" | "cap" | "floor";
+  const give = (
+    subject: Subject,
+    reading: Sense,
+    qty: Quantity,
+    dir: 1 | -1 | undefined,
+    plain: boolean,
+  ) => {
+    if (subject === "tempo") {
+      const tempo = intent.tempo;
+      if (reading === "cap" || reading === "floor") {
+        if (qty.unit === "bpm" || qty.unit === "n") tempo[reading] = qty.value;
+      } else if (qty.unit === "x") tempo.factor = factorOf(qty.value, dir);
+      else if (qty.unit === "%") {
+        if (reading === "by" && dir)
+          tempo.factor = (tempo.factor ?? 1) * (1 + (dir * qty.value) / 100);
+      } else if (reading === "by" && dir)
+        tempo.by = (tempo.by ?? 0) + dir * qty.value;
+      else tempo.set = qty.value;
+      return;
+    }
+    if (subject === "duration") {
+      const length = intent.length;
+      if (reading === "cap" || reading === "floor") {
+        if (qty.unit === "s" || qty.unit === "n") length[reading] = qty.value;
+      } else if (qty.unit === "x") length.factor = factorOf(qty.value, dir);
+      else if (qty.unit === "%") {
+        if (reading === "by" && dir)
+          length.factor = (length.factor ?? 1) * (1 + (dir * qty.value) / 100);
+      } else if (reading === "by" && dir)
+        length.by = (length.by ?? 0) + dir * qty.value;
+      else length.set = qty.value;
+      return;
+    }
+    const label = isTrack(subject)
+      ? `${TRACK_LABELS[subject]}音量`
+      : AMOUNT_LABELS[subject];
+    // a bare 1–10 on a 0–100 control is read on that scale, and said so
+    const small =
+      reading === "set" &&
+      qty.unit === "n" &&
+      !qty.decimal &&
+      qty.value >= 1 &&
+      qty.value <= 10;
+    if (small)
+      note(
+        `按 0–100 的刻度把${label}设为 ${qty.value}%；想要${qty.value}成可以说「${qty.value * 10}%」`,
+      );
+    if (isTrack(subject)) {
+      if (qty.unit === "db") {
+        if (dir)
+          ask({
+            track: subject,
+            kind: "step",
+            value: dir * clamp((qty.value / 6) * FADER_STEP, 0.05, 0.4),
+            exact: true,
+          });
+      } else if (qty.unit === "x") {
+        if (reading === "set" || reading === "by")
+          ask({
+            track: subject,
+            kind: "scale",
+            value: factorOf(qty.value, dir),
+            exact: true,
+          });
+      } else if (reading === "cap" || reading === "floor")
+        ask({
+          track: subject,
+          kind: reading,
+          value: clamp(fractionOf(qty), 0, 1),
+          exact: true,
+        });
+      else if (reading === "by" && dir)
+        ask({
+          track: subject,
+          kind: "step",
+          value: dir * fractionOf(qty),
+          exact: true,
+        });
+      else {
+        if (fractionOf(qty) > 1) note("音量最大是 100%");
+        ask({
+          track: subject,
+          kind: "set",
+          value: clamp(fractionOf(qty), 0, 1),
+          exact: true,
+        });
+      }
+      return;
+    }
+    if (qty.unit === "x") {
+      // "调到一半" is the middle of the slider, "减半" half of what it is
+      if (reading === "set" && !plain && qty.value <= 1)
+        intent.amountSet[subject] = qty.value;
+      else intent.amountFactor[subject] = factorOf(qty.value, dir);
+    } else if (reading === "cap" || reading === "floor")
+      intent.amountBound[subject] = {
+        ...intent.amountBound[subject],
+        [reading]: clamp(fractionOf(qty), 0, 1),
+      };
+    else if (reading === "by" && dir)
+      intent.amountBy[subject] =
+        (intent.amountBy[subject] ?? 0) + dir * fractionOf(qty);
+    else intent.amountSet[subject] = clamp(fractionOf(qty), 0, 1);
+  };
+
+  const quantities = words
+    .map((word, i) => ({ word, i }))
+    .filter(({ word }) => !!word.lex.qty && !word.used);
+  /** words of change that already belong to a number (offsets in the text) */
+  const claimed = new Set<number>();
+  /** what the number before spoke of: "112 太快，100 就好" */
+  let carried: Subject[] = [];
+  const currentOf = (subject: Subject): number | undefined =>
+    !current
+      ? undefined
+      : subject === "tempo"
+        ? current.bpm
+        : subject === "duration"
+          ? current.duration
+          : isTrack(subject)
+            ? Math.round(current.volumes[subject] * 100)
+            : Math.round(current[subject] * 100);
+  const sameClauseQty = (a: number, b: number) =>
+    a >= 0 &&
+    b < quantities.length &&
+    quantities[a].word.clause === quantities[b].word.clause;
+
+  quantities.forEach(({ word, i }, order) => {
+    if (word.used) return;
+    const qty = word.lex.qty as Quantity;
     const clause = clauseOf(i);
-    const before = lower.slice(clause.start, word.start);
-    const after = lower.slice(word.end, clause.end);
+    const leftStart = sameClauseQty(order - 1, order)
+      ? quantities[order - 1].word.end
+      : clause.start;
+    const rightEnd = sameClauseQty(order, order + 1)
+      ? quantities[order + 1].word.start
+      : clause.end;
+    const left = masked.slice(leftStart, word.start);
+    const right = masked.slice(word.end, rightEnd);
+    word.used = true;
 
-    // the word that governs the number: skip "再 / 个 / 大约"
-    let g = i - 1;
-    while (g >= 0 && sameClause(g, i) && words[g].lex.mod && !words[g].lex.neg)
-      g--;
-    const governed = g >= 0 && sameClause(g, i) && near(g, i, 4);
-    let dir = governed ? directionOf(words[g]) : undefined;
-    let dirIndex = dir !== undefined ? g : -1;
-    let subjectIndex = -1;
-    if (governed) {
-      if (dir === undefined || words[g].lex.op) {
-        let s = dir === undefined ? g : g - 1;
-        while (s >= 0 && sameClause(s, i) && words[s].lex.mod) s--;
-        if (
-          s >= 0 &&
-          sameClause(s, i) &&
-          (s === g || near(s, g, 3)) &&
-          (words[s].lex.target ||
-            words[s].lex.dim ||
-            words[s].lex.length ||
-            (words[s].lex.inst && !words[s].lex.cat))
-        )
-          subjectIndex = s;
-      } else subjectIndex = g;
-    }
-    // "20 seconds longer", "10 bpm faster"
-    const trailing = words[i + 1];
+    // "最大 80%", "最低 100 bpm": the superlative in front of a number is a bound word
     if (
-      dir === undefined &&
-      trailing &&
-      sameClause(i, i + 1) &&
-      near(i, i + 1, 1) &&
-      /^[a-z]/.test(trailing.text) &&
-      directionOf(trailing) !== undefined &&
-      (trailing.lex.length || trailing.lex.dim === "tempo")
-    ) {
-      dir = directionOf(trailing);
-      dirIndex = i + 1;
-      subjectIndex = i + 1;
-    }
-    const signed = /[+＋]\s*$/.test(before)
-      ? 1
-      : /(?:^|\s)-\s*$/.test(before)
-        ? -1
-        : undefined;
-    const between =
-      dirIndex >= 0 && dirIndex < i
-        ? lower.slice(words[dirIndex].end, word.start)
-        : subjectIndex >= 0 && subjectIndex < i
-          ? lower.slice(words[subjectIndex].end, word.start)
-          : "";
-    const absolute = TO.test(between);
-    const relative =
-      !absolute && (dir !== undefined || signed !== undefined)
-        ? ((dir ?? signed) as 1 | -1)
-        : undefined;
-    const consume = () => {
-      if (dirIndex >= 0) words[dirIndex].used = true;
-      if (subjectIndex >= 0 && words[subjectIndex].lex.dim)
-        words[subjectIndex].used = true;
-      if (subjectIndex >= 0 && words[subjectIndex].lex.length)
-        words[subjectIndex].used = true;
-    };
+      /^(?:最大|最小|最高|最低|max|maximum|minimum)$/.test(word.text) &&
+      sameClauseQty(order, order + 1) &&
+      /^[\s也只就得要能有是为到在]*$/.test(right)
+    )
+      return;
 
-    if (qty.unit === "s") {
-      const point =
-        qty.clock &&
-        !/(?:时长|长度|共|总长|duration|length)\s*[:=]?\s*$/.test(before)
-          ? /^\s*(?:的地方|的位置|的时候|那里|那儿|处|时|左右的地方|之后|以后|之前|以前|开始|进)/.test(
-              after,
-            )
-          : false;
-      const position =
-        point ||
-        clause.scoped ||
-        /(?:第|前|后|最后|开头|开始|末尾|头|尾|first|last|from)\s*$/.test(
-          before,
-        ) ||
-        /^\s*(?:的地方|的位置|的时候|那里|那儿|处|时进|之后|以后|之前|以前|开始|mark)/.test(
-          after,
-        ) ||
-        words.some(
-          (other, k) =>
-            k < i &&
-            sameClause(k, i) &&
-            other.lex.loop === false &&
-            near(k, i, 1),
-        );
-      if (position) {
+    // the thing the number speaks of: the nearest name in front, else right behind
+    let subjectIndex = -1;
+    for (let k = i - 1; k >= 0 && words[k].start >= leftStart; k--)
+      if (names(words[k])) {
+        subjectIndex = k;
+        break;
+      }
+    const zoneStart = subjectIndex >= 0 ? words[subjectIndex].end : leftStart;
+    if (subjectIndex < 0) {
+      const next = words[i + 1];
+      if (
+        next &&
+        next.end <= rightEnd &&
+        names(next) &&
+        /^\s*(?:左右|上下)?\s*(?:的|the|of the|times the)?\s*$/.test(
+          masked.slice(word.end, next.start),
+        )
+      )
+        subjectIndex = i + 1;
+    }
+    const zone = masked.slice(zoneStart, word.start);
+
+    // the word of change that governs it: between the name and the number
+    // ("速度往下降 10"), in front of the name ("raise the tempo 10 bpm"), or
+    // right behind the number ("10 bpm faster")
+    const hits = directionsIn(zone).filter(
+      (hit) => fitsUnit(hit, qty.unit) && !claimed.has(zoneStart + hit.start),
+    );
+    let hit = hits[hits.length - 1];
+    let hitAt = hit ? zoneStart + hit.start : -1;
+    let between = hit ? zone.slice(hit.end) : zone;
+    if (!hit && signOf(zone) === undefined && zoneStart > leftStart) {
+      const lead = masked.slice(leftStart, words[subjectIndex].start);
+      const front = directionsIn(lead)
+        .filter(
+          (found) =>
+            fitsUnit(found, qty.unit) && !claimed.has(leftStart + found.start),
+        )
+        .pop();
+      if (
+        front &&
+        /^\s*(?:the|its|my|把|将|让|一下)?\s*$/.test(lead.slice(front.end))
+      ) {
+        hit = front;
+        hitAt = leftStart + front.start;
+      }
+    }
+    if (!hit && signOf(zone) === undefined) {
+      const trailing = trailingDirection(right);
+      if (
+        trailing &&
+        fitsUnit(trailing, qty.unit) &&
+        !claimed.has(word.end + trailing.start)
+      ) {
+        hit = trailing;
+        hitAt = word.end + trailing.start;
+        between = "";
+      }
+    }
+    // the word of change belongs to this number: it is not a wish of its own as well
+    const governor =
+      hitAt >= 0
+        ? words.find((other) => other.start <= hitAt && hitAt < other.end)
+        : undefined;
+    if (hit) {
+      claimed.add(hitAt);
+      if (governor && !governor.lex.qty) governor.used = true;
+      if (!hit.only && governor?.lex.dim === "tempo")
+        hit = { ...hit, only: "tempo" };
+      if (!hit.only && governor?.lex.length) hit = { ...hit, only: "duration" };
+    }
+    const dir: 1 | -1 | undefined = hit?.dir ?? signOf(zone);
+
+    let subjects: Subject[] =
+      qty.unit === "bpm"
+        ? ["tempo"]
+        : qty.unit === "s"
+          ? ["duration"]
+          : qty.about
+            ? [qty.about]
+            : subjectIndex >= 0
+              ? subjectsAt(subjectIndex)
+              : hit?.only
+                ? [hit.only]
+                : qty.unit === "x" && /^\s*(?:as\s+)?(?:long|长)/.test(right)
+                  ? ["duration"]
+                  : qty.unit === "x" && /^\s*(?:as\s+)?(?:fast|快)/.test(right)
+                    ? ["tempo"]
+                    : [];
+    const explicit = subjects.length > 0;
+    if (subjectIndex >= 0 && subjects.some((s) => unitFits(qty.unit, s))) {
+      const lex = words[subjectIndex].lex;
+      // the name is spoken for, unless it names something the unit cannot mean
+      if (
+        qty.unit === "bpm"
+          ? lex.target === "tempo"
+          : qty.unit === "s"
+            ? !!lex.about
+            : true
+      )
+        words[subjectIndex].used = true;
+    }
+
+    /* two numbers that belong together */
+    if (sameClauseQty(order, order + 1)) {
+      const other = quantities[order + 1];
+      const otherEnd = sameClauseQty(order + 1, order + 2)
+        ? quantities[order + 2].word.start
+        : clause.end;
+      const pair = pairKind(
+        left,
+        right,
+        masked.slice(other.word.end, otherEnd),
+        !!hit,
+      );
+      const otherQty = other.word.lex.qty as Quantity;
+      const timeLike = (unit: Quantity["unit"]) => unit === "s" || unit === "n";
+      if (
+        pair === "range" &&
+        otherQty.unit === "s" &&
+        timeLike(qty.unit) &&
+        (qty.clock ||
+          otherQty.clock ||
+          (mode === "refine" &&
+            !TOTAL_SUBJECT.test(left) &&
+            strangersAfter(other.word.end, otherEnd)))
+      ) {
+        // "0:10 到 0:20 之间鼓小一点": a stretch of the piece, not its length
+        other.word.used = true;
         clause.scoped = true;
         note(TIME_NOTE);
         return;
       }
-      if (
-        /(?:不超过|不要超过|别超过|最多|最长|at most|up to|under|no more than|less than|within)\s*$/.test(
-          before,
-        ) ||
-        /^\s*(?:以内|之内|以下|or less)/.test(after)
-      ) {
-        intent.length.cap = qty.value;
+      if (pair === "range") {
+        other.word.used = true;
+        const target: Subject[] =
+          otherQty.unit === "bpm"
+            ? ["tempo"]
+            : otherQty.unit === "s"
+              ? ["duration"]
+              : explicit
+                ? subjects
+                : carried;
+        if (!target.length) {
+          word.unread = true;
+          return;
+        }
+        const [low, high] =
+          qty.value <= otherQty.value ? [qty, otherQty] : [otherQty, qty];
+        for (const subject of target) {
+          give(
+            subject,
+            "floor",
+            { ...low, unit: otherQty.unit },
+            undefined,
+            true,
+          );
+          give(
+            subject,
+            "cap",
+            { ...high, unit: otherQty.unit },
+            undefined,
+            true,
+          );
+        }
+        carried = target;
         return;
       }
-      if (
-        /(?:至少|不少于|起码|最少|at least)\s*$/.test(before) ||
-        /^\s*(?:以上|or more)/.test(after)
-      ) {
-        intent.length.floor = qty.value;
+      if (pair === "fromTo") {
+        // the first number is where it comes from: it names the thing, not the target
+        if (!explicit && current) {
+          const matches = (["tempo", "duration"] as Subject[]).filter(
+            (subject) => currentOf(subject) === qty.value,
+          );
+          if (matches.length === 1 && qty.unit === "n") subjects = matches;
+        }
+        if (subjects.length) carried = subjects;
         return;
       }
-      if (relative !== undefined) {
-        consume();
-        intent.length.by = (intent.length.by ?? 0) + relative * qty.value;
-      } else if (qty.value >= 5 && intent.length.set === undefined) {
-        consume();
-        intent.length.set = qty.value;
-      }
-      return;
     }
 
-    const subjects = subjectIndex >= 0 ? subjectsAt(subjectIndex) : [];
-    const subject: Target | "duration" | undefined =
-      qty.unit === "bpm"
-        ? "tempo"
-        : subjectIndex >= 0 && words[subjectIndex].lex.length
-          ? "duration"
-          : subjects[0];
-
-    if (subject === "tempo") {
-      if (qty.unit === "x") intent.tempo.factor = qty.value;
-      else if (qty.unit === "%" && relative === undefined && !absolute) return;
-      else if (qty.unit === "%")
-        intent.tempo.factor =
-          relative === undefined ? undefined : 1 + (relative * qty.value) / 100;
-      else if (relative !== undefined)
-        intent.tempo.by = (intent.tempo.by ?? 0) + relative * qty.value;
-      else if (intent.tempo.set === undefined) intent.tempo.set = qty.value;
-      consume();
-      if (subjectIndex >= 0) words[subjectIndex].used = true;
-      return;
-    }
-    if (subject === "duration") {
-      if (qty.unit === "x") {
-        intent.length.factor = qty.value;
-        consume();
+    if (
+      !subjects.length &&
+      (qty.unit === "n" || qty.unit === "%" || qty.unit === "x")
+    ) {
+      const fits = carried.filter((subject) =>
+        qty.unit === "%" ? subject !== "tempo" && subject !== "duration" : true,
+      );
+      if (sameClauseQty(order - 1, order)) {
+        // "速度降 60 到 52", "从 112 降到 96": still the thing the number before spoke of
+        if (!left.includes("\u0002")) subjects = fits;
+      } else if (quantities[order - 1]) {
+        // "100 就好" after "112 太快"
+        const lonely = !words.some(
+          (other, k) =>
+            k !== i &&
+            sameClause(Math.min(k, i), Math.max(k, i)) &&
+            (names(other) || other.lex.dim || other.lex.length),
+        );
+        if (lonely) subjects = fits;
       }
-      return;
     }
-    if (subject === undefined) {
+
+    /* a time inside the piece */
+    if (qty.unit === "s") {
+      const lengthCue = TOTAL_SUBJECT.test(left);
+      const point = qty.clock
+        ? !lengthCue && positionCue(left, right)
+        : positionCue(left, right) ||
+          (clause.scoped && !lengthCue) ||
+          words.some(
+            (other, k) =>
+              k < i &&
+              sameClause(k, i) &&
+              other.lex.loop === false &&
+              near(k, i, 1),
+          );
+      if (point) {
+        clause.scoped = true;
+        // "from 20 seconds on, no drums": the place named governs what follows it
+        const alone = !words.some(
+          (other, k) =>
+            k !== i &&
+            sameClause(Math.min(k, i), Math.max(k, i)) &&
+            isInstruction(other) &&
+            !/^(?:on|in|at)$/.test(other.text),
+        );
+        if (alone && clauses[word.clause + 1])
+          clauses[word.clause + 1].scoped = true;
+        note(TIME_NOTE);
+        return;
+      }
+    }
+    // "112 太快", "不要 120 那么快": a bare number, and the adjective says what it is a number of
+    if (!subjects.length && qty.unit === "n") {
+      const adjective = words.find(
+        (other, k) =>
+          k > i &&
+          sameClause(i, k) &&
+          !!(other.lex.dim === "tempo" || other.lex.length) &&
+          /^[\s那这么太有点还是也的话了]*$/.test(
+            lower.slice(word.end, other.start),
+          ),
+      );
+      if (adjective) {
+        subjects = [adjective.lex.length ? "duration" : "tempo"];
+        // the adjective describes the number that is not wanted, it is no wish of its own
+        if (rejectCue(zone)) adjective.used = true;
+      } else if (rejectCue(zone) && current) {
+        // "不要 120" said of a piece at 120 BPM: the value itself says what is meant
+        const matches = (["tempo", "duration"] as Subject[]).filter(
+          (subject) => currentOf(subject) === qty.value,
+        );
+        if (matches.length === 1) subjects = matches;
+      }
+    }
+
+    const bound = boundCue(zone, right);
+    const usable = subjects.filter((subject) => unitFits(qty.unit, subject));
+    if (!usable.length) {
       // a number with nothing to attach it to
-      if (qty.unit === "%" && /音量|volume|响度/.test(before))
+      if (
+        qty.unit === "%" &&
+        /音量|volume|响度/.test(lower.slice(clause.start, word.start))
+      )
         note(OVERALL_NOTE);
       else if (
         mode === "refine" &&
-        qty.unit === "n" &&
-        (dir !== undefined || absolute || TO.test(before.slice(-2)))
-      )
-        note(
-          `没听懂 ${qty.value} 指的是哪一项，可以说「速度 ${qty.value}」或「时长 ${qty.value} 秒」`,
+        qty.unit !== "s" &&
+        qty.unit !== "bpm" &&
+        (dir !== undefined ||
+          bound ||
+          targetCue(zone) ||
+          lonelyNumber(clause, word))
+      ) {
+        word.unread = true;
+        if (qty.unit === "n")
+          note(
+            `没听懂 ${qty.value} 指的是哪一项，可以说「速度 ${qty.value}」或「时长 ${qty.value} 秒」`,
+          );
+      }
+      return;
+    }
+    carried = usable;
+
+    if (bound) {
+      for (const subject of usable) give(subject, bound, qty, undefined, true);
+      return;
+    }
+    // "不要 120", "不是 60 秒": the value is what the user does not want
+    if (rejectCue(zone)) {
+      for (const subject of usable)
+        intent.rejected.push({ subject, value: qty.value });
+      return;
+    }
+    // "120 太快": a complaint about that value; it counts when the piece has it
+    if (mode === "refine" && complaintCue(right)) {
+      const holds = usable.some((subject) => currentOf(subject) === qty.value);
+      // the complaint itself is read by the words that follow the number
+      word.skip = true;
+      if (subjectIndex >= 0) words[subjectIndex].used = false;
+      if (!holds) {
+        const adjective = words.find(
+          (other, k) =>
+            k > i &&
+            sameClause(i, k) &&
+            !!(other.lex.dim || other.lex.length || other.lex.op),
+        );
+        if (adjective) adjective.used = true;
+        for (const subject of usable)
+          intent.complained.push({ subject, value: qty.value });
+      }
+      return;
+    }
+    const beside = besideCue(zone, right);
+    if (beside) {
+      const step =
+        usable[0] === "tempo" ? 8 : usable[0] === "duration" ? 5 : 10;
+      for (const subject of usable)
+        give(
+          subject,
+          "set",
+          { ...qty, value: qty.value + beside * step },
+          undefined,
+          true,
         );
       return;
     }
-
-    consume();
-    words[subjectIndex].used = true;
-    const fraction =
-      qty.unit === "%" || (qty.unit === "n" && qty.value > 1)
-        ? qty.value / 100
-        : qty.value;
-    for (const target of subjects) {
-      if (isTrack(target)) {
-        if (qty.unit === "x")
-          ask({ track: target, kind: "scale", value: qty.value });
-        else if (relative !== undefined)
-          ask({ track: target, kind: "step", value: relative * fraction });
-        else {
-          if (fraction > 1) note("音量最大是 100%");
-          ask({ track: target, kind: "set", value: clamp(fraction, 0, 1) });
-        }
-      } else if (target !== "tempo") {
-        if (qty.unit === "x")
-          intent.amountBy[target] = qty.value >= 1 ? 0.25 : -0.25;
-        else if (relative !== undefined)
-          intent.amountBy[target] =
-            (intent.amountBy[target] ?? 0) + relative * fraction;
-        else intent.amountSet[target] = clamp(fraction, 0, 1);
-      }
-    }
+    const total = usable[0] === "duration" && totalCue(left, right);
+    const absolute = total || targetCue(between);
+    // "下一秒", "1 秒": a moment, not a length, unless it is said to be one
+    if (qty.unit === "s" && qty.value < 5 && !absolute && dir === undefined)
+      return;
+    const sense: Sense = !absolute && dir !== undefined ? "by" : "set";
+    for (const subject of usable)
+      give(subject, sense, qty, dir, !hit && !targetCue(zone));
   });
+
+  // a value that was complained about or rejected, with nothing asked instead
+  for (const { subject, value } of intent.complained) {
+    const answered =
+      subject === "tempo"
+        ? intent.tempo.set !== undefined || intent.tempo.by !== undefined
+        : subject === "duration"
+          ? intent.length.set !== undefined || intent.length.by !== undefined
+          : isTrack(subject)
+            ? intent.trackAsks.some((entry) => entry.track === subject)
+            : intent.amountSet[subject] !== undefined;
+    const now = currentOf(subject);
+    if (!answered && now !== undefined)
+      note(
+        `现在的${subjectLabel(subject)}是 ${now}${subjectUnit(subject)}，不是 ${value}${subjectUnit(subject)}，这一句没有改动`,
+      );
+  }
 
   /* ----- mixer targets and the level words attached to them ----- */
   interface Level {
@@ -616,7 +1068,9 @@ function interpret(text: string, mode: Mode): Intent {
     const rest = lower.slice(word.end, clauseOf(k).end);
     const previous = words[k - 1];
     return (
-      /^\s*(?:了|啦|吧|呢|啊|些|点|一点|一些|得|$)/.test(rest) ||
+      /^\s*(?:了|啦|吧|呢|啊|些|点|一点|一些|得|一档|一格|一级|一下|下来|下去|上去|上来|$)/.test(
+        rest,
+      ) ||
       (!!words[k + 1]?.lex.mod && near(k, k + 1, 0)) ||
       (!!previous &&
         (!!previous.lex.mod || previous.lex.neg === "too") &&
@@ -637,6 +1091,8 @@ function interpret(text: string, mode: Mode): Intent {
     let invert = false;
     let scale = 1;
     let compared = false;
+    /** "能量不够", "鼓还不够": the word of lack closes the clause */
+    let lacking = false;
     for (
       let k = index + direction;
       k >= 0 && k < words.length;
@@ -645,7 +1101,13 @@ function interpret(text: string, mode: Mode): Intent {
       if (!(direction > 0 ? near(k - 1, k, 2) : near(k, k + 1, 2))) break;
       const word = words[k];
       const lex = word.lex;
+      lacking = false;
       if (lex.mod || lex.neg === "too") {
+        lacking =
+          direction > 0 &&
+          /不够|不太够|not enough/.test(word.text) &&
+          /^[\s了啊吧呢呀]*$/.test(lower.slice(word.end, clauseOf(k).end));
+        if (lacking) word.used = true;
         const complaint = lex.mod === "somewhat" && mode === "refine";
         if (lex.mod === "too" || lex.neg === "too" || complaint) invert = true;
         if (lex.mod === "lot") scale = 1.75;
@@ -655,9 +1117,12 @@ function interpret(text: string, mode: Mode): Intent {
           compared = true;
         continue;
       }
+      // "鼓 80% 太大": the number the complaint is about stands in between
+      if (word.skip) continue;
       if (word.used) break;
+      // "鼓大了点": said of the piece as it is, it came out too much so
       const flip = (dir: 1 | -1): 1 | -1 =>
-        (invert && !lex.fixed ? -dir : dir) as 1 | -1;
+        ((invert || word.perfect) && !lex.fixed ? -dir : dir) as 1 | -1;
       // "重低音", "太多鼓": a one-character weight word in front of the track
       if (direction < 0 && word.text.length === 1 && near(k, k + 1, 0)) {
         const dir =
@@ -743,7 +1208,9 @@ function interpret(text: string, mode: Mode): Intent {
       }
       break;
     }
-    return undefined;
+    return lacking
+      ? { kind: "up", dir: 1, scale, compared: true, text: "不够" }
+      : undefined;
   };
   /** Qualities a level adjective may have next to this target. */
   const acceptsFor =
@@ -771,7 +1238,10 @@ function interpret(text: string, mode: Mode): Intent {
     }
     for (const index of group) words[index].used = true;
     const targets = group.map((index) => words[index].lex.target as Target);
-    const negated = group.some((index) => words[index].neg === "hard");
+    // "不是鼓的问题", "除了鼓": says what it is not; only a removal removes a part
+    const negated = group.some(
+      (index) => words[index].neg === "hard" && !words[index].denied,
+    );
     const kept = group.some((index) => words[index].kept);
     const only = group.some((index) => words[index].solo);
     const scoped = mode === "refine" && clauseOf(i).scoped;
@@ -792,7 +1262,7 @@ function interpret(text: string, mode: Mode): Intent {
     // "除了鼓其他都小一点": everything but the tracks named
     const rest = words[last + 1];
     if (
-      negated &&
+      group.some((index) => words[index].neg === "hard") &&
       named.length === targets.length &&
       rest?.lex.other &&
       sameClause(last, last + 1) &&
@@ -899,6 +1369,16 @@ function interpret(text: string, mode: Mode): Intent {
     }
   }
 
+  // "把时长调高", "时长再多点": the inspector's 时长 with a word of change
+  words.forEach((word, i) => {
+    if (!word.lex.about || word.used) return;
+    const never = () => false;
+    const level = levelNear(i, 1, never) ?? levelNear(i, -1, never);
+    word.used = true;
+    if (level && (level.kind === "up" || level.kind === "down"))
+      stretch(level.dir);
+  });
+
   // "活力少一点", "少点空间感", "层次少一些": a quality with a more / less word beside it
   words.forEach((word, i) => {
     const lex = word.lex;
@@ -948,7 +1428,12 @@ function interpret(text: string, mode: Mode): Intent {
   type Role = "away" | "restyle" | "towards" | "context" | "mood";
   const roles = new Map<number, Role>();
   if (mode === "refine") {
-    const allBare = clauses.every((clause) => clause.bare);
+    const allBare = clauses.every(
+      (clause, index) =>
+        clause.pure ||
+        clause.remark ||
+        !words.some((word) => word.clause === index),
+    );
     for (let i = 0; i < words.length; i++) {
       if (!styleWord(words[i]) || roles.has(i)) continue;
       const run = [i];
@@ -984,39 +1469,53 @@ function interpret(text: string, mode: Mode): Intent {
       const named = any(
         (word) => word.lex.cat === "genre" || word.lex.cat === "era",
       );
-      const role: Role = partSwap
-        ? "context"
-        : any((word) => !!word.neg || word.too || word.less) || dosed === -1
-          ? "away"
-          : dosed === 1
-            ? "towards"
-            : clause.ctx && !any((word) => word.changed)
-              ? "context"
-              : any((word) => word.liked)
-                ? clause.want || any((word) => word.compared || word.changed)
-                  ? "restyle"
-                  : "context"
-                : any((word) => word.styled) ||
-                    (any((word) => word.changed) &&
-                      (genre || !any((word) => word.compared)))
-                  ? "restyle"
-                  : intent.restyleWanted && genre
+      // a sound the engine does not have, or a lead asked for by a style-coloured
+      // name ("换成电吉他失真"): never a reason to restyle the piece
+      const leadFirst =
+        i > 0 &&
+        !!words[i - 1].lex.inst &&
+        !words[i - 1].lex.cat &&
+        !!words[i - 1].changed &&
+        near(i - 1, i, 1);
+      const noStyle =
+        any((word) => !!word.lex.unsupported) ||
+        ((leadFirst ||
+          any((word) => !!word.lex.inst && !word.lex.cat && word.changed)) &&
+          !any((word) => word.styled || word.suffixed));
+      const role: Role =
+        partSwap || noStyle
+          ? "context"
+          : any((word) => !!word.neg || word.too || word.less) || dosed === -1
+            ? "away"
+            : dosed === 1
+              ? "towards"
+              : clause.ctx && !any((word) => word.changed)
+                ? "context"
+                : any((word) => word.liked)
+                  ? clause.want || any((word) => word.compared || word.changed)
                     ? "restyle"
-                    : any((word) => word.flavour || word.added) ||
-                        (named && any((word) => word.compared))
-                      ? "towards"
-                      : clause.bare &&
-                          genre &&
-                          (allBare ||
-                            any(
-                              (word) =>
-                                word.lex.cat === "genre" ||
-                                word.lex.cat === "era",
-                            ))
-                        ? "restyle"
-                        : genre
-                          ? "context"
-                          : "mood";
+                    : "context"
+                  : any((word) => word.styled) ||
+                      (any((word) => word.changed) &&
+                        (genre || !any((word) => word.compared)))
+                    ? "restyle"
+                    : intent.restyleWanted && genre
+                      ? "restyle"
+                      : any((word) => word.flavour || word.added) ||
+                          (named && any((word) => word.compared))
+                        ? "towards"
+                        : clause.pure &&
+                            genre &&
+                            (allBare ||
+                              any(
+                                (word) =>
+                                  word.lex.cat === "genre" ||
+                                  word.lex.cat === "era",
+                              ))
+                          ? "restyle"
+                          : genre
+                            ? "context"
+                            : "mood";
       for (const index of run)
         if (styleWord(words[index])) roles.set(index, role);
     }
@@ -1078,13 +1577,88 @@ function interpret(text: string, mode: Mode): Intent {
       lower
         .slice(clause.start, clause.end)
         .replace(/[\s的地得要点些吧啊呀\u0001]/g, "") === word.text;
-    const gated = needsModifier(word) && !modified(word) && !alone;
+    /*
+     * Refinements are read conservatively. A describing word (an adjective, a
+     * mood, a tempo word) changes the piece only as an instruction or a
+     * complaint: with a comparative, "太 / 有点 / 了点", a negation or a wish
+     * in front, or as a clause of its own. And when nothing in the clause
+     * names the music, whatever unknown word stands around it makes it a
+     * remark about something else ("回复很快", "快点交稿").
+     */
+    let said = true;
+    // ("小调" / "大调" as bare words are judged by modeInstruction)
+    if (mode === "refine" && (lex.dim || lex.length || lex.w)) {
+      const head = lower.slice(clause.start, word.start);
+      const cued =
+        !!(
+          word.compared ||
+          word.too ||
+          word.perfect ||
+          word.neg ||
+          word.less ||
+          word.changed ||
+          word.added ||
+          word.flavour ||
+          word.styled ||
+          word.suffixed ||
+          word.liked
+        ) ||
+        // "加快", "放慢", "less reverb" are instructions by themselves
+        (isVerbal(word.text) && !lex.w) ||
+        WISH.test(head);
+      const role = roles.get(i);
+      said =
+        cued ||
+        alone ||
+        clause.pure ||
+        role === "restyle" ||
+        role === "towards" ||
+        role === "away";
+      const named = words.some(
+        (other) => other.clause === word.clause && names(other),
+      );
+      if (said && !named && !clause.pure && !role) {
+        let first = i;
+        while (
+          first > 0 &&
+          (words[first - 1].lex.mod || words[first - 1].lex.neg) &&
+          near(first - 1, first, 0)
+        )
+          first--;
+        let last = i;
+        while (words[last + 1]?.lex.mod && near(last, last + 1, 0)) last++;
+        const around = strangers(
+          reading,
+          clause,
+          words[first].start,
+          words[last].end,
+        );
+        // a complaint may go on ("太复杂了听着累"); a comparative that goes on
+        // into another verb is an adverb ("快点交稿")
+        const complaint = word.too || word.perfect;
+        if (
+          [...around.before].length > 1 ||
+          (!complaint && around.after.length > 0)
+        ) {
+          said = false;
+          word.unread = true;
+        }
+      }
+    }
+    const gated =
+      !said || (needsModifier(word) && !modified(word, mode) && !alone);
     const negative = word.neg === "hard";
 
     if (lex.unsupported && !word.neg) note(lex.unsupported);
     if (lex.note && lex.inst && !word.neg) note(`${word.text}：${lex.note}`);
     if (lex.tag && !word.neg) intent.tags.push(lex.tag);
-    if (lex.seed && !word.neg)
+    // "旋律换一个调 / 乐器": the phrase goes on to name something else — no new tune
+    const goesOn =
+      /换一个$|换个$/.test(word.text) &&
+      /^\s*(?:调|八度|音色|乐器|风格|节奏|音区|key|instrument)/.test(
+        lower.slice(word.end, clause.end),
+      );
+    if (lex.seed && !word.neg && !goesOn)
       intent.seed =
         lex.seed === "melody" || intent.seed === "melody" ? "melody" : "again";
     if (lex.short && !word.neg) intent.short = true;
@@ -1092,6 +1666,13 @@ function interpret(text: string, mode: Mode): Intent {
     if (lex.tempo && !word.neg) intent.tempo.own = lex.tempo;
     if (lex.shift) intent.shift += lex.shift;
     if (lex.relative) intent.relative = lex.relative;
+    if (lex.key) {
+      // "不要 G 大调", "别用 A 小调": a key that is named to be avoided
+      const before = masked.slice(clause.start, word.start);
+      if (rejectCue(before.slice(before.lastIndexOf("\u0001") + 1)))
+        intent.keysRejected.push(lex.key);
+      else intent.keys.push(lex.key);
+    }
 
     if (lex.loop !== undefined && !word.kept) {
       const value = negative ? !lex.loop : lex.loop;
@@ -1118,12 +1699,12 @@ function interpret(text: string, mode: Mode): Intent {
       });
     }
 
-    if (lex.length && !gated && !word.neg && !word.used) {
+    if (lex.length && !gated && word.neg !== "hard" && !word.used) {
       const previous = words[i - 1];
       if (previous?.lex.section && near(i - 1, i, 1))
         note("暂时不能单独调整某一段的长度");
-      // "太短了" asks for a longer piece
-      else stretch(word.too ? -lex.length : lex.length);
+      // "太短了", "短了点", "没那么长就好了" ask for the opposite
+      else stretch(word.too || word.neg === "too" ? -lex.length : lex.length);
     }
     if (lex.section && mode === "refine") {
       // "前奏长一点" has its own note; a bare section word is no instruction
@@ -1152,12 +1733,21 @@ function interpret(text: string, mode: Mode): Intent {
       } else if (flipped) intent.modeAway.add(lex.mode);
       else if (
         !(mode === "new" && (attributive(i) || word.flavour)) &&
-        roles.get(i) !== "context"
+        roles.get(i) !== "context" &&
+        roles.get(i) !== "restyle"
       )
         intent.modeVotes.add(lex.mode);
     }
 
-    if (lex.dim && lex.dir && !word.used && !gated) {
+    // a word that names the style to change to ("改成安静专注风格") is no adjustment on top of it
+    if (
+      lex.dim &&
+      lex.dir &&
+      !word.used &&
+      !gated &&
+      roles.get(i) !== "restyle" &&
+      roles.get(i) !== "context"
+    ) {
       const inverted = (word.too || !!word.neg || !!word.less) && !lex.fixed;
       const dir = (inverted ? -lex.dir : lex.dir) as 1 | -1;
       if (lex.dim === "tempo") {
@@ -1166,10 +1756,21 @@ function interpret(text: string, mode: Mode): Intent {
         else bump("tempo", dir * STEP.tempo * word.scale);
       } else if (mode === "new" && !word.compared) {
         // a new piece has nothing to step from: "安静的…", "不要太吵" name a range
-        if (clause.scoped) note(FORM_NOTE);
+        // "结尾要干净利落" is a wish for an ending, not for a quiet section
+        if (
+          clause.scoped &&
+          ENDING_WISH.test(lower.slice(clause.start, clause.end))
+        ) {
+          /* read below as the structure */
+        } else if (clause.scoped) note(FORM_NOTE);
         else if (!attributive(i))
           intent.band[lex.dim] = { dir, very: !!word.very };
-      } else bump(lex.dim, dir * STEP[lex.dim] * word.scale);
+      } else
+        bump(
+          lex.dim,
+          dir * STEP[lex.dim] * word.scale,
+          word.neg === "too" && mode === "refine",
+        );
     }
 
     if (lex.inst) {
@@ -1186,7 +1787,27 @@ function interpret(text: string, mode: Mode): Intent {
       } else if (word.added && lex.inst === "strings")
         intent.padFromStrings = true;
       else if (!word.neg && !word.replaced && !volumeOnly) {
-        if (mode === "refine" && clause.scoped && !word.changed) {
+        // refinements: an instrument becomes the lead when it is asked for, not when it is mentioned
+        const asked =
+          mode === "new" ||
+          word.changed ||
+          word.added ||
+          word.solo ||
+          clause.pure ||
+          alone ||
+          // "这次用吉他", "but on guitar" — not "我朋友弹吉他"
+          LEAD_CUE.test(
+            masked
+              .slice(clause.start, word.start)
+              .split(
+                /但是|但|不过|然后|只是|、|\u0001|\bbut\b|\bthen\b|\band\b/,
+              )
+              .pop() ?? "",
+          ) ||
+          (!!words[i - 1]?.lex.link && !!words[i - 2]?.lex.inst);
+        if (!asked) {
+          /* "我朋友弹吉他" */
+        } else if (mode === "refine" && clause.scoped && !word.changed) {
           /* "前 8 秒只要钢琴": a part of the piece, not a new lead */
         } else if (word.changed) intent.leads.unshift(lex.inst);
         else {
@@ -1194,9 +1815,17 @@ function interpret(text: string, mode: Mode): Intent {
             intent.padFromStrings = true;
           intent.leads.push(lex.inst);
         }
-        if (word.solo && !(mode === "refine" && clause.scoped))
+        if (word.solo && !(mode === "refine" && clause.scoped)) {
           intent.soloLead = true;
-        else if (word.solo) note(SECTION_SKIP);
+          // "只要钢琴", "piano only": nothing but the lead, so every other part goes
+          if (
+            mode === "refine" &&
+            [words[i - 1], words[i + 1]].some(
+              (other) => other?.lex.op === "only",
+            )
+          )
+            ask({ track: "melody", kind: "only", group: ["melody"] });
+        } else if (word.solo) note(SECTION_SKIP);
       }
     }
 
@@ -1260,10 +1889,10 @@ function interpret(text: string, mode: Mode): Intent {
         if (context && (lex.w[best] ?? 0) >= 3 && !intent.contexts.has(best))
           intent.contexts.set(best, word.text);
       }
-      if (!context) {
+      if (!context && said) {
         intent.valence += (lex.v ?? 0) * sign;
         intent.arousal += (lex.a ?? 0) * sign;
-        if (lex.cat === "emotion" && !lex.dim)
+        if (lex.cat === "emotion" && !lex.dim && role !== "restyle")
           intent.feeling += (lex.a ?? 0) * sign;
         if (lex.pos !== undefined && !lex.dim && factor > 0)
           intent.scenePos = lex.pos;
@@ -1272,6 +1901,10 @@ function interpret(text: string, mode: Mode): Intent {
       intent.arousal += lex.a * (word.too || word.neg ? -1 : 1);
     }
   });
+  if (words.some((word) => word.unread && !word.lex.qty))
+    intent.unsure.push(
+      "这句里的形容词我没有把握是在说音乐，所以没有照着改；想调整可以直接说「快一点」或「鼓小一点」",
+    );
 
   // "鼓不要去掉，只是小一点": a level word on its own speaks of the track
   // named just before
@@ -1280,6 +1913,27 @@ function interpret(text: string, mode: Mode): Intent {
     if (word.used || (lex.op !== "up" && lex.op !== "down") || lex.dim || lex.w)
       return;
     if (word.text.length === 1 && !emphatic(i)) return;
+    // refinements: "文件很大" is a remark; a lone level word needs a comparative or a complaint
+    if (mode === "refine") {
+      const cue = [words[i - 1], words[i + 1]].some(
+        (other, side) =>
+          !!other &&
+          (side === 0 ? near(i - 1, i, 0) : near(i, i + 1, 0)) &&
+          (other.lex.neg === "too" ||
+            (!!other.lex.mod && other.lex.mod !== "very")),
+      );
+      if (!cue && !word.perfect) return;
+      const around = strangers(reading, clauseOf(i), word.start, word.end);
+      if ([...around.before].length > 1 || around.after.length > 0) {
+        // "所有声部都大一点": the whole mix has no fader here
+        if (
+          MIX_WORDS.test(lower) ||
+          /所有|全部|整体|每个|各个|\ball\b|everything/.test(lower)
+        )
+          note(OVERALL_NOTE);
+        return;
+      }
+    }
     const earlier = words
       .slice(0, i)
       .filter(
@@ -1304,9 +1958,10 @@ function interpret(text: string, mode: Mode): Intent {
     let dir: 1 | -1 = lex.op === "up" ? 1 : -1;
     const previous = words[i - 1];
     if (
-      previous &&
-      (previous.lex.mod === "too" || previous.lex.neg === "too") &&
-      near(i - 1, i, 0)
+      (previous &&
+        (previous.lex.mod === "too" || previous.lex.neg === "too") &&
+        near(i - 1, i, 0)) ||
+      word.perfect
     )
       dir = -dir as 1 | -1;
     word.used = true;
@@ -1325,18 +1980,31 @@ function interpret(text: string, mode: Mode): Intent {
       );
   });
 
+  // A new piece: a wish about how it ends ("结尾要干净利落", "有头有尾", "ends
+  // properly") is a wish for an ending, however it is worded.
+  if (
+    mode === "new" &&
+    intent.loop === undefined &&
+    clauses.some((clause) =>
+      ENDING_WISH.test(lower.slice(clause.start, clause.end)),
+    )
+  )
+    intent.loop = false;
+
   // "换个调": which key?
   if (
     mode === "refine" &&
-    /换个?调|换一个调|换调|变调|transpose/.test(lower) &&
-    !analysis.key &&
+    /换个?调(?!整)|换一个调(?!整)|换调(?!整)|变调|transpose/.test(lower) &&
+    !intent.locks.has("key") &&
+    !intent.keys.length &&
     !intent.shift &&
     !intent.modeExplicit &&
     !intent.relative
   )
     intent.askKey = true;
   if (
-    /换个?乐器|换一个乐器|换一种乐器|换种乐器|换个音色|another instrument|different instrument/.test(
+    !intent.locks.has("instrument") &&
+    /换个?乐器|换一个乐器|换一种乐器|换种乐器|换个音色|换一个音色|换一种音色|(?:乐器|音色|主奏)\s*(?:换|改)(?:一个|个|一下|掉|一种)?\s*(?:$|[,，。.!！吧])|another instrument|different instrument/.test(
       lower,
     )
   )
@@ -1350,9 +2018,14 @@ function interpret(text: string, mode: Mode): Intent {
   // a solo says something about every other track, sleep music about the drums
   if (intent.soloLead) for (const track of TRACKS) intent.tracks.add(track);
   if (intent.noDrums) intent.tracks.add("drums");
+  // "再欢快一点但是别太吵": with a wish for more beside it, "not too much" asks for no step down
+  const lowered = (dim: Dim) =>
+    up[dim] > 0 || (dim === "energy" && intent.feeling > 0)
+      ? down[dim]
+      : Math.min(down[dim], limit[dim]);
   for (const dim of AMOUNTS)
-    intent.delta[dim] = clamp(up[dim] + down[dim], -0.45, 0.45);
-  intent.delta.tempo = clamp(up.tempo + down.tempo, -30, 30);
+    intent.delta[dim] = clamp(up[dim] + lowered(dim), -0.45, 0.45);
+  intent.delta.tempo = clamp(up.tempo + lowered("tempo"), -30, 30);
   intent.length.step = longer + shorter;
   intent.valence = clamp(intent.valence, -1, 1);
   intent.arousal = clamp(intent.arousal, -1, 1);
@@ -1535,7 +2208,14 @@ export function catalogBlurb(text: string): StyleId | undefined {
 function catalogLabel(text: string): StyleId | undefined {
   const tidy = (value: string) =>
     value.replace(/[\s「」“”"'。.，,！!]+/g, "").toLowerCase();
-  const said = tidy(text).replace(/的?(?:风格|曲风)$/, "");
+  // "改成爵士小馆风格", "换成「爵士小馆」", "就要爵士小馆吧": still nothing but the name
+  const said = tidy(text)
+    .replace(
+      /^(?:请|麻烦)?(?:帮我|给我)?(?:改成|换成|换为|改为|变成|做成|切换到|切换成|切到|换到|改用|就要|用|要|来个|来一个|还是用?)/,
+      "",
+    )
+    .replace(/[吧呢啊]$/, "")
+    .replace(/的?(?:风格|曲风)$/, "");
   if (!said) return undefined;
   return STYLES.find(
     (style) => said === tidy(style.label) || said === tidy(style.english),
@@ -1587,13 +2267,23 @@ function applyParameters(
   /* tempo */
   const tempo = intent.tempo;
   const bpmBefore = config.bpm;
+  // "现在是 112 bpm 吗？有点快": the value the piece has, named next to a wish, is no target
+  if (
+    refine &&
+    tempo.set !== undefined &&
+    Math.round(tempo.set) === config.bpm &&
+    (tempo.by !== undefined ||
+      tempo.factor !== undefined ||
+      intent.delta.tempo !== 0)
+  )
+    delete tempo.set;
   const tempoAsked =
     tempo.set !== undefined ||
     tempo.by !== undefined ||
     tempo.factor !== undefined ||
     tempo.pos !== undefined ||
     intent.delta.tempo !== 0;
-  if (tempo.set !== undefined && tempo.set < 30)
+  if (tempo.set !== undefined && tempo.set < 10)
     notes.push(
       `速度范围是 ${bpmLow}–${bpmHigh} BPM，没有按 ${tempo.set} BPM 修改`,
     );
@@ -1612,10 +2302,12 @@ function applyParameters(
         config.bpm + 24,
         Math.max(config.bpm, at(intent.scenePos)),
       );
+    // a number outranks an adjective: with "160 BPM 以上" in the message, "更快" adds nothing
+    const bounded = tempo.cap !== undefined || tempo.floor !== undefined;
     const wanted =
       Math.round(config.bpm * (tempo.factor ?? 1)) +
       Math.round(tempo.by ?? 0) +
-      Math.round(intent.delta.tempo);
+      (bounded ? 0 : Math.round(intent.delta.tempo));
     config.bpm = clamp(wanted, bpmLow, bpmHigh);
     if (tempoAsked && config.bpm !== wanted) {
       if (refine && config.bpm === bpmBefore)
@@ -1628,11 +2320,54 @@ function applyParameters(
         notes.push(`速度范围是 ${bpmLow}–${bpmHigh} BPM，已取 ${config.bpm}`);
     }
   }
+  // "最多 100 bpm", "不要低于 120": brought inside the bound, never beyond it
+  for (const [side, value] of [
+    ["cap", tempo.cap],
+    ["floor", tempo.floor],
+  ] as const) {
+    if (value === undefined) continue;
+    const limit = clamp(Math.round(value), bpmLow, bpmHigh);
+    const outside = side === "cap" ? config.bpm > limit : config.bpm < limit;
+    if (outside) {
+      config.bpm = limit;
+      if (limit !== Math.round(value))
+        notes.push(`速度范围是 ${bpmLow}–${bpmHigh} BPM，已取 ${limit}`);
+    } else if (refine && !fresh && config.bpm === bpmBefore)
+      notes.push(
+        `速度 ${bpmBefore} BPM 本来就${side === "cap" ? "不超过" : "不低于"} ${Math.round(value)} BPM`,
+      );
+  }
+  // "不要 120 bpm": never the value that is set; the piece that has it is asked which way to go
+  for (const { subject, value } of intent.rejected) {
+    if (subject !== "tempo" || config.bpm !== bpmBefore || tempoAsked) continue;
+    if (!refine) {
+      if (config.bpm === Math.round(value)) {
+        config.bpm = clamp(config.bpm - 8, bpmLow, bpmHigh);
+        notes.push(`避开 ${Math.round(value)} BPM，用 ${config.bpm} BPM`);
+      }
+    } else
+      notes.push(
+        bpmBefore === Math.round(value)
+          ? `现在的速度就是 ${bpmBefore} BPM；想快一点还是慢一点？可以说「快 10 bpm」或「速度 100」`
+          : `当前速度是 ${bpmBefore} BPM，本来就不是 ${Math.round(value)} BPM`,
+      );
+  }
 
   /* length */
   const length = intent.length;
   const lengthBefore = config.duration;
-  if (length.set !== undefined) {
+  if (
+    refine &&
+    length.set !== undefined &&
+    Math.round(length.set) === config.duration &&
+    (length.by !== undefined || length.factor !== undefined || length.step)
+  )
+    delete length.set;
+  if (length.set !== undefined && length.set < 1)
+    notes.push(
+      `时长范围是 ${lengthLow}–${lengthHigh} 秒，没有按 ${length.set} 秒修改`,
+    );
+  else if (length.set !== undefined) {
     const wanted = Math.round(length.set);
     config.duration = clamp(wanted, lengthLow, lengthHigh);
     if (config.duration !== wanted)
@@ -1667,15 +2402,52 @@ function applyParameters(
           : `已经是最短的 ${lengthLow} 秒`,
       );
   } else if (fresh && mode === "new" && intent.short) config.duration = 15;
-  if (length.cap !== undefined && config.duration > length.cap)
-    config.duration = clamp(Math.round(length.cap), lengthLow, lengthHigh);
-  if (length.floor !== undefined && config.duration < length.floor)
-    config.duration = clamp(Math.round(length.floor), lengthLow, lengthHigh);
+  for (const [side, value] of [
+    ["cap", length.cap],
+    ["floor", length.floor],
+  ] as const) {
+    if (value === undefined) continue;
+    const limit = clamp(Math.round(value), lengthLow, lengthHigh);
+    const outside =
+      side === "cap" ? config.duration > limit : config.duration < limit;
+    if (outside) {
+      config.duration = limit;
+      if (limit !== Math.round(value))
+        notes.push(
+          `时长范围是 ${lengthLow}–${lengthHigh} 秒，已取 ${limit} 秒`,
+        );
+    } else if (
+      refine &&
+      config.duration === lengthBefore &&
+      length.set === undefined &&
+      length.by === undefined
+    )
+      notes.push(
+        `时长 ${lengthBefore} 秒本来就${side === "cap" ? "不超过" : "不少于"} ${Math.round(value)} 秒`,
+      );
+  }
+  for (const { subject, value } of intent.rejected) {
+    if (
+      subject !== "duration" ||
+      !refine ||
+      config.duration !== lengthBefore ||
+      length.set !== undefined ||
+      length.by !== undefined
+    )
+      continue;
+    notes.push(
+      lengthBefore === Math.round(value)
+        ? `现在的时长就是 ${lengthBefore} 秒；想长一点还是短一点？可以说「加长 15 秒」或「时长 45 秒」`
+        : `当前时长是 ${lengthBefore} 秒，本来就不是 ${Math.round(value)} 秒`,
+    );
+  }
 
   /* key */
   const keyBefore = config.key;
   const minor = () => parseKey(config.key).minor;
-  if (analysis.key) config.key = analysis.key;
+  // the last key that is wanted; a key named to be avoided is never set
+  const wantedKey = intent.keys[intent.keys.length - 1];
+  if (wantedKey) config.key = wantedKey;
   else if (intent.relative) {
     // the key that shares the notes: C major ↔ A minor
     if (minor() !== (intent.relative === "minor"))
@@ -1701,12 +2473,27 @@ function applyParameters(
       minor() ? "minor" : "major",
     );
   if (refine && !fresh && config.key === keyBefore) {
-    if (analysis.key || intent.modeExplicit || intent.relative)
+    if (wantedKey || intent.modeExplicit || intent.relative)
       notes.push(`调性已经是 ${keyLabel(keyBefore)}`);
     else if (intent.askKey)
       notes.push(
         "想换成哪个调？可以说「改成 G 大调」「转成小调」或「升一个调」",
       );
+    else if (intent.keysRejected.length)
+      notes.push(
+        intent.keysRejected.includes(keyBefore)
+          ? `现在就是 ${keyLabel(keyBefore)}；想换成哪个调？可以说「改成 G 大调」「转成小调」或「升一个调」`
+          : `当前调性是 ${keyLabel(keyBefore)}，本来就不是 ${keyLabel(intent.keysRejected[0])}`,
+      );
+  }
+  // a new piece whose style would use the key that was ruled out moves a fifth away
+  if (!refine && !wantedKey && intent.keysRejected.includes(config.key)) {
+    const avoided = config.key;
+    config.key = keyName(
+      parseKey(config.key).tonic + 7,
+      minor() ? "minor" : "major",
+    );
+    notes.push(`避开 ${keyLabel(avoided)}，改用 ${keyLabel(config.key)}`);
   }
 
   /* the three sliders */
@@ -1717,7 +2504,10 @@ function applyParameters(
     const extra = band?.very ? 0.12 : 0;
     if (band?.dir === -1) value = Math.min(value, LOW[dim] - extra);
     if (band?.dir === 1) value = Math.max(value, HIGH[dim] + extra);
-    value += intent.delta[dim] + (intent.amountBy[dim] ?? 0);
+    value =
+      value * (intent.amountFactor[dim] ?? 1) +
+      intent.delta[dim] +
+      (intent.amountBy[dim] ?? 0);
     if (dim === "energy" && refine && !fresh) value += 0.16 * intent.feeling;
     if (mode === "new" && dim !== "reverb")
       value = Math.max(value, Math.min(config[dim], 0.12));
@@ -1725,10 +2515,20 @@ function applyParameters(
       ? styleInfo(config.mood)[dim]
       : intent.amountSet[dim];
     if (set !== undefined) value = set;
+    const bound = intent.amountBound[dim];
+    if (bound?.cap !== undefined) value = Math.min(value, bound.cap);
+    if (bound?.floor !== undefined) value = Math.max(value, bound.floor);
     config[dim] = round3(clamp(value, 0, 1));
-    const moved = intent.delta[dim] + (intent.amountBy[dim] ?? 0);
+    const moved =
+      intent.delta[dim] +
+      (intent.amountBy[dim] ?? 0) +
+      ((intent.amountFactor[dim] ?? 1) - 1);
     if (refine && !fresh && config[dim] === before) {
-      if (set !== undefined)
+      if (bound && set === undefined && !moved)
+        notes.push(
+          `${AMOUNT_LABELS[dim]} ${percent(before)} 本来就在这个范围里`,
+        );
+      else if (set !== undefined)
         notes.push(`${AMOUNT_LABELS[dim]}已经是 ${percent(before)}`);
       else if (moved > 0 && before >= 1)
         notes.push(`${AMOUNT_LABELS[dim]}已经是最高的 100%`);
@@ -1787,6 +2587,8 @@ function applyParameters(
           config.volumes[other] = 0;
       if (current === 0) next = base;
     } else if (entry.kind === "set") next = entry.value ?? current;
+    else if (entry.kind === "cap") next = Math.min(current, entry.value ?? 1);
+    else if (entry.kind === "floor") next = Math.max(current, entry.value ?? 0);
     else if (entry.kind === "restore" || entry.kind === "keep")
       next = current === 0 ? base : current;
     else if (entry.kind === "add")
@@ -1805,11 +2607,13 @@ function applyParameters(
             ? `${label}本来就是打开的`
             : entry.kind === "set"
               ? `${label}音量已经是 ${percent(current)}`
-              : current >= 1
-                ? `${label}音量已经是最大的 100%`
-                : current <= 0
-                  ? `${label}已经是关闭的`
-                  : undefined;
+              : entry.kind === "cap" || entry.kind === "floor"
+                ? `${label}音量 ${percent(current)} 本来就在这个范围里`
+                : current >= 1
+                  ? `${label}音量已经是最大的 100%`
+                  : current <= 0
+                    ? `${label}已经是关闭的`
+                    : undefined;
     if (state && !idle.has(track)) idle.set(track, state);
   }
   if (!intent.touchedDrums && (intent.soloLead || (fresh && intent.noDrums)))
@@ -1980,7 +2784,13 @@ export function planWithRules(request: AgentRequest): AgentPlan {
       ? { ...chosen, mood: blurb }
       : chosen;
   const text = blurb && pins.mood === blurb ? "" : said;
-  const intent = interpret(text, mode);
+  // a style's own name, typed as the whole message, is that style and nothing on top of it
+  const named = mode === "refine" ? catalogLabel(text) : undefined;
+  const intent = interpret(
+    named ? "" : text,
+    mode,
+    mode === "refine" ? current : undefined,
+  );
   // a pinned style replaces style detection; the text still sets the parameters
   const choice: Choice = pins.mood ? {} : chooseStyle(intent);
   const notes: string[] = [];
@@ -2045,10 +2855,9 @@ export function planWithRules(request: AgentRequest): AgentPlan {
     }
   } else {
     const wanted = chooseStyle(intent, intent.restyle);
-    // the name on a style chip, typed as the whole message, is that style
-    const named = catalogLabel(text);
     if (named) wanted.tied = undefined;
-    const best = named ?? wanted.best;
+    // "不要换风格", "保持现在的风格": the style is not up for change in this message
+    const best = intent.locks.has("mood") ? undefined : (named ?? wanted.best);
     if (best && best === current.mood)
       styleNotes.push(`已经是「${styleLabel(best)}」风格`);
     else if (best && wanted.tied && wanted.tied !== current.mood)
@@ -2131,7 +2940,7 @@ export function planWithRules(request: AgentRequest): AgentPlan {
         const brighter =
           parseKey(styleInfo(id).key).minor &&
           parseKey(current.key).minor &&
-          !intent.analysis.key &&
+          !intent.keys.length &&
           !intent.modeExplicit &&
           !intent.relative &&
           !intent.modeVotes.size;
@@ -2155,6 +2964,7 @@ export function planWithRules(request: AgentRequest): AgentPlan {
   if (
     mode === "refine" &&
     intent.restyleWanted &&
+    !intent.locks.has("mood") &&
     !fresh &&
     !styleNotes.length &&
     !pins.mood
@@ -2182,12 +2992,15 @@ export function planWithRules(request: AgentRequest): AgentPlan {
     withPins({ ...config, seed: current.seed }, pins),
     current,
   );
+  // what the message said must stay holds against everything else in it
+  if (mode === "refine") holdLocks(config, current, intent.locks);
   // another go ("再来一个") is a new melody only when nothing else was asked for
   const otherwise = describeChanges(current, config);
   const reseed =
     mode === "new" ||
-    intent.seed === "melody" ||
-    (intent.seed === "again" && otherwise.length === 0);
+    (!intent.locks.has("seed") &&
+      (intent.seed === "melody" ||
+        (intent.seed === "again" && otherwise.length === 0)));
   if (reseed) {
     const next = clampConfig({ seed: request.nextSeed }, current).seed;
     // a new melody must be another melody, whatever seed the caller happened to offer
@@ -2244,19 +3057,66 @@ export function planWithRules(request: AgentRequest): AgentPlan {
     mode === "new"
       ? { ...clampConfig(baseline, current), seed: config.seed }
       : current;
-  const changes = describeChanges(before, config);
+  // an engine-1 work is re-made by the new engine: nothing of its tune carries over
+  const heard: MusicConfig =
+    (request.current as MusicConfig | null)?.engine === 1
+      ? { ...current, engine: 1 }
+      : current;
+  const told = tellChanges(before, config, {
+    baseline:
+      mode === "refine" && fresh ? clampConfig(baseline, current) : undefined,
+    provider: request.provider,
+    heard,
+  });
+  const changes = told.changes;
   const unchanged = mode === "refine" && changes.length === 0;
+  // "已经是… / 本来就…" is said of a parameter that stayed, never next to its own change
+  const stale = (message: string) => {
+    const field = noteField(message);
+    return !!field && told.fields.has(field);
+  };
+  const kept = (list: string[]) =>
+    mode === "refine" ? list.filter((message) => !stale(message)) : list;
+  const shown = { style: kept(styleNotes), notes: kept(notes) };
+  // what was heard but not carried out with confidence, in one sentence
+  if (mode === "refine")
+    for (const message of intent.unsure)
+      if (!shown.notes.includes(message)) shown.notes.push(message);
+  // "别换乐器", "速度不变": acknowledged, so a no-op is not mistaken for not listening
+  if (mode === "refine" && (intent.locks.size || intent.keptAsIs)) {
+    const names = [
+      ...new Set(
+        [...intent.locks].map((lock) =>
+          lock.startsWith("vol:")
+            ? FIELD_LABELS[lock as ChangeField]
+            : LOCK_LABELS[lock as Exclude<Lock, `vol:${TrackName}`>],
+        ),
+      ),
+    ];
+    const keeps = shown.notes.some((message) => /会保留$/.test(message));
+    if (names.length) shown.notes.unshift(`${names.join("、")}保持不变`);
+    else if (!keeps && !shown.notes.length && !shown.style.length)
+      shown.notes.unshift("好的，这些都不动");
+  }
+  // a limit that was hit is always said first
+  const ranged = (message: string) => /范围是|已取|最大是/.test(message);
+  shown.notes.sort((a, b) => Number(ranged(b)) - Number(ranged(a)));
+
   // the reasoning names the pins once, not again as changes
   const pinNotes = describePins(chosen);
-  const told =
+  const pinned = pinNotes.length ? withPins(before, chosen) : before;
+  const chipLines =
     mode === "new"
-      ? describeChoices(
-          pinNotes.length ? withPins(before, chosen) : before,
-          config,
-        )
+      ? describeChoices(pinned, config)
       : pinNotes.length
-        ? describeChanges(withPins(before, chosen), config)
-        : changes;
+        ? tellChanges(pinned, config, {
+            baseline:
+              fresh && !chosen.mood
+                ? clampConfig(baseline, current)
+                : undefined,
+            provider: request.provider,
+          }).chips
+        : told.chips;
 
   const title =
     mode === "new"
@@ -2266,45 +3126,47 @@ export function planWithRules(request: AgentRequest): AgentPlan {
           ? pickTitle(current.prompt, current.mood, current.seed)
           : pickTitle("", config.mood, current.seed));
 
-  // an engine-1 work is re-made by the new engine: nothing of its tune carries over
-  const heard: MusicConfig =
-    (request.current as MusicConfig | null)?.engine === 1
-      ? { ...current, engine: 1 }
-      : current;
   const label = styleLabel(config.mood);
   const summary = `${config.bpm} BPM、${keyLabel(config.key)}、${instrumentLabel(config.instrument)}主奏`;
-  const understood = styleNotes.length > 0 || notes.length > 0;
+  const understood = shown.style.length > 0 || shown.notes.length > 0;
+  const first = shown.notes[0];
   let reply: string;
   if (mode === "new")
     reply =
       `好的，做一段「${label}」风格的音乐：${summary}，${config.duration} 秒，${config.loop ? "循环片段" : "完整结尾"}。` +
-      (guessed && text
-        ? "这次没听出明确的风格，可以再告诉我场景、情绪或想要的乐器。"
-        : notes.length
-          ? `${notes[0]}。`
-          : "");
+      (first && ranged(first)
+        ? `${first}。`
+        : guessed && text
+          ? "这次没听出明确的风格，可以再告诉我场景、情绪或想要的乐器。"
+          : first
+            ? `${first}。`
+            : "");
   else if (unchanged)
     reply = understood
-      ? `${styleNotes[0] ?? notes[0]}。作品保持不变。`
+      ? `${shown.style[0] ?? first}。作品保持不变。`
       : (PRAISE.test(text)
           ? "很高兴你喜欢，"
           : "这句话里我没有听出要调整什么，") +
         `作品保持不变。${PRAISE.test(text) ? "想再调整" : ""}可以试试：${EXAMPLES}。`;
-  else
-    reply =
-      `好的：${changes.slice(0, 3).join("，")}${changes.length > 3 ? " 等" : ""}。` +
-      melodyNote(heard, config, request.provider) +
-      (notes.length ? `${notes[0]}。` : "");
+  else reply = told.reply + (first ? `${first}。` : "");
 
-  const reasoning = [
-    ...pinNotes,
-    ...styleNotes,
-    ...told.slice(0, 8),
-    ...notes,
+  const lead = [...pinNotes, ...shown.style];
+  const closing = [
+    ...shown.notes,
     ...(unchanged && !understood
       ? [`没有从「${quote(text)}」里识别到可执行的调整`]
       : []),
   ];
+  // every change keeps a chip; remarks take what room is left
+  const room = Math.max(
+    Math.min(chipLines.length, 3),
+    CHIP_SLOTS - lead.length - Math.min(closing.length, 2),
+  );
+  const packed = packChips(chipLines, room);
+  const reasoning = [...lead, ...packed, ...closing].slice(
+    0,
+    Math.max(CHIP_SLOTS, lead.length + packed.length),
+  );
   const tags = [
     label,
     `${config.bpm} BPM`,
@@ -2334,5 +3196,236 @@ export function planWithRules(request: AgentRequest): AgentPlan {
           ),
         }
       : {}),
+  };
+}
+
+/** The parameter a remark of the kind "X 已经是… / 本来就…" speaks of. */
+function noteField(message: string): ChangeField | undefined {
+  if (!/已经|本来就|现在就是/.test(message)) return undefined;
+  if (/^(?:当前|现在的)?速度/.test(message)) return "bpm";
+  if (/^(?:当前|现在的)?时长|^已经是最[长短]的/.test(message))
+    return "duration";
+  if (/^(?:当前)?调性|^现在就是 /.test(message)) return "key";
+  if (/^(?:当前)?主奏乐器/.test(message)) return "instrument";
+  if (/^已经是(?:循环片段|完整结尾)/.test(message)) return "loop";
+  if (/^已经是「/.test(message)) return "mood";
+  for (const field of ["energy", "complexity", "reverb"] as const)
+    if (message.startsWith(AMOUNT_LABELS[field])) return field;
+  if (/^旋律已经在最[高低]的音区|^编曲上已经/.test(message))
+    return "arrangement";
+  for (const track of TRACKS)
+    if (message.startsWith(TRACK_LABELS[track])) return `vol:${track}`;
+  return undefined;
+}
+
+const LOCK_LABELS: Record<Exclude<Lock, `vol:${TrackName}`>, string> = {
+  tempo: "速度",
+  duration: "时长",
+  key: "调性",
+  instrument: "主奏乐器",
+  mood: "风格",
+  seed: "旋律",
+  loop: "结构",
+  energy: AMOUNT_LABELS.energy,
+  complexity: AMOUNT_LABELS.complexity,
+  reverb: AMOUNT_LABELS.reverb,
+  arrangement: "编曲",
+};
+
+/** Put back what the message said must stay: a lock holds against everything else in it. */
+function holdLocks(
+  config: MusicConfig,
+  current: MusicConfig,
+  locks: ReadonlySet<Lock>,
+) {
+  for (const lock of locks) {
+    if (lock === "tempo") config.bpm = current.bpm;
+    else if (lock === "duration") config.duration = current.duration;
+    else if (lock === "key") config.key = current.key;
+    else if (lock === "instrument") config.instrument = current.instrument;
+    else if (lock === "loop") config.loop = current.loop;
+    else if (lock === "energy" || lock === "complexity" || lock === "reverb")
+      config[lock] = current[lock];
+    else if (lock === "arrangement") {
+      if (current.arrangement)
+        config.arrangement = JSON.parse(
+          JSON.stringify(current.arrangement),
+        ) as ArrangementHints;
+      else delete config.arrangement;
+    } else if (lock.startsWith("vol:")) {
+      const track = lock.slice(4) as TrackName;
+      config.volumes = { ...config.volumes, [track]: current.volumes[track] };
+    }
+  }
+}
+
+/* ---------- what a language model is held to ---------- */
+
+/**
+ * The parameters a text names, by the lexicon's own vocabulary: the names of
+ * the controls and the parts, the adjectives that belong to one control,
+ * instruments, keys, lengths and tempos. Used to check a model's own words
+ * against what actually changed.
+ */
+export function fieldsNamed(text: string): Set<ChangeField> {
+  const named = new Set<ChangeField>();
+  const said = (typeof text === "string" ? text : "").slice(0, 2000);
+  if (!said.trim()) return named;
+  const { tokens, key } = read(said, "new").analysis;
+  if (key) named.add("key");
+  for (const { lex, text: word } of tokens) {
+    // "主奏乐器", "钢琴主奏": the lead instrument, not the melody fader
+    if (lex.target === "melody" && /^(?:主奏|lead)$/.test(word)) {
+      named.add("instrument");
+      continue;
+    }
+    // names count: a control, a part, and the words that can only mean the
+    // tempo ("慢了一点"); "听起来清爽一点" describes, it names no control
+    const target = lex.target ?? (lex.dim === "tempo" ? lex.dim : undefined);
+    if (target === "tempo") named.add("bpm");
+    else if (target && isTrack(target)) named.add(`vol:${target}`);
+    else if (target) named.add(target);
+    if (lex.qty?.unit === "bpm" || lex.qty?.about === "tempo") named.add("bpm");
+    if (lex.qty?.unit === "s" || lex.about || lex.length) named.add("duration");
+    if (lex.inst) named.add("instrument");
+    if (
+      lex.key ||
+      lex.shift ||
+      lex.relative ||
+      lex.pitch ||
+      (lex.mode && !lex.w && !lex.dim)
+    )
+      named.add("key");
+    if (lex.loop !== undefined && !lex.w) named.add("loop");
+    if (lex.seed) named.add("seed");
+    if (lex.arr) named.add("arrangement");
+    if (lex.noDrums) named.add("vol:drums");
+    if (lex.w && (lex.cat === "genre" || lex.cat === "era")) named.add("mood");
+  }
+  if (/风格|曲风|\bstyle\b|\bgenre\b/i.test(said)) named.add("mood");
+  if (/乐器|音色|\binstrument\b/i.test(said)) named.add("instrument");
+  if (/调性|转调|\bkey\b/i.test(said)) named.add("key");
+  if (/循环|结尾|\bloop/i.test(said)) named.add("loop");
+  if (/\bbpm\b|拍速/i.test(said)) named.add("bpm");
+  return named;
+}
+
+/** What the rules brain reads in a request with enough confidence to hold another brain to it. */
+export interface HardReads {
+  /** the rules brain's own plan of the same request */
+  plan: AgentPlan;
+  /** parameters the text gives an exact amount for: a number, a bound, a factor */
+  exact: Set<ChangeField>;
+  /** parts the text removes, or brings back, in so many words */
+  muted: Set<TrackName>;
+  restored: Set<TrackName>;
+  /** another melody is asked for ("换个旋律") */
+  newMelody: boolean;
+  /** every word of the message was read, as an instruction or as a remark */
+  complete: boolean;
+  /** parameters the text speaks of or the rules brain changes */
+  named: Set<ChangeField>;
+  /** the numbers themselves, for a piece that does not start from the current one */
+  limits: Partial<
+    Record<
+      "bpm" | "duration" | Amount,
+      { set?: number; cap?: number; floor?: number }
+    >
+  >;
+  /** what the message says must stay as it is ("别换乐器", "速度不变") */
+  locked: ReadonlySet<Lock>;
+  /** parameters the text itself asks to turn up or down ("慢一点", "鼓大了点") */
+  directed: Set<ChangeField>;
+}
+
+export function hardReads(request: AgentRequest): HardReads {
+  const said = (typeof request.text === "string" ? request.text : "")
+    .trim()
+    .slice(0, LIMITS.promptChars);
+  const mode: Mode = request.mode === "refine" ? "refine" : "new";
+  const current = clampConfig(request.current ?? {});
+  const plan = planWithRules(request);
+  const intent = interpret(said, mode, mode === "refine" ? current : undefined);
+  const exact = new Set<ChangeField>();
+  const { tempo, length } = intent;
+  if (
+    [tempo.set, tempo.by, tempo.factor, tempo.cap, tempo.floor].some(
+      (value) => value !== undefined,
+    )
+  )
+    exact.add("bpm");
+  if (
+    [length.set, length.by, length.factor, length.cap, length.floor].some(
+      (value) => value !== undefined,
+    )
+  )
+    exact.add("duration");
+  for (const dim of AMOUNTS)
+    if (
+      intent.amountSet[dim] !== undefined ||
+      intent.amountBy[dim] !== undefined ||
+      intent.amountFactor[dim] !== undefined ||
+      intent.amountBound[dim] !== undefined
+    )
+      exact.add(dim);
+  const muted = new Set<TrackName>();
+  const restored = new Set<TrackName>();
+  for (const entry of intent.trackAsks) {
+    if (entry.exact) exact.add(`vol:${entry.track}`);
+    if (entry.kind === "mute" && plan.config.volumes[entry.track] === 0)
+      muted.add(entry.track);
+    if (entry.kind === "only")
+      for (const track of TRACKS)
+        if (
+          !(entry.group ?? [entry.track]).includes(track) &&
+          plan.config.volumes[track] === 0
+        )
+          muted.add(track);
+    if (
+      (entry.kind === "restore" || entry.kind === "add") &&
+      current.volumes[entry.track] === 0 &&
+      plan.config.volumes[entry.track] > 0
+    )
+      restored.add(entry.track);
+  }
+  const reading = { analysis: intent.analysis };
+  const complete =
+    !!said &&
+    !intent.unsure.length &&
+    !intent.words.some((word) => word.unread) &&
+    intent.clauses.every(
+      (clause) =>
+        clause.remark ||
+        strangers(reading, clause, clause.start, clause.start).after === "",
+    );
+  const named = fieldsNamed(said);
+  for (const line of changeLines(current, plan.config)) named.add(line.field);
+  return {
+    plan,
+    exact,
+    muted,
+    restored,
+    newMelody: intent.seed === "melody" && !intent.locks.has("seed"),
+    complete,
+    named,
+    limits: {
+      bpm: { set: tempo.set, cap: tempo.cap, floor: tempo.floor },
+      duration: { set: length.set, cap: length.cap, floor: length.floor },
+      ...Object.fromEntries(
+        AMOUNTS.map((dim) => [
+          dim,
+          { set: intent.amountSet[dim], ...intent.amountBound[dim] },
+        ]),
+      ),
+    },
+    locked: intent.locks,
+    directed: new Set<ChangeField>([
+      ...(intent.delta.tempo ? (["bpm"] as const) : []),
+      ...(length.step ? (["duration"] as const) : []),
+      ...AMOUNTS.filter((dim) => intent.delta[dim] !== 0),
+      ...intent.trackAsks
+        .filter((entry) => entry.kind === "step" || entry.kind === "add")
+        .map((entry) => `vol:${entry.track}` as const),
+    ]),
   };
 }

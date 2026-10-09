@@ -242,3 +242,132 @@ test("the dialog: Chinese, two buttons, the safe one is the default and what Esc
   assert.throws(() => closePromptOptions("other"), TypeError);
   assert.throws(() => createCloseGuard({}), TypeError);
 });
+
+/* -------------------------------------------------------------------- FQ-01 */
+// The guard only knew what the page told it. After the page forgot a paid result (its notice
+// was closed) the main process still held the music, and the window closed without a question.
+
+function holding(initial) {
+  const state = { pending: initial, generating: false, asked: [], left: 0 };
+  const answers = [];
+  const guard = createCloseGuard({
+    isGenerating: () => state.generating,
+    pendingResult: () => state.pending,
+    ask: async (reason) => {
+      state.asked.push(reason);
+      return answers.length ? answers.shift() : false;
+    },
+  });
+  return {
+    state,
+    guard,
+    answers,
+    leave: () => {
+      state.left++;
+    },
+  };
+}
+
+test("FQ-01: a result the main process still holds is asked about, whatever the page has reported", async () => {
+  for (const [held, reason] of [
+    ["download", "undelivered"],
+    ["task", "uncollected"],
+  ]) {
+    const { state, guard, answers, leave } = holding(held);
+    assert.equal(guard.reason(), reason);
+    // The page says nothing is at stake (or never said anything): the guard asks all the same.
+    for (const flag of [undefined, false, true, false]) {
+      if (flag !== undefined) guard.setUnsavedWork(flag);
+      const event = closeEvent();
+      assert.equal(guard.allow(event, leave), false, `${held} / ${flag}`);
+      assert.equal(event.prevented, 1);
+      await settle();
+    }
+    assert.deepEqual(state.asked, [reason, reason, reason, reason]);
+    assert.equal(state.left, 0, '"返回应用" every time');
+    // A page that loads afresh clears its own flag, not what the main process holds.
+    guard.reset();
+    assert.equal(guard.reason(), reason);
+    // "仍然关闭" leaves, once.
+    answers.push(true);
+    guard.allow(closeEvent(), leave);
+    await settle();
+    assert.equal(state.left, 1);
+    assert.equal(guard.allow(closeEvent(), leave), true);
+    assert.equal(state.asked.length, 5);
+  }
+});
+
+test("FQ-01: the held result is the reason while it is being collected, and no reason once it is gone", async () => {
+  const { state, guard, leave } = holding("download");
+  // 重新下载 is running: what would be lost is music that already exists, not "a generation".
+  state.generating = true;
+  assert.equal(guard.reason(), "undelivered");
+  state.pending = "task";
+  assert.equal(guard.reason(), "uncollected");
+  // Collected or given up, the job over: closing is free again, without a question.
+  state.pending = null;
+  assert.equal(guard.reason(), "generating");
+  state.generating = false;
+  assert.equal(guard.reason(), null);
+  const event = closeEvent();
+  assert.equal(guard.allow(event, leave), true);
+  assert.equal(event.prevented, 0);
+  assert.deepEqual(state.asked, []);
+  // The page's own flag still works as before, below both.
+  guard.setUnsavedWork(true);
+  assert.equal(guard.reason(), "unsaved");
+  state.pending = "download";
+  assert.equal(guard.reason(), "undelivered");
+  // Anything but the two known kinds is not a held result.
+  for (const odd of [undefined, "", "other", "toString", "__proto__", 1, {}]) {
+    state.pending = odd;
+    assert.equal(guard.reason(), "unsaved", String(odd));
+  }
+  guard.setUnsavedWork(false);
+  assert.equal(guard.reason(), null);
+});
+
+test("FQ-01: the two questions say that the music is paid for, will be lost, and how to get it", () => {
+  const undelivered = closePromptOptions("undelivered");
+  assert.equal(undelivered.message, "有一首已经生成的音乐还没有取回");
+  assert.match(undelivered.detail, /已经生成了这首音乐并计费/);
+  assert.match(undelivered.detail, /再也取不回/);
+  assert.match(undelivered.detail, /重新生成需要再次付费/);
+  assert.match(undelivered.detail, /「重新下载」/);
+  const uncollected = closePromptOptions("uncollected");
+  assert.equal(uncollected.message, "有一个已经提交的生成任务还没有取回");
+  assert.match(uncollected.detail, /已经提交给服务商/);
+  assert.match(uncollected.detail, /可能已经生成并计费/);
+  assert.match(uncollected.detail, /再也取不回/);
+  assert.match(uncollected.detail, /「重新下载」/);
+  for (const options of [undelivered, uncollected]) {
+    assert.deepEqual(options.buttons, ["返回应用", "仍然关闭"]);
+    assert.equal(options.defaultId, STAY);
+    assert.equal(options.cancelId, STAY);
+    assert.equal(options.type, "warning");
+  }
+  assert.deepEqual(Object.keys(CLOSE_PROMPTS).sort(), [
+    "generating",
+    "uncollected",
+    "undelivered",
+    "unsaved",
+  ]);
+  for (const inherited of ["toString", "constructor", "__proto__"])
+    assert.throws(() => closePromptOptions(inherited), TypeError, inherited);
+  assert.throws(
+    () =>
+      createCloseGuard({
+        isGenerating: () => false,
+        pendingResult: "download",
+        ask: async () => false,
+      }),
+    TypeError,
+  );
+  // Without the option the guard is the one it was.
+  const plain = createCloseGuard({
+    isGenerating: () => false,
+    ask: async () => false,
+  });
+  assert.equal(plain.reason(), null);
+});

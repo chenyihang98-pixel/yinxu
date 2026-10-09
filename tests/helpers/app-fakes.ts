@@ -21,6 +21,7 @@ import {
 import type { Session } from "../../src/state/session";
 import type { SyncMessage, TabSync } from "../../src/state/sync";
 import type {
+  CloudProvider,
   DesktopAPI,
   DesktopSettings,
   MusicConfig,
@@ -409,7 +410,13 @@ export function desktopSettings(
   };
 }
 
-export interface FakeBridge extends DesktopAPI {
+export interface FakeBridge extends Omit<DesktopAPI, "discardPendingResult"> {
+  /**
+   * Give up the paid result the "main process" holds. Absent by default:
+   * the fake then stands for a bridge without the call, which the page has
+   * to cope with — a test that needs the call sets it.
+   */
+  discardPendingResult?: DesktopAPI["discardPendingResult"];
   /** every value setUnsavedWork was called with */
   risk: boolean[];
   calls: string[];
@@ -539,7 +546,11 @@ export function sharedOrigin(session: Partial<Session> = {}): SharedOrigin {
     storage: fakeStorage(log),
     log,
     session: {
-      raw: serializeSession({ ...EMPTY_SESSION, ...session }),
+      // read and written on the fake clock, like everything else in a test
+      raw: serializeSession(
+        { ...EMPTY_SESSION, ...session },
+        new FakeClock().time,
+      ),
       writes: [],
     },
     posted,
@@ -617,7 +628,7 @@ export function harness(
   const gate: Harness["gate"] = { current: null };
   const session: Harness["session"] = {
     get value() {
-      return parseSession(origin.session.raw);
+      return parseSession(origin.session.raw, clock.now());
     },
     writes: origin.session.writes,
   };
@@ -632,7 +643,8 @@ export function harness(
 
   const deps: CoreDeps = {
     platform: platformOf(kind),
-    desktop: bridge,
+    // the page is built against the contract; see FakeBridge.discardPendingResult
+    desktop: bridge as DesktopAPI | undefined,
     storage,
     async renderMusic(config, renderOptions) {
       renders.push(config);
@@ -679,10 +691,12 @@ export function harness(
     now: clock.now,
     timers: clock.timers,
     session: {
-      read: () => parseSession(origin.session.raw),
+      read: () => parseSession(origin.session.raw, clock.now()),
       write: (value) => {
-        origin.session.raw = serializeSession(value);
-        origin.session.writes.push(parseSession(origin.session.raw));
+        origin.session.raw = serializeSession(value, clock.now());
+        origin.session.writes.push(
+          parseSession(origin.session.raw, clock.now()),
+        );
       },
     },
     sync: origin.connect(),

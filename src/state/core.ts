@@ -28,6 +28,8 @@ export class AppCore {
   private readonly library: LibraryFlows;
   private readonly settings: SettingsFlows;
   private started: Promise<void> | null = null;
+  /** start() has finished: the library is read, the last work reopened */
+  private ready = false;
   /** `load` of the player that last received the current work */
   private attachedLoad: PlayerPort["load"] | null = null;
   private stopSync: (() => void) | null = null;
@@ -86,6 +88,10 @@ export class AppCore {
       openProject: studio.openProject,
       exportWork: studio.exportWork,
       retrySave: studio.retrySave,
+      downloadPending: studio.downloadPending,
+      discardPending: studio.discardPending,
+      retryStray: studio.retryStray,
+      exportStray: studio.exportStray,
 
       rename: library.rename,
       toggleFavourite: library.toggleFavourite,
@@ -97,7 +103,7 @@ export class AppCore {
       removeDamaged: library.removeDamaged,
       refreshLibrary: library.refreshLibrary,
 
-      refreshSettings: settings.refreshSettings,
+      refreshSettings: this.refreshSettings,
       saveProvider: settings.saveProvider,
       removeProvider: settings.removeProvider,
       saveLlm: settings.saveLlm,
@@ -161,6 +167,11 @@ export class AppCore {
         // Until now a session write keeps pointing at the work to restore.
         kernel.restoreId = null;
       }
+      // A paid result the shell still holds from before a reload of this
+      // page: the offer to fetch it comes back (the library is read by now,
+      // so the work it refines can be found).
+      this.studio.syncPending();
+      this.ready = true;
     })();
     return this.started;
   }
@@ -214,6 +225,17 @@ export class AppCore {
     this.library.finishRemovals();
   };
 
+  /**
+   * Read the desktop settings again. They also say whether the shell holds a
+   * paid result that never reached this page; the studio takes that up.
+   */
+  private readonly refreshSettings: AppActions["refreshSettings"] =
+    async () => {
+      await this.settings.refreshSettings();
+      // Not before start() has read the library and reopened the last work.
+      if (this.ready) this.studio.syncPending();
+    };
+
   /* ---------------- shell ---------------- */
 
   private readonly navigate: AppActions["navigate"] = (page) => {
@@ -224,7 +246,7 @@ export class AppCore {
     const { kernel } = this;
     if (modal === "export" && !kernel.state.studio.project) return;
     kernel.dispatch({ type: "ui/modal", modal, settingsTab: tab });
-    if (modal === "settings") void this.settings.refreshSettings();
+    if (modal === "settings") void this.refreshSettings();
   };
 
   private readonly closeModal: AppActions["closeModal"] = () => {

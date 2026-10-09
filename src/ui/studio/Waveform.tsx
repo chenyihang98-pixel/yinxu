@@ -16,12 +16,14 @@ import { useRenderCount } from "../hooks/useRenderCount";
 import {
   chordLayout,
   chordPill,
+  estimateChordText,
   percentAt,
   resamplePeaks,
   spanIndexAt,
   timeAtX,
   waveBarCount,
 } from "../logic/timeline";
+import type { MeasureText } from "../logic/timeline";
 
 type Sections = ArrangementSummary["sections"];
 type Chords = ArrangementSummary["chords"];
@@ -67,6 +69,34 @@ export const SectionBands = memo(function SectionBands(props: {
 
 /* ---------------- chord strip ---------------- */
 
+/**
+ * Measures chord symbols in the strip's own type, so a label is printed
+ * wherever it really fits. Falls back to an estimate where there is no
+ * canvas (or no layout yet).
+ */
+function textMeasure(strip: Element | null): MeasureText {
+  if (!strip || typeof document === "undefined") return estimateChordText;
+  try {
+    // the type of a chord's own label, not of the strip around it
+    const style = getComputedStyle(strip.querySelector(".chord") ?? strip);
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context || !style.fontSize) return estimateChordText;
+    context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const known = new Map<string, number>();
+    return (symbol) => {
+      let width = known.get(symbol);
+      if (width === undefined) {
+        // one pixel to spare: figures are set tabular, the canvas does not know
+        width = context.measureText(symbol).width + 1;
+        known.set(symbol, width);
+      }
+      return width;
+    };
+  } catch {
+    return estimateChordText;
+  }
+}
+
 export const ChordStrip = memo(function ChordStrip(props: {
   player: Player;
   chords: Chords;
@@ -76,16 +106,22 @@ export const ChordStrip = memo(function ChordStrip(props: {
   const { player, chords, total } = props;
   const strip = useRef<HTMLDivElement>(null);
   const width = useElementWidth(strip);
+  // measured once the strip is laid out (the width is known then)
+  const measure = useMemo(
+    () => textMeasure(width > 0 ? strip.current : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [width > 0],
+  );
   const marks = useMemo(
-    () => chordLayout(chords, total, width),
-    [chords, total, width],
+    () => chordLayout(chords, total, width, undefined, measure),
+    [chords, total, width, measure],
   );
   const current = usePlaybackSelector(player, (time) =>
     spanIndexAt(chords, time),
   );
   const pill = useMemo(
-    () => chordPill(chords, marks, current, total, width),
-    [chords, marks, current, total, width],
+    () => chordPill(chords, marks, current, total, width, measure),
+    [chords, marks, current, total, width, measure],
   );
   if (!chords.length) return null;
   return (
@@ -106,6 +142,7 @@ export const ChordStrip = memo(function ChordStrip(props: {
             className="chord"
             data-current={here || undefined}
             data-shown={shown || undefined}
+            data-label={mark?.label || undefined}
             data-tick={mark?.tick || undefined}
             data-edge={(here && pill.edge) || undefined}
             aria-current={here ? "true" : undefined}

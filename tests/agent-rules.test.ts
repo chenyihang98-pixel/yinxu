@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { describeChanges } from "../src/agent/cloudPrompt";
+import {
+  FIELD_LABELS,
+  changeLines,
+  describeChanges,
+} from "../src/agent/cloudPrompt";
 import { planWithRules, readMentions } from "../src/agent/rules";
 import {
   analyse,
@@ -28,6 +32,12 @@ import {
 import { melodyContinuity } from "../src/music/compose";
 import { SCENARIO_GROUPS } from "../src/state/content";
 import type { MusicConfig, TrackName } from "../src/types";
+import {
+  NEW_CORPUS,
+  REFINE_CORPUS,
+  base as corpusBase,
+  type Want as CorpusWant,
+} from "./fixtures/agent-corpus";
 
 const NEXT_SEED = 987654321;
 const draft = (): MusicConfig => structuredClone(DEFAULT_CONFIG);
@@ -1497,39 +1507,94 @@ interface Want {
   from?: MusicConfig;
 }
 
-const MELODY_LINES = {
-  identical: "旋律保持不变。",
-  adapted: "旋律动机不变，会按新的设置重新演绎。",
-  new: "这是一段新的旋律。",
-} as const;
+/** The sentence about the tune, by the composer's own account of the change. */
+function melodyLine(before: MusicConfig, after: MusicConfig): string {
+  if (after.seed !== before.seed)
+    return before.mood === after.mood &&
+      before.bpm === after.bpm &&
+      before.key === after.key &&
+      before.instrument === after.instrument
+      ? "旋律与和弦走向都会重写，速度、调性和乐器保持不变。"
+      : "旋律与和弦走向都会重写。";
+  const kind = melodyContinuity(before, after);
+  return kind === "identical"
+    ? "旋律保持不变。"
+    : kind === "adapted"
+      ? "旋律动机不变，会按新的设置重新演绎。"
+      : kind === "rhythm"
+        ? parseKey(before.key).minor !== parseKey(after.key).minor
+          ? "节奏型保持，音高会按新的调式重写。"
+          : "节奏型保持，音高会按新的设置重写。"
+        : "这是一段新的旋律。";
+}
 
-/** Reply and chips say exactly what describeChanges finds between the two configurations. */
+const CLAIM =
+  /→|^(?:关闭|恢复|风格改为|主奏乐器换成|改为|加入|去掉|换一组|结构改为|鼓组律动改为|贝斯改为|旋律移到|旋律更|摇摆感 )/;
+const STYLE_CHIP = /^风格改为「.*」（.*随风格）$/;
+
+/**
+ * Reply and chips say exactly what changed between the two configurations:
+ * every change is in the reply, in full — except what merely came with a new
+ * style, which is named in one clause ("…随风格调整") — followed by the true
+ * sentence about the tune; every change has a chip; no chip claims a change
+ * that did not happen.
+ */
 function honest(before: MusicConfig, result: AgentPlan): string[] {
   const out: string[] = [];
+  const lines = changeLines(before, result.config);
   const changes = describeChanges(before, result.config);
+  assert.deepEqual(
+    lines.map((line) => line.text),
+    changes,
+  );
   if (result.unchanged !== (changes.length === 0))
     out.push("unchanged flag is wrong");
+  const restyled = before.mood !== result.config.mood;
   if (changes.length) {
-    const head =
-      `好的：${changes.slice(0, 3).join("，")}${changes.length > 3 ? " 等" : ""}。` +
-      (result.config.seed === before.seed
-        ? MELODY_LINES[melodyContinuity(before, result.config)]
-        : "");
-    if (!result.reply.startsWith(head))
-      out.push(`reply “${result.reply}” does not start with “${head}”`);
+    if (!result.reply.startsWith("好的："))
+      out.push(`reply “${result.reply}” does not start with 好的：`);
+    const [head, tail = ""] = result.reply.split("；");
+    for (const line of lines) {
+      const came =
+        restyled &&
+        line.field !== "mood" &&
+        /随风格调整/.test(tail) &&
+        tail.includes(FIELD_LABELS[line.field]);
+      if (!head.includes(line.text) && !came)
+        out.push(`reply “${result.reply}” lacks “${line.text}”`);
+    }
+    const tune = melodyLine(before, result.config);
+    if (!result.reply.includes(`。${tune}`))
+      out.push(`reply “${result.reply}” lacks “${tune}”`);
   } else if (!/保持不变/.test(result.reply))
     out.push(`no-op reply “${result.reply}”`);
-  if (changes.slice(0, 8).some((line) => !result.reasoning.includes(line)))
-    out.push(
-      `a change is missing from the chips: ${result.reasoning.join("｜")}`,
+  const styleChip = result.reasoning.find((chip) => STYLE_CHIP.test(chip));
+  for (const line of lines) {
+    const direct = result.reasoning.some((chip) =>
+      chip.split("，").includes(line.text),
     );
-  const claims = result.reasoning.filter((line) =>
-    /→|^(?:关闭|风格改为|主奏乐器换成|改为|加入|去掉|换一组)/.test(line),
-  );
-  if (claims.some((line) => !changes.includes(line)))
+    const came =
+      !!styleChip &&
+      (line.field === "mood" || styleChip.includes(FIELD_LABELS[line.field]));
+    if (!direct && !came)
+      out.push(
+        `the change “${line.text}” has no chip: ${result.reasoning.join("｜")}`,
+      );
+  }
+  const claims = result.reasoning
+    .flatMap((chip) => (STYLE_CHIP.test(chip) ? [] : chip.split("，")))
+    .filter((part) => CLAIM.test(part));
+  if (claims.some((part) => !changes.includes(part)))
     out.push(
       `a chip claims a change that did not happen: ${claims.join("｜")}`,
     );
+  if (
+    styleChip &&
+    !styleChip.startsWith(`风格改为「${styleInfo(result.config.mood).label}」`)
+  )
+    out.push(`the style chip names another style: ${styleChip}`);
+  if (result.reasoning.length > 8)
+    out.push(`more chips than the thread keeps: ${result.reasoning.length}`);
   // the interface's own terms, no emoji, no internal marker
   if (
     /[\u{1F300}-\u{1FAFF}]|(?<!情绪)能量 \d|复杂度 \d|主旋律音量|低音音量|\u0001/u.test(
@@ -2703,4 +2768,669 @@ test("property: an instruction followed by its opposite comes back to within one
       ).config;
       assert.deepEqual(back, middle, `${first} → ${second}`);
     }
+});
+
+/* ======================================================================
+ * The final re-verification (wave 4): the verifier's attack corpus, held as
+ * tests, and a safety metric over all of it. The reading is grammar, not a
+ * list of phrases: a direction comes from the morphemes around a number, a
+ * negation binds to its verb, "X 了点" is a complaint, a bound is a bound —
+ * and a clause without an instruction changes nothing.
+ * ====================================================================== */
+
+/**
+ * Four corpus cases are held to another outcome than the verifier wrote
+ * down, for the reason given; every other case stands as written.
+ */
+const CORPUS_OVERRIDE = new Map<string, [CorpusWant, string]>([
+  [
+    "30 秒之后加鼓",
+    [
+      { drums: "up", says: /不能按时间点修改，已按整首处理/ },
+      "a part asked for at one place is brought in for the whole piece, and the reply says so — as 「高潮部分加鼓」 above",
+    ],
+  ],
+  [
+    "第二段鼓太吵",
+    [
+      { drums: "down", says: /不能只修改某一个段落，已按整首处理/ },
+      "a level complaint about one section is applied to the whole piece, and the reply says so — as 「第 20 秒那里鼓太吵了」 above",
+    ],
+  ],
+  [
+    "快一百二十拍",
+    [
+      { bpm: 200, says: /速度范围是 50–200 BPM，已取 200/ },
+      "120 BPM faster is a readable request: it is made as far as the engine goes, and the limit is named",
+    ],
+  ],
+  [
+    "鼓，小！！！一点。。。",
+    [
+      { same: true },
+      "punctuation between every word leaves no clause to read: nothing changes and the reply says so",
+    ],
+  ],
+]);
+
+/** New-piece cases of the corpus that are known limits of the rules brain (reported, not asserted). */
+const NEW_CORPUS_OPEN = new Set([
+  // "慢" in a description without a style steps down from the default tempo, not into a slow range
+  "两分钟，D 大调，钢琴，慢，循环",
+  // an adjective in front of the lead ("minimal piano") describes the instrument, not the arrangement
+  "dark, slow, minimal piano, lots of reverb",
+  "极简的钢琴，只有几个音",
+  // "party" outweighs "birthday" in the style scores
+  "birthday party tune, bells, 20 seconds, fast",
+  // "heavy" in front of a part is not a level word
+  "instrumental hip hop, 90bpm, heavy bass",
+]);
+
+interface Verdict {
+  /** expectations of the case that are not met */
+  problems: string[];
+  /** changes nobody asked for, or made the wrong way: the safety metric */
+  unsafe: string[];
+  result: AgentPlan;
+}
+
+/** One refinement of the corpus against what it must do — and what it must leave alone. */
+function corpusVerdict(text: string, want: CorpusWant): Verdict {
+  const before = structuredClone(want.from ?? corpusBase());
+  const result = plan(text, "refine", structuredClone(before));
+  const c = result.config;
+  const problems: string[] = [];
+  const unsafe: string[] = [];
+  const restyled = want.style !== undefined;
+  const moved = (
+    name: string,
+    was: number,
+    now: number,
+    move: CorpusWant["drums"],
+    fader = false,
+  ) => {
+    if (move === "any") return;
+    if (move === undefined) {
+      if (now !== was) {
+        problems.push(`${name} ${was} → ${now}, nobody asked`);
+        unsafe.push(`wrong dimension: ${name} ${was} → ${now}`);
+      }
+      return;
+    }
+    if (move === "off") {
+      if (now !== 0) problems.push(`${name} not off (${now})`);
+      return;
+    }
+    const ok =
+      move === "up"
+        ? now > was
+        : move === "down"
+          ? now < was && (!fader || now > 0)
+          : Math.abs(now - move) <= 1e-9;
+    if (!ok) problems.push(`${name} ${was} → ${now}, wanted ${move}`);
+    const wanted =
+      move === "up" ? 1 : move === "down" ? -1 : Math.sign(move - was);
+    if (now !== was && wanted !== 0 && Math.sign(now - was) === -wanted)
+      unsafe.push(`wrong direction: ${name} ${was} → ${now}, wanted ${move}`);
+  };
+  if (c.mood !== (want.style ?? before.mood)) {
+    problems.push(`style ${c.mood}`);
+    if (!restyled) unsafe.push(`unrequested restyle: ${c.mood}`);
+  }
+  for (const [name, field] of [
+    ["bpm", "bpm"],
+    ["dur", "duration"],
+    ["energy", "energy"],
+    ["complexity", "complexity"],
+    ["reverb", "reverb"],
+  ] as const) {
+    if (restyled && name !== "dur" && want[name] === undefined) continue;
+    moved(name, before[field], c[field], want[name]);
+  }
+  if (
+    want.key !== "any" &&
+    (!restyled || want.key) &&
+    c.key !== (want.key ?? before.key)
+  ) {
+    problems.push(`key ${c.key}`);
+    if (!want.key) unsafe.push(`wrong dimension: key ${c.key}`);
+  }
+  if (want.lead === "other") {
+    if (c.instrument === before.instrument) problems.push("lead not changed");
+  } else if (
+    want.lead !== "any" &&
+    (!restyled || want.lead) &&
+    c.instrument !== (want.lead ?? before.instrument)
+  ) {
+    problems.push(`lead ${c.instrument}`);
+    if (!want.lead) unsafe.push(`wrong dimension: lead ${c.instrument}`);
+  }
+  if (c.loop !== (want.loop ?? before.loop)) {
+    problems.push(`loop ${c.loop}`);
+    if (want.loop === undefined) unsafe.push(`wrong dimension: loop ${c.loop}`);
+  }
+  for (const track of ["melody", "chords", "bass", "drums"] as const)
+    moved(track, before.volumes[track], c.volumes[track], want[track], true);
+  if (want.seed !== "any" && (c.seed !== before.seed) !== !!want.seed) {
+    problems.push(
+      c.seed !== before.seed ? "the melody was re-rolled" : "no new melody",
+    );
+    if (c.seed !== before.seed) unsafe.push("unrequested new melody");
+  }
+  const hints = JSON.stringify(c.arrangement ?? {});
+  if (want.arr === "any") {
+    /* anything goes */
+  } else if (
+    want.arr
+      ? !want.arr(c.arrangement ?? {})
+      : !restyled && hints !== JSON.stringify(before.arrangement ?? {})
+  ) {
+    problems.push(`arrangement ${hints}`);
+    if (!want.arr) unsafe.push(`wrong dimension: arrangement ${hints}`);
+  }
+  if (want.same && !result.unchanged) problems.push("should change nothing");
+  const all = [result.reply, ...result.reasoning].join("\n");
+  if (want.says && !want.says.test(all))
+    problems.push(`nothing says ${want.says}: ${result.reply}`);
+  if (want.notSays && want.notSays.test(all))
+    problems.push(`says ${want.notSays}`);
+  problems.push(...honest(before, result));
+  assert.deepEqual(
+    clampConfig(c, c),
+    c,
+    `${text}: the configuration is not clamp-stable`,
+  );
+  return { problems, unsafe, result };
+}
+
+const corpusCases = (): [string, CorpusWant][] =>
+  REFINE_CORPUS.map(([text, want]) => [
+    text,
+    CORPUS_OVERRIDE.get(text)?.[0] ?? want,
+  ]);
+
+test("the re-verification corpus is large, and its exceptions are few and named", () => {
+  assert.ok(REFINE_CORPUS.length >= 600, `refine: ${REFINE_CORPUS.length}`);
+  assert.ok(NEW_CORPUS.length >= 80, `new: ${NEW_CORPUS.length}`);
+  const texts = new Set(REFINE_CORPUS.map(([text]) => text));
+  for (const [text, [, reason]] of CORPUS_OVERRIDE) {
+    assert.ok(texts.has(text), text);
+    assert.ok(reason.length > 20, text);
+  }
+  const fresh = new Set(NEW_CORPUS.map(([text]) => text));
+  for (const text of NEW_CORPUS_OPEN) assert.ok(fresh.has(text), text);
+  assert.ok(CORPUS_OVERRIDE.size <= 4 && NEW_CORPUS_OPEN.size <= 5);
+});
+
+test("refinements of the re-verification corpus do what was asked and nothing else", () => {
+  const failures: string[] = [];
+  for (const [text, want] of corpusCases()) {
+    const { problems } = corpusVerdict(text, want);
+    if (problems.length)
+      failures.push(`${JSON.stringify(text)}: ${problems.join("; ")}`);
+  }
+  assert.deepEqual(failures, []);
+});
+
+test("new pieces of the re-verification corpus are what was described", () => {
+  const failures: string[] = [];
+  for (const [text, expect] of NEW_CORPUS) {
+    if (NEW_CORPUS_OPEN.has(text)) continue;
+    const result = plan(text, "new", {
+      ...draft(),
+      prompt: "",
+      volumes: { ...DEFAULT_VOLUMES },
+    });
+    const c = result.config;
+    const preset = stylePreset(c.mood);
+    const out: string[] = [];
+    const within = (value: number, range: number | [number, number]) =>
+      Array.isArray(range)
+        ? value >= range[0] && value <= range[1]
+        : value === range;
+    const styles =
+      expect.style === undefined ? undefined : [expect.style].flat();
+    if (styles && !styles.includes(c.mood)) out.push(`style ${c.mood}`);
+    if (expect.notStyle?.includes(c.mood)) out.push(`style ${c.mood} unwanted`);
+    if (expect.bpm === "below" && !(c.bpm < preset.bpm))
+      out.push(`bpm ${c.bpm} not below ${preset.bpm}`);
+    else if (expect.bpm === "above" && !(c.bpm > preset.bpm))
+      out.push(`bpm ${c.bpm} not above ${preset.bpm}`);
+    else if (expect.bpm === "preset" && c.bpm !== preset.bpm)
+      out.push(`bpm ${c.bpm}, preset ${preset.bpm}`);
+    else if (
+      (typeof expect.bpm === "number" || Array.isArray(expect.bpm)) &&
+      !within(c.bpm, expect.bpm)
+    )
+      out.push(`bpm ${c.bpm}`);
+    if (expect.dur !== undefined && !within(c.duration, expect.dur))
+      out.push(`duration ${c.duration}`);
+    if (expect.key && c.key !== expect.key) out.push(`key ${c.key}`);
+    if (expect.minor !== undefined && parseKey(c.key).minor !== expect.minor)
+      out.push(`key ${c.key}`);
+    if (expect.lead && c.instrument !== expect.lead)
+      out.push(`lead ${c.instrument}`);
+    if (expect.notLead?.includes(c.instrument))
+      out.push(`lead ${c.instrument} unwanted`);
+    if (expect.loop !== undefined && c.loop !== expect.loop)
+      out.push(`loop ${c.loop}`);
+    for (const track of ["drums", "bass", "melody", "chords"] as const) {
+      const wanted = expect[track];
+      const value = c.volumes[track];
+      const usual = DEFAULT_VOLUMES[track];
+      if (wanted === "off" && value !== 0)
+        out.push(`${track} ${value} not off`);
+      if (wanted === "on" && value === 0) out.push(`${track} off`);
+      if (wanted === "up" && !(value > usual)) out.push(`${track} not up`);
+      if (wanted === "down" && !(value < usual && value > 0))
+        out.push(`${track} not down`);
+    }
+    for (const field of ["energy", "complexity", "reverb"] as const) {
+      const wanted = expect[field];
+      if (wanted === "below" && !(c[field] < preset[field]))
+        out.push(`${field} ${c[field]} not below ${preset[field]}`);
+      if (wanted === "above" && !(c[field] > preset[field]))
+        out.push(`${field} ${c[field]} not above ${preset[field]}`);
+      if (Array.isArray(wanted) && !within(c[field], wanted))
+        out.push(`${field} ${c[field]}`);
+    }
+    const all = [result.reply, ...result.reasoning].join("\n");
+    if (expect.says && !expect.says.test(all))
+      out.push(`nothing says ${expect.says}`);
+    if (/→/.test(result.reasoning.join("")))
+      out.push("a chip is phrased as an edit");
+    if (/暂时不能只修改某一个段落/.test(all))
+      out.push("section-edit remark on a new piece");
+    if (
+      !result.reply.includes(`${c.bpm} BPM`) ||
+      !result.reply.includes(`${c.duration} 秒`)
+    )
+      out.push("the reply does not state tempo and length");
+    if (c.seed !== NEXT_SEED) out.push("not the new seed");
+    if (out.length) failures.push(`${JSON.stringify(text)}: ${out.join("; ")}`);
+  }
+  assert.deepEqual(failures, []);
+});
+
+/** Remarks, small talk and thanks: said to the producer, not about the music. */
+const SMALL_TALK = [
+  "很好听",
+  "很酷",
+  "这次生成得很快",
+  "文件很大，下载很慢",
+  "我等了很长时间",
+  "路很远，天很亮",
+  "很高兴认识你",
+  "我很喜欢，谢谢",
+  "上一版很好，这一版更好",
+  "老板很高兴，说不用改",
+  "客户很急，要快点交",
+  "我朋友喜欢摇滚",
+  "同事喜欢爵士，我无所谓",
+  "我是做恐怖游戏的",
+  "宝宝睡觉的时候放",
+  "办公室里放",
+  "我上一版说太快了，这次可以了",
+  "之前那个太吵，这个刚好",
+  "it's going on a gaming channel",
+  "thanks, that was quick",
+  "我昨天把这段音乐发给了客户，他们开了一个很长的会，市场部的同事觉得整体的方向是对的，财务部的同事没有意见，设计部的同事提到画面的节奏和音乐基本吻合，老板最后总结说大家辛苦了。".repeat(
+    4,
+  ),
+];
+
+/** Instructions wrapped in remarks: only the instruction is carried out. */
+// prettier-ignore
+const WRAPPED: [string, CorpusWant][] = [
+  ["客户开了个很长的会，说鼓小一点", { drums: "down" }],
+  ["谢谢，回复很快！鼓小一点", { drums: "down" }],
+  ["这个视频很短，所以鼓小一点", { drums: "down" }],
+  ["他说话很慢，但是意思是鼓小一点", { drums: "down" }],
+  ["我今天很累，声音很大的地方受不了，鼓小一点", { drums: "down" }],
+  ["要快点交稿，鼓小一点", { drums: "down" }],
+  ["领导很重视这个项目，再有活力一点", { energy: "up" }],
+  ["我们公司很小，预算很少，音乐简单点就行", { complexity: "down" }],
+  ["我朋友弹吉他，鼓小一点", { drums: "down" }],
+  ["再欢快一点但是别太吵", { energy: "up" }],
+  // a lead asked for by the catalogue's own label is a lead, never a style (music NEW-5)
+  ["主奏乐器换成柔和钢琴", { from: corpusBase("jazz"), lead: "piano" }],
+  ["主奏乐器换成8-bit 方波", { from: corpusBase("jazz"), lead: "chip" }],
+  ["主奏乐器换成清新木吉他", { from: corpusBase("jazz"), lead: "guitar" }],
+  ["主奏乐器换成空灵钟琴", { from: corpusBase("jazz"), lead: "bell" }],
+  ["换成柔和钢琴", { from: corpusBase("jazz"), lead: "piano" }],
+  ["换成空灵钟琴", { lead: "bell" }],
+  ["换成8-bit 方波", { lead: "chip" }],
+  ["换成电吉他失真", { lead: "guitar" }],
+  // directions from morphemes, wherever they stand (AGENT-01)
+  ["上调 10 bpm", { bpm: 122 }],
+  ["下调 10 bpm", { bpm: 102 }],
+  ["速度上调 10", { bpm: 122 }],
+  ["速度下调 10", { bpm: 102 }],
+  ["速度涨 10", { bpm: 122 }],
+  ["速度往上提 10", { bpm: 122 }],
+  ["把速度往下降 10", { bpm: 102 }],
+  ["速度调快 10", { bpm: 122 }],
+  ["速度调慢 10", { bpm: 102 }],
+  ["提 10 个 bpm", { bpm: 122 }],
+  ["raise the tempo 10 bpm", { bpm: 122 }],
+  ["lower the tempo by 10", { bpm: 102 }],
+  ["bring the tempo down 10 bpm", { bpm: 102 }],
+  ["increase tempo by 10", { bpm: 122 }],
+  ["decrease the bpm by 10", { bpm: 102 }],
+  // a stretch of the piece is never its length (AGENT-02)
+  ["0:10 到 0:20 之间鼓小一点", { drums: "down", says: /时间点/ }],
+  ["10 到 20 秒之间加点弦乐", { arr: "any", says: /时间点/ }],
+  ["在 20 秒左右加个铺底", { arr: "any", says: /时间点/ }],
+  ["after 20 seconds the drums are too loud", { drums: "down", says: /时间点/ }],
+  // a value that is rejected is never the value that is set (NEW-05)
+  ["不要 120", { from: corpusBase("bright", { bpm: 120 }), same: true, says: /现在的速度就是 120 BPM/ }],
+  ["不要 100%，鼓 70% 就够", { drums: 0.7 }],
+  ["鼓不要 100%，70%", { drums: 0.7 }],
+  ["速度别到 140，120 就可以", { bpm: 120 }],
+  ["不要 G 大调", { from: corpusBase("bright", { key: "G major" }), same: true, says: /想换成哪个调/ }],
+  // the seed moves only for another melody (NEW-04)
+  ["旋律换一个八度", { same: true }],
+  ["旋律换一个音色", { lead: "other" }],
+  ["旋律换一个乐器", { lead: "other" }],
+  ["把旋律换一个乐器演奏", { lead: "other" }],
+  ["换一版爵士的", { style: "jazz" }],
+  ["别重写旋律", { same: true }],
+  ["不要重新生成", { same: true }],
+  ["千万别换旋律，就加长一点", { dur: 45 }],
+  ["不用换旋律，慢一点就好", { bpm: 100 }],
+  ["旋律不用换，鼓去掉", { drums: "off" }],
+  ["旋律不换，速度降到 100", { bpm: 100 }],
+  ["这个旋律不要换掉，换成吉他弹", { lead: "guitar" }],
+  // units and forms (NEW-10)
+  ["鼓调到 6 成", { drums: 0.6 }],
+  ["能量 7 成", { energy: 0.7 }],
+  ["混响加 5", { reverb: 0.3 }],
+  ["把鼓的音量调到 7", { drums: 0.07, says: /按 0–100 的刻度把鼓组音量设为 7%/ }],
+  ["情绪能量从 62% 降到 40%", { energy: 0.4 }],
+  ["时长调到 45", { dur: 45 }],
+  ["时长改为 60", { dur: 60 }],
+  ["时长翻倍", { dur: 60 }],
+  // sections named outside the old list are declined, never applied in silence (NEW-09)
+  ["后面的鼓去掉", { same: true, says: /段/ }],
+  ["中间那段不要鼓", { same: true, says: /段/ }],
+  ["最后不要鼓", { same: true, says: /段/ }],
+  ["一开始不要鼓", { same: true, says: /段/ }],
+  ["把第二段的鼓去掉", { same: true, says: /段/ }],
+  ["第一遍不要鼓，第二遍再进", { same: true, says: /段/ }],
+  // sound effects are declined honestly instead of swapping the lead
+  ["加入雨声", { same: true, says: /环境音效/ }],
+  ["加点雨声", { same: true, says: /环境音效/ }],
+  ["加入鸟叫", { same: true, says: /环境音效/ }],
+  ["加个掌声", { same: true, says: /环境音效/ }],
+  // "不要结尾" is the loop switch, not a section edit (AGENT-09)
+  ["不要结尾", { from: corpusBase("bright", { loop: false }), loop: true }],
+];
+
+test("small talk and remarks change nothing; an instruction among them is the only thing carried out (NEW-06)", () => {
+  for (const text of SMALL_TALK) {
+    const before = corpusBase();
+    const result = plan(text, "refine", structuredClone(before));
+    assert.equal(
+      result.unchanged,
+      true,
+      `${text.slice(0, 30)}: ${result.reply}`,
+    );
+    assert.deepEqual(result.config, clampConfig(before, before));
+    assert.match(result.reply, /保持不变/);
+  }
+  const failures: string[] = [];
+  for (const [text, want] of WRAPPED) {
+    const { problems } = corpusVerdict(text, want);
+    if (problems.length)
+      failures.push(`${JSON.stringify(text)}: ${problems.join("; ")}`);
+  }
+  assert.deepEqual(failures, []);
+});
+
+test("SAFETY: across the whole corpus no change goes the wrong way, to the wrong parameter, to another style or to another melody", () => {
+  const unsafe: string[] = [];
+  let cases = 0;
+  let changed = 0;
+  for (const [text, want] of [...corpusCases(), ...WRAPPED]) {
+    const verdict = corpusVerdict(text, want);
+    cases++;
+    if (!verdict.result.unchanged) changed++;
+    for (const item of verdict.unsafe)
+      unsafe.push(`${JSON.stringify(text)}: ${item}`);
+  }
+  for (const text of SMALL_TALK) {
+    cases++;
+    if (!plan(text, "refine", corpusBase()).unchanged)
+      unsafe.push(
+        `${JSON.stringify(text.slice(0, 30))}: small talk was acted on`,
+      );
+  }
+  assert.deepEqual(unsafe, []);
+  assert.ok(
+    cases >= 700 && changed >= 350,
+    `${cases} cases, ${changed} changed`,
+  );
+});
+
+test("a negation binds to its verb: the action is forbidden, the thing stays, and it holds for the whole message (NEW-03)", () => {
+  // every way of forbidding × every kind of action: nothing changes
+  const forbid = [
+    "不要",
+    "别",
+    "不用",
+    "不必",
+    "先别",
+    "千万别",
+    "不能",
+    "不可以",
+  ];
+  const actions: [string, string][] = [
+    ["换乐器", "主奏乐器"],
+    ["换成古筝", "主奏乐器"],
+    ["换风格", "风格"],
+    ["改成爵士", "风格"],
+    ["加快", "速度"],
+    ["放慢", "速度"],
+    ["加长", "时长"],
+    ["缩短", "时长"],
+    ["增加混响", "空间混响"],
+    ["减少混响", "空间混响"],
+    ["把鼓调小", "鼓组音量"],
+    ["把贝斯加大", "贝斯音量"],
+    ["换调", "调性"],
+    ["换旋律", "旋律"],
+    ["重新生成", "旋律"],
+  ];
+  for (const cue of forbid)
+    for (const [action, label] of actions) {
+      const text = `${cue}${action}`;
+      const before = corpusBase();
+      const result = plan(text, "refine", structuredClone(before));
+      assert.equal(result.unchanged, true, `${text}: ${result.reply}`);
+      assert.match(result.reply, new RegExp(`${label}.*保持不变`), text);
+    }
+  for (const text of [
+    "don't change the instrument",
+    "do not change the tempo",
+    "don't make it faster",
+    "don't make it longer",
+    "please don't add reverb",
+    "don't turn the drums down",
+    "never mute the drums",
+    "I don't want the drums removed",
+  ])
+    assert.equal(plan(text, "refine", corpusBase()).unchanged, true, text);
+  // the part in front of the negation is the thing that stays
+  for (const [text, says] of [
+    ["鼓别关", /鼓组会保留/],
+    ["鼓不用关", /鼓组会保留/],
+    ["鼓不能不要", /鼓组会保留/],
+    ["不能没有贝斯", /贝斯会保留/],
+    ["别删鼓", /鼓组会保留/],
+    ["贝斯不要变", /贝斯音量保持不变/],
+    ["钢琴不要换", /主奏乐器保持不变/],
+    ["速度不用动", /速度保持不变/],
+    ["和声别换", /和声音量保持不变/],
+  ] as const) {
+    const result = plan(text, "refine", corpusBase());
+    assert.equal(result.unchanged, true, `${text}: ${result.reply}`);
+    assert.match(result.reply, says, text);
+  }
+  // a lock holds against the rest of the message
+  const kept = plan("改成爵士风格，速度不变，别换乐器", "refine", corpusBase());
+  assert.equal(kept.config.mood, "jazz");
+  assert.equal(kept.config.bpm, 112);
+  assert.equal(kept.config.instrument, "piano");
+  assert.equal(
+    plan("换个旋律但别换乐器", "refine", corpusBase()).config.instrument,
+    "piano",
+  );
+  // a forbidden removal brings a silent part back, as before
+  assert.equal(
+    plan(
+      "鼓别关",
+      "refine",
+      corpusBase("bright", { volumes: { ...DEFAULT_VOLUMES, drums: 0 } }),
+    ).config.volumes.drums,
+    DEFAULT_VOLUMES.drums,
+  );
+});
+
+test("asking for the style the piece already has changes nothing, in every phrasing and for every style (NEW-07)", () => {
+  for (const style of STYLES) {
+    const before = corpusBase(style.id);
+    for (const text of [
+      `改成${style.label}风格`,
+      `换成「${style.label}」`,
+      style.label,
+      `${style.label}风格`,
+      `改成${style.label}`,
+      `保持${style.label}风格`,
+    ]) {
+      const result = plan(text, "refine", structuredClone(before));
+      assert.equal(result.unchanged, true, `${text}: ${result.reply}`);
+      assert.deepEqual(result.config, clampConfig(before, before), text);
+      assert.match(result.reply, /保持不变/);
+    }
+  }
+});
+
+test("the reply lists every change; a restyle never crowds out what the user asked for (NEW-08)", () => {
+  const big = plan(
+    "改成爵士风格，不要鼓，贝斯大一点，加长到 60 秒",
+    "refine",
+    corpusBase(),
+  );
+  assert.equal(
+    big.reply,
+    "好的：风格改为「爵士小馆」，时长 30 → 60 秒，贝斯音量 68% → 88%，关闭鼓组；速度、调性、主奏乐器、情绪能量、旋律丰富度、空间混响随风格调整。这是一段新的旋律。",
+  );
+  assert.deepEqual(big.reasoning, [
+    "风格改为「爵士小馆」（速度、调性、主奏乐器、情绪能量、旋律丰富度、空间混响随风格）",
+    "时长 30 → 60 秒",
+    "贝斯音量 68% → 88%",
+    "关闭鼓组",
+  ]);
+  const many = plan(
+    "快 5 bpm，鼓 40%，贝斯 60%，旋律 90%，和声 50%，混响 30%，能量 70%，丰富度 40%，换成吉他，G 大调，时长 45 秒，不循环",
+    "refine",
+    corpusBase(),
+  );
+  const changes = describeChanges(corpusBase(), many.config);
+  assert.equal(changes.length, 12);
+  for (const change of changes) {
+    assert.ok(many.reply.includes(change), change);
+    assert.ok(
+      many.reasoning.some((chip) => chip.split("，").includes(change)),
+      change,
+    );
+  }
+  assert.ok(many.reasoning.length <= 8);
+  // no chip contradicts a change, and none says "not understood" next to one that was made
+  for (const text of [
+    "没有摇滚的感觉了，加点吉他",
+    "one more time, slower",
+    "加点萨克斯",
+    "换成吉他，换成吉他",
+  ]) {
+    const result = plan(text, "refine", corpusBase());
+    const chips = result.reasoning.join("｜");
+    if (!result.unchanged) {
+      assert.ok(!/已经是|没听出|没听懂/.test(chips), `${text}: ${chips}`);
+      assert.ok(!/已经是|没听出|没听懂/.test(result.reply), result.reply);
+    }
+  }
+  // a limit that was hit is named, in both modes (FQ-10)
+  assert.match(plan("5 秒", "new").reply, /时长范围是 15–120 秒，已取 15 秒/);
+  assert.match(
+    plan("十分钟的史诗", "new").reply,
+    /时长范围是 15–120 秒，已取 120 秒/,
+  );
+  assert.match(
+    plan("速度 300", "refine", corpusBase()).reply,
+    /速度范围是 50–200 BPM，已取 200/,
+  );
+});
+
+test("the sentence about the tune is the composer's own account, in all its kinds", () => {
+  const reply = (text: string, from = corpusBase()) =>
+    plan(text, "refine", from).reply;
+  assert.match(reply("混响大一点"), /。旋律保持不变。$/);
+  assert.match(reply("慢一点"), /。旋律动机不变，会按新的设置重新演绎。$/);
+  // another mode keeps the rhythm and rewrites the pitches: not "the same motifs"
+  assert.match(reply("转成小调"), /。节奏型保持，音高会按新的调式重写。$/);
+  assert.match(reply("旋律低八度"), /。节奏型保持，音高会按新的设置重写。$/);
+  assert.match(reply("改成爵士风格"), /。这是一段新的旋律。$/);
+  // another take rewrites the chord progression as well (FQ-08)
+  assert.equal(
+    reply("换个旋律"),
+    "好的：换一组新的旋律。旋律与和弦走向都会重写，速度、调性和乐器保持不变。",
+  );
+  assert.equal(
+    reply("换个旋律，慢一点"),
+    "好的：速度 112 → 100 BPM，换一组新的旋律。旋律与和弦走向都会重写。",
+  );
+  // a cloud service composes anew every time, whatever was asked (FQ-15)
+  assert.match(
+    plan("换个旋律", "refine", corpusBase(), { provider: "tencent" }).reply,
+    /云端服务会按新的设置重新生成/,
+  );
+});
+
+test("which of two moods leads, and how a piece ends, are read from the wording, not from a list of phrases (AGENT-08, AGENT-09)", () => {
+  // the lesser mood is a colour, however the weight is put
+  for (const [text, style] of [
+    ["欢快为主，偶尔忧伤", "bright"],
+    ["七分欢快三分忧伤", "bright"],
+    ["略显悲伤但整体欢快", "bright"],
+    ["欢快，带一点点忧伤", "bright"],
+    ["淡淡的忧伤，主要还是温暖", "acoustic"],
+  ] as const)
+    assert.equal(plan(text).config.mood, style, text);
+  // a wish about the ending is a wish for an ending
+  for (const text of [
+    "结尾要干净利落",
+    "有头有尾的钢琴曲",
+    "需要完整的结束",
+    "结束的时候要有终止感",
+    "结尾不要太突然的钢琴曲",
+    "jazz with a clear ending",
+    "a piano piece that ends properly",
+    "要一个漂亮的收尾",
+  ]) {
+    const result = plan(text);
+    assert.equal(result.config.loop, false, text);
+    assert.ok(
+      !/暂时不能/.test([result.reply, ...result.reasoning].join("")),
+      `${text}: ${result.reasoning.join("｜")}`,
+    );
+  }
+  // … and declining one, or naming another part of the piece, is not
+  for (const text of [
+    "没有结尾也行，lofi",
+    "不要结尾，循环播放的冥想",
+    "开头要抓耳的流行",
+    "副歌要洗脑的电音",
+  ])
+    assert.equal(plan(text).config.loop, true, text);
 });

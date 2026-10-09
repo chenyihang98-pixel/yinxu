@@ -31,6 +31,17 @@
   outline: none;
 }
 
+/*
+ * Over the whole dialog for the first moment after a question opens: a click
+ * that was already on its way (the second half of a double-click) lands here
+ * and answers nothing.
+ */
+.modal-shield {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
 .modal-lg {
   width: min(760px, 100%);
 }
@@ -76,6 +87,7 @@
 
 .modal-foot {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--s-2);
   flex: none;

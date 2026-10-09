@@ -975,6 +975,27 @@ test("validatePlanInput returns a clean copy and rejects anything outside the co
 
 /* --------------------------------------------------------------- messages */
 
+test("system prompt: complaints with 了, forbidden actions, bounds and rejected values are spelled out (wave 4)", () => {
+  const prompt = buildSystemPrompt();
+  const refine = prompt.slice(prompt.indexOf("- refine（修改当前作品）"));
+  // the real local model raised the drums on "鼓大了点" and kept drums on "不要鼓"
+  for (const rule of [
+    /带“了”的说法也是抱怨：“鼓大了点”“快了点”“短了”.*往相反的方向调/,
+    /“别 \/ 不要 \/ 不用 \+ 动作”是不许做这件事：“鼓别关”“别换乐器”“不要加快”时相关字段原样保留/,
+    /“至少 \/ 最多 \/ 不超过 \/ 不低于 N”是范围：当前值已经在范围里就不改/,
+    /用户否定的数值不能填进去：“不要 120，要 100”是 100/,
+    /“第 20 秒那里”“0:10 到 0:20 之间”说的是曲子里的位置，不是时长/,
+  ])
+    assert.match(refine, rule);
+  // the model is told that its reply is a note the app checks against the real change
+  assert.match(
+    prompt,
+    /- reply：.*应用会自己根据实际改动写出回复，你这句话只作为补充说明展示；其中提到的参数或声部如果实际没有改动，这句话就不会展示。/,
+  );
+  // still one stable text of a size a small local model can take in
+  assert.ok(prompt.length < 9500, String(prompt.length));
+});
+
 test("system prompt is built from the catalog and states the contract the model must follow", () => {
   const prompt = buildSystemPrompt();
   assert.equal(

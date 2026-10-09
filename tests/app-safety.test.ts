@@ -14,23 +14,32 @@ import { fittedTiming } from "../src/state/score";
 import {
   OUT_OF_MEMORY_TEXT,
   SAVE_RETRY_MS,
+  agentTurn,
   appendPhrase,
   carriedDraft,
+  cleanNote,
   draftOf,
   errorText,
+  outsideQuotes,
+  plainNames,
   rebaseVolumes,
 } from "../src/state/logic";
 import {
+  INAUDIBLE_HINT,
   applyHint,
   buildAgentRequest,
   canSendPinsOnly,
+  draftInaudible,
   enforcePins,
   honestPlan,
+  inaudiblePlan,
   paidNotice,
   pinsOnlyText,
   planFromDraft,
   planPreview,
   planVariation,
+  suggestionsFor,
+  truthfulTiming,
   variationLabel,
   withStylePrompt,
 } from "../src/state/plan";
@@ -46,6 +55,7 @@ import {
   nextRevisionIn,
   versionOfTurn,
 } from "../src/state/works";
+import { normalizeProject } from "../src/storage";
 import type { Project } from "../src/types";
 import {
   MP3_BYTES,
@@ -418,9 +428,11 @@ test("CORE-04 / UX-01: replies and hints never promise a melody that will not be
     brain: "llm",
   };
   const honest = honestPlan(said, "tencent", base);
+  // NEW-07: only the promise is taken out ("旋律和素材都保留"); what the
+  // sentence says besides ("更从容") stays.
   assert.equal(
     honest.reply,
-    "慢下来了。还加了一点混响。云端服务会按新的设置重新生成，旋律会和上一版不同。",
+    "慢下来了。更从容。还加了一点混响。云端服务会按新的设置重新生成，旋律会和上一版不同。",
   );
   assert.deepEqual(honest.reasoning, ["速度 112 → 90 BPM"]);
   assert.equal(
@@ -533,15 +545,23 @@ test("CORE-04: a language model's promise about the melody is corrected before i
   assert.equal(await paid(h, () => h.core.actions.send()), true);
   const reply = studio(h).thread.at(-1);
   assert.equal(reply?.brain, "llm");
-  assert.doesNotMatch(reply?.text ?? "", /保持不变/);
+  // Whatever of the turn is the model's own wording — the answer itself, or
+  // the note under an answer the app wrote — the promise is not in it.
+  const promise = /旋律(?:素材)?保持不变|保留.*旋律/;
+  assert.doesNotMatch(reply?.text ?? "", promise);
+  assert.doesNotMatch(reply?.note ?? "", promise);
+  assert.doesNotMatch((reply?.reasoning ?? []).join("\n"), promise);
   assert.equal(
-    reply?.text,
-    "慢下来了。云端服务会按新的设置重新生成，旋律会和上一版不同。",
+    (reply?.text ?? "").split(
+      "云端服务会按新的设置重新生成，旋律会和上一版不同。",
+    ).length - 1,
+    1,
+    `the truth is said exactly once: ${reply?.text}`,
   );
-  assert.deepEqual(reply?.reasoning, ["速度降到 90"]);
-  assert.equal(
-    studio(h).project?.chat?.at(-1)?.text,
-    reply?.text,
+  assert.equal(studio(h).project?.config.bpm, 90);
+  assert.deepEqual(
+    studio(h).project?.chat?.at(-1),
+    reply,
     "and that is what is stored with the work",
   );
 });
@@ -779,15 +799,27 @@ test("RB-01: a paid result that arrives after a cancel and cannot be stored is k
   const notice = ui(h).toasts.find((toast) =>
     toast.text.startsWith("云端结果在取消后到达"),
   );
-  assert.ok(notice?.sticky, "the notice stays");
-  assert.equal(notice.action?.label, "导出原始音频");
+  assert.ok(notice, "a notice says what happened");
   assert.match(notice.text, /没能保存到「我的作品」.*音频还在当前窗口/);
+  // ND-2: the way out is not tied to that notice. Closing it (v0.3.0: the
+  // audio stayed in memory with no control left anywhere) changes nothing.
+  assert.equal(studio(h).strays.length, 1);
+  const [stray] = studio(h).strays;
+  assert.equal(stray.provider, "tencent");
+  assert.equal(stray.title, "夏日小事");
+  h.core.actions.dismissToast(notice.id);
+  assert.equal(studio(h).strays.length, 1, "the banner stays");
   assert.match(h.core.closeRisk() ?? "", /付费生成的音频还没有保存/);
-  // Export from the notice: the paid bytes.
-  notice.action?.run();
-  await settle();
+  // 重试保存 while the library still refuses: said, and nothing is dropped.
+  assert.equal(await h.core.actions.retryStray(stray.id), false);
+  assert.match(toasts(h).at(-1) ?? "", /^还是没能保存：/);
+  assert.equal(studio(h).strays.length, 1);
+  // 导出原始音频: the paid bytes — then nothing is at risk any more.
+  assert.equal(await h.core.actions.exportStray(stray.id), true);
   assert.deepEqual(new Uint8Array(h.files[0].data), MP3_BYTES);
+  assert.deepEqual(studio(h).strays, []);
   assert.equal(h.core.closeRisk(), null);
+  assert.equal(await h.core.actions.exportStray(stray.id), false);
 
   // Or the automatic retry stores it once the library works again.
   const again = defer<{ audio: ArrayBuffer; mimeType: string }>();
@@ -799,6 +831,7 @@ test("RB-01: a paid result that arrives after a cancel and cannot be stored is k
   assert.equal(await second, false);
   await settle();
   assert.match(h.core.closeRisk() ?? "", /付费生成/);
+  assert.equal(studio(h).strays.length, 1);
   h.storage.failSave = null;
   h.clock.advance(SAVE_RETRY_MS);
   await settle();
@@ -806,8 +839,27 @@ test("RB-01: a paid result that arrives after a cancel and cannot be stored is k
   assert.ok(kept?.audioBlob, "the late result reached the library");
   assert.ok(h.storage.records.get(kept.id)?.audioBlob);
   assert.equal(h.core.closeRisk(), null);
+  assert.deepEqual(studio(h).strays, [], "the banner goes with the risk");
   assert.ok(toasts(h).includes("刚才没能保存的云端结果已保存到「我的作品」。"));
   assert.ok(!toasts(h).some((text) => text.startsWith("云端结果在取消后到达")));
+
+  // 重试保存 by hand, once the library works again.
+  const third = defer<{ audio: ArrayBuffer; mimeType: string }>();
+  bridge.generate = () => third.promise;
+  h.storage.failSave = new Error("本地存储空间不足，作品未保存。");
+  const late = h.core.actions.send("再慢一点");
+  await settle();
+  h.core.actions.cancelJob();
+  third.resolve({ audio: MP3_BYTES.slice().buffer, mimeType: "audio/mpeg" });
+  assert.equal(await late, false);
+  await settle();
+  const [waiting] = studio(h).strays;
+  assert.ok(waiting);
+  h.storage.failSave = null;
+  assert.equal(await h.core.actions.retryStray(waiting.id), true);
+  assert.deepEqual(studio(h).strays, []);
+  assert.ok(h.storage.records.get(waiting.id)?.audioBlob);
+  assert.equal(h.core.closeRisk(), null);
 });
 
 test("RB-03: closing during a paid request is a risk the page can name", async () => {
@@ -2133,49 +2185,50 @@ const DOWNLOAD_CANCELLED =
   "已取消下载。音乐已经生成，重新生成会再次计费：需要时请到服务控制台找回这首音乐。（任务编号 task-0002）";
 const NOTHING_WAITING =
   "没有等待重新下载的音乐。如需这首音乐，请到服务控制台查找，或重新生成。";
+const HINT = "也可以点「重新下载」再取一次，不会再次计费。";
 const MP3_ANSWER = () => ({
   audio: MP3_BYTES.slice().buffer,
   mimeType: "audio/mpeg",
 });
-const offer = (h: Harness): Toast | undefined =>
-  ui(h).toasts.find((toast) => toast.action?.label === "重新下载");
+/** The banner (`studio.pending`): the one handle on a paid result that was not delivered. */
+const offer = (h: Harness) => studio(h).pending;
 const downloads = (h: Harness) =>
   (h.bridge?.calls ?? []).filter((call) =>
     call.startsWith("retryLastDownload"),
   );
+const failing = async (): Promise<never> => {
+  throw new Error(NOT_DOWNLOADED);
+};
 
-/** Click 重新下载 the way the toast does (run, then the toast closes) and wait for the job. */
+/** 重新下载 from the banner, and wait for the job. */
 async function redownload(h: Harness) {
-  const toast = offer(h);
-  assert.ok(toast?.action, "重新下载 is on offer");
-  toast.action.run();
-  h.core.actions.dismissToast(toast.id);
+  assert.ok(offer(h), "重新下载 is on offer");
+  const running = h.core.actions.downloadPending();
   for (let i = 0; i < 50 && studio(h).job; i++) await settle();
+  await settle();
   assert.equal(studio(h).job, null, "the download job has ended");
+  return running;
 }
 
-test("MAIN-02: a finished result whose download failed is fetched again, never asked for twice", async () => {
+test("FQ-01 / MAIN-02: a paid result whose file did not arrive stays on offer until it is fetched — never asked for twice", async () => {
   const { h, bridge } = await desktop();
   h.core.actions.setProvider("tencent");
-  bridge.generate = async () => {
-    throw new Error(NOT_DOWNLOADED);
-  };
+  bridge.generate = failing;
   h.core.actions.setComposerText("雨夜咖啡馆");
   assert.equal(await paid(h, () => h.core.actions.send()), false);
   assert.equal(paidCalls(h), 1);
   assert.equal(studio(h).project, null);
-  // One notice: what happened (with the task number), and the way out that costs nothing.
+  // A banner: what happened (with the task number), and the way out that costs nothing.
   const first = offer(h);
   assert.ok(
     first,
     "v0.3.0 only said 生成失败 and left the paid result on the server",
   );
-  assert.equal(
-    first.text,
-    `${NOT_DOWNLOADED}也可以点「重新下载」再取一次，不会再次计费。`,
-  );
-  assert.equal(first.kind, "error");
-  assert.equal(first.sticky, true);
+  assert.deepEqual(first, {
+    provider: "tencent",
+    name: "腾讯云 TokenHub",
+    text: `${NOT_DOWNLOADED}${HINT}`,
+  });
   assert.deepEqual(
     toasts(h).filter((text) => text.startsWith("生成失败")),
     [],
@@ -2192,15 +2245,28 @@ test("MAIN-02: a finished result whose download failed is fetched again, never a
     /还没有下载下来.*重新生成需要再次付费/,
   );
   assert.equal(bridge.risk.at(-1), true);
+  // FQ-01 (a): the offer is not a notice that can be closed. Whatever is
+  // dismissed, the banner — and the question before closing — stay.
+  assert.ok(
+    !ui(h).toasts.some((toast) => toast.action?.label === "重新下载"),
+    "the offer does not live in a toast",
+  );
+  for (const toast of ui(h).toasts) h.core.actions.dismissToast(toast.id);
+  assert.deepEqual(offer(h), first);
+  assert.match(h.core.closeRisk() ?? "", /还没有下载下来/);
+  assert.equal(bridge.risk.at(-1), true);
+  // ...on every page
+  h.core.actions.navigate("library");
+  assert.deepEqual(offer(h), first);
+  h.core.actions.navigate("studio");
 
   // Still no luck: the offer stays, nothing new is submitted.
-  bridge.download = async () => {
-    throw new Error(NOT_DOWNLOADED);
-  };
-  await redownload(h);
+  bridge.download = failing;
+  assert.equal(await redownload(h), false);
   assert.deepEqual(downloads(h), ["retryLastDownload:tencent"]);
   assert.equal(paidCalls(h), 1, "a download is not a generation");
-  assert.ok(offer(h), "the offer is back");
+  assert.deepEqual(offer(h), first, "the offer stands");
+  assert.match(toasts(h).at(-1) ?? "", /还是没有下载下来.*仍然可以重新下载/);
   assert.equal(studio(h).project, null);
   assert.equal(bridge.risk.at(-1), true);
 
@@ -2211,7 +2277,7 @@ test("MAIN-02: a finished result whose download failed is fetched again, never a
     const stage = studio(h).job?.stage;
     if (stage && stages.at(-1) !== stage) stages.push(stage);
   });
-  await redownload(h);
+  assert.equal(await redownload(h), true);
   stop();
   assert.deepEqual(stages, ["downloading", "saving", "decoding"]);
   assert.equal(
@@ -2227,7 +2293,10 @@ test("MAIN-02: a finished result whose download failed is fetched again, never a
   assert.equal(work.audioBlob?.size, MP3_BYTES.length);
   assert.equal(work.cloud?.prompt.endsWith("纯音乐，无人声，无歌词"), true);
   assert.equal(studio(h).stored, true);
+  assert.equal(studio(h).audio?.kind, "mix");
+  assert.equal(h.player.loads.at(-1)?.source.kind, "mix");
   assert.deepEqual(ids(h), [work.id]);
+  assert.ok(h.storage.records.get(work.id)?.audioBlob, "in the library");
   assert.deepEqual(
     studio(h).thread.map((turn) => turn.role),
     ["user", "agent"],
@@ -2239,22 +2308,21 @@ test("MAIN-02: a finished result whose download failed is fetched again, never a
     "the words that were handed back have been answered",
   );
   assert.equal(toasts(h).at(-1), "创作完成，已保存到「我的作品」");
-  assert.equal(offer(h), undefined, "nothing is left to fetch");
+  assert.equal(offer(h), null, "nothing is left to fetch");
+  assert.equal(h.session.value.pendingOrder, null);
   assert.equal(h.core.closeRisk(), null);
   assert.equal(bridge.risk.at(-1), false);
 });
 
-test("MAIN-02: the offer follows what the main process still holds", async () => {
+test("FQ-01: whatever would replace or forget a waiting result asks first", async () => {
   const { h, bridge } = await desktop({
-    records: [cloudWork("paid")],
+    records: [cloudWork("paid"), localProject("mine")],
     session: { lastProjectId: "paid" },
   });
   const before = studio(h).thread.length;
-  bridge.generate = async () => {
-    throw new Error(NOT_DOWNLOADED);
-  };
+  bridge.generate = failing;
   // A refinement: the thread tells what happened in the service's own words.
-  assert.equal(await paid(h, () => h.core.actions.send("慢一点")), false);
+  assert.equal(await paid(h, () => h.core.actions.send("慢一点"), true), false);
   assert.equal(studio(h).thread.length, before + 2);
   assert.equal(
     studio(h).thread.at(-1)?.text,
@@ -2263,59 +2331,486 @@ test("MAIN-02: the offer follows what the main process still holds", async () =>
   );
   assert.equal(studio(h).thread.at(-1)?.error, true);
   assert.ok(offer(h));
-
-  // Closing the notice declines the offer: nothing is at risk any more.
-  h.core.actions.dismissToast(offer(h)?.id ?? -1);
-  assert.equal(h.core.closeRisk(), null);
-  assert.equal(bridge.risk.at(-1), false);
-
-  // Offered again after the next failure; this time the main process has let go of the result.
-  assert.equal(await paid(h, () => h.core.actions.send("慢一点")), false);
-  assert.ok(offer(h));
-  bridge.download = async () => {
-    throw new Error(NOTHING_WAITING);
+  const inputs: { discardPending?: boolean }[] = [];
+  bridge.generate = async (input) => {
+    inputs.push(input);
+    return MP3_ANSWER();
   };
-  await redownload(h);
-  assert.equal(offer(h), undefined, "nothing to fetch, nothing to offer");
-  assert.equal(toasts(h).at(-1), NOTHING_WAITING);
-  assert.equal(h.core.closeRisk(), null);
 
-  // A new paid request replaces a waiting result (the main process drops it too).
-  assert.equal(await paid(h, () => h.core.actions.send("慢一点")), false);
-  assert.ok(offer(h));
-  bridge.generate = async () => MP3_ANSWER();
-  const sent = h.core.actions.send("再慢一点");
+  // (b) of FQ-01: a new paid request. 本次会话不再提示 is ticked for this
+  // service, so v0.3.0 sent it without a word and the first result was gone.
+  let sent = h.core.actions.send("再慢一点");
   await settle();
-  assert.ok(ui(h).dialog, "the paid question");
-  assert.ok(
-    offer(h),
-    "asking is not sending: the offer stands until a request really goes out",
+  let dialog = ui(h).dialog;
+  assert.equal(dialog?.kind, "pending");
+  assert.equal(dialog.title, "还有一首付费生成的音乐没有取回");
+  assert.match(
+    dialog.body.join(""),
+    /腾讯云 TokenHub 已经生成并计费的音乐还没有下载下来.*不会再次计费.*发送新的生成请求后，它就无法再取回了/,
   );
-  await answer(h, "confirm");
-  assert.equal(await sent, true);
-  assert.equal(offer(h), undefined);
+  assert.deepEqual(
+    dialog.choices.map((choice) => [choice.id, choice.label]),
+    [
+      ["stay", "取消"],
+      ["download", "重新下载"],
+      ["proceed", "放弃它，继续发送"],
+    ],
+  );
+  assert.equal(dialog.cancel, "stay", "Escape keeps everything as it is");
+  assert.equal(studio(h).job, null, "nothing has started");
+  h.core.actions.answerDialog(dialog.id, "stay");
+  assert.equal(await sent, false);
+  assert.equal(paidCalls(h), 1);
+  assert.ok(offer(h));
+  // 重新下载 from the question: the download runs instead of the request.
+  bridge.download = failing;
+  sent = h.core.actions.send("再慢一点");
+  await answer(h, "download");
+  assert.equal(await sent, false);
+  for (let i = 0; i < 50 && studio(h).job; i++) await settle();
   assert.equal(downloads(h).length, 1);
+  assert.equal(paidCalls(h), 1, "still the one paid request");
+  assert.ok(offer(h), "it failed again: still on offer");
+  // 放弃它，继续发送: the request goes out, and the main process is told
+  // that the waiting result may go (it refuses a new one otherwise).
+  sent = h.core.actions.send("再慢一点");
+  await answer(h, "proceed");
+  assert.equal(await sent, true);
+  assert.equal(paidCalls(h), 2);
+  assert.equal(inputs.at(-1)?.discardPending, true);
+  assert.equal(offer(h), null);
+  assert.equal(h.core.closeRisk(), null);
+  assert.equal(h.session.value.pendingOrder, null);
+  // ...and a request that replaces nothing says nothing of the kind
+  assert.equal(await h.core.actions.send("混响大一点"), true);
+  assert.equal(inputs.at(-1)?.discardPending, undefined);
+
+  // The free things that take the place the result was meant for ask too —
+  // and going on does not cost the result: the banner stays.
+  bridge.generate = failing;
+  assert.equal(await h.core.actions.send("更有活力"), false);
+  const waiting = offer(h);
+  assert.ok(waiting);
+  const loaded = studio(h).project?.id;
+  h.core.actions.setProvider("local");
+  sent = h.core.actions.send("换成古筝");
+  await settle();
+  dialog = ui(h).dialog;
+  assert.equal(dialog?.kind, "pending");
+  assert.match(dialog.body.join(""), /只保留到下一次云端生成或关闭应用为止/);
+  assert.deepEqual(
+    dialog.choices.map((choice) => choice.label),
+    ["取消", "重新下载", "稍后再取，继续"],
+  );
+  h.core.actions.answerDialog(dialog.id, "proceed");
+  assert.equal(await sent, true);
+  assert.deepEqual(
+    offer(h),
+    waiting,
+    "a local version costs the result nothing",
+  );
+  assert.notEqual(studio(h).project?.id, loaded);
+  // opening another work
+  let opening = h.core.actions.openProject("mine");
+  await settle();
+  assert.equal(ui(h).dialog?.kind, "pending");
+  await answer(h, "stay");
+  assert.equal(await opening, false);
+  assert.notEqual(studio(h).project?.id, "mine");
+  opening = h.core.actions.openProject("mine");
+  await answer(h, "proceed");
+  assert.equal(await opening, true);
+  assert.equal(studio(h).project?.id, "mine");
+  assert.deepEqual(offer(h), waiting);
+  // the work that is already loaded is not "another work"
+  assert.equal(await h.core.actions.openProject("mine"), true);
+  assert.equal(ui(h).dialog, null);
+  // 新建创作
+  assert.equal(h.core.actions.newPiece(), false, "asked first");
+  await settle();
+  assert.equal(ui(h).dialog?.kind, "pending");
+  await answer(h, "stay");
+  assert.equal(studio(h).project?.id, "mine");
+  assert.equal(h.core.actions.newPiece(), false);
+  await answer(h, "proceed");
+  assert.equal(studio(h).project, null);
+  assert.deepEqual(offer(h), waiting);
+  // with nothing loaded there is nothing to leave: no question
+  assert.equal(h.core.actions.newPiece(), true);
+  assert.equal(ui(h).dialog, null);
+  // closing still asks, for as long as the result waits
+  assert.match(h.core.closeRisk() ?? "", /还没有下载下来/);
+  assert.equal(bridge.risk.at(-1), true);
 
   // The delivered version continues the conversation it was asked in, with its own number.
-  bridge.generate = async () => {
-    throw new Error(NOT_DOWNLOADED);
-  };
-  const base = studio(h).project;
-  assert.ok(base);
-  assert.equal(await paid(h, () => h.core.actions.send("混响大一点")), false);
   bridge.download = async () => MP3_ANSWER();
-  await redownload(h);
+  assert.equal(await redownload(h), true);
   const delivered = studio(h).project;
   assert.ok(delivered);
-  assert.equal(delivered.parentId, base.id);
-  assert.equal(delivered.revision, base.revision + 1);
-  assert.equal(studio(h).thread.at(-2)?.text, "混响大一点");
+  assert.equal(delivered.provider, "tencent");
+  assert.ok(delivered.parentId, "a version of the work the request refined");
+  assert.equal(studio(h).thread.at(-2)?.text, "更有活力");
   assert.equal(studio(h).thread.at(-1)?.revision, delivered.revision);
   assert.equal(
     studio(h).thread.at(-1)?.error,
     undefined,
     "the failure note made way for the answer",
   );
+  assert.equal(offer(h), null);
+});
+
+test("FQ-01: 放弃这次结果 asks, says that it was billed, and lets go of it everywhere", async () => {
+  const { h, bridge } = await desktop();
+  const discarded: string[] = [];
+  bridge.discardPendingResult = async (provider) => {
+    discarded.push(provider);
+    return true;
+  };
+  h.core.actions.setProvider("tencent");
+  bridge.generate = failing;
+  assert.equal(
+    await paid(h, () => h.core.actions.send("雨夜咖啡馆"), true),
+    false,
+  );
+  assert.ok(offer(h));
+  // one click gives nothing up
+  let giving = h.core.actions.discardPending();
+  await settle();
+  const dialog = ui(h).dialog;
+  assert.equal(dialog?.kind, "discard");
+  assert.equal(dialog.title, "放弃这首已经生成的音乐？");
+  assert.match(
+    dialog.body.join(""),
+    /已经由腾讯云 TokenHub 生成并计费。放弃后，这里不再提供重新下载。.*服务商的控制台.*重新付费生成/,
+  );
+  assert.deepEqual(
+    dialog.choices.map((choice) => [choice.id, choice.label, choice.variant]),
+    [
+      ["keep", "先留着", undefined],
+      ["discard", "放弃这次结果", "danger"],
+    ],
+  );
+  assert.equal(dialog.cancel, "keep");
+  assert.ok(offer(h), "asking is not giving up");
+  h.core.actions.answerDialog(dialog.id, "keep");
+  assert.equal(await giving, false);
+  assert.ok(offer(h));
+  assert.deepEqual(discarded, []);
+  assert.match(h.core.closeRisk() ?? "", /还没有下载下来/);
+  // yes: gone here and in the main process; closing no longer asks
+  giving = h.core.actions.discardPending();
+  await answer(h, "discard");
+  assert.equal(await giving, true);
+  assert.equal(offer(h), null);
+  assert.deepEqual(discarded, ["tencent"]);
+  assert.equal(h.core.closeRisk(), null);
+  assert.equal(bridge.risk.at(-1), false);
+  assert.equal(h.session.value.pendingOrder, null);
+  assert.equal(toasts(h).at(-1), "已放弃这次结果，不会再提示重新下载。");
+  assert.equal(await h.core.actions.discardPending(), false, "nothing left");
+  // the next paid request has nothing to give up
+  const inputs: { discardPending?: boolean }[] = [];
+  bridge.generate = async (input) => {
+    inputs.push(input);
+    return MP3_ANSWER();
+  };
+  assert.equal(await h.core.actions.send("雨夜咖啡馆"), true);
+  assert.equal(inputs[0].discardPending, undefined);
+
+  // A new request that replaces a waiting result tells the main process
+  // first, through the same call.
+  bridge.generate = failing;
+  assert.equal(await h.core.actions.send("慢一点"), false);
+  assert.ok(offer(h));
+  bridge.generate = async (input) => {
+    inputs.push(input);
+    return MP3_ANSWER();
+  };
+  const sent = h.core.actions.send("再慢一点");
+  await answer(h, "proceed");
+  assert.equal(await sent, true);
+  assert.deepEqual(discarded, ["tencent", "tencent"]);
+  assert.equal(inputs.at(-1)?.discardPending, undefined);
+  // the main process could not be told: nothing is sent, nothing is forgotten
+  bridge.generate = failing;
+  assert.equal(await h.core.actions.send("更有活力"), false);
+  const kept = offer(h);
+  assert.ok(kept);
+  bridge.discardPendingResult = async () => {
+    throw new Error("已有一首 AI 音乐正在生成，请等待完成或取消。");
+  };
+  const calls = paidCalls(h);
+  const blocked = h.core.actions.send("安静一点");
+  await answer(h, "proceed");
+  assert.equal(await blocked, false);
+  assert.equal(paidCalls(h), calls, "no request went out");
+  assert.deepEqual(offer(h), kept);
+  assert.match(toasts(h).at(-1) ?? "", /没有发出新的生成请求/);
+  const again = h.core.actions.discardPending();
+  await answer(h, "discard");
+  assert.equal(await again, false);
+  assert.deepEqual(offer(h), kept, "still on offer");
+  assert.match(toasts(h).at(-1) ?? "", /暂时没能放弃这次结果/);
+
+  // A shell without the call keeps the file until the next request: the
+  // page remembers not to offer it again, and says so with that request.
+  const old = await desktop();
+  old.h.core.actions.setProvider("tencent");
+  old.bridge.generate = failing;
+  assert.equal(
+    await paid(old.h, () => old.h.core.actions.send("雨夜咖啡馆"), true),
+    false,
+  );
+  const leaving = old.h.core.actions.discardPending();
+  await answer(old.h, "discard");
+  assert.equal(await leaving, true);
+  assert.equal(offer(old.h), null);
+  assert.deepEqual(old.h.session.value.pendingOrder, {
+    provider: "tencent",
+    discarded: true,
+  });
+  // the main process still reports it: it is not offered again
+  old.bridge.settings = {
+    ...old.bridge.settings,
+    pendingResult: { provider: "tencent" },
+  };
+  await old.h.core.actions.refreshSettings();
+  assert.equal(offer(old.h), null);
+  const flags: (boolean | undefined)[] = [];
+  old.bridge.generate = async (input) => {
+    flags.push(input.discardPending);
+    return MP3_ANSWER();
+  };
+  assert.equal(await old.h.core.actions.send("雨夜咖啡馆"), true);
+  assert.deepEqual(flags, [true], "the main process would refuse it otherwise");
+  assert.equal(old.h.session.value.pendingOrder, null);
+});
+
+test("FQ-01: after a reload of the page the banner comes back from what the main process holds", async () => {
+  // Run 1: a refinement of a cloud work is generated but not delivered.
+  const origin = sharedOrigin({ lastProjectId: "paid" });
+  const first = harness({
+    kind: "desktop",
+    origin,
+    records: [cloudWork("paid", { title: "雨夜" })],
+  });
+  await first.core.start();
+  assert.ok(first.bridge);
+  first.bridge.generate = failing;
+  assert.equal(
+    await paid(first, () => first.core.actions.send("慢一点，换成古筝")),
+    false,
+  );
+  const banner = offer(first);
+  assert.ok(banner);
+  const note = first.session.value.pendingOrder;
+  assert.equal(note?.provider, "tencent");
+  assert.equal(note?.order?.baseId, "paid");
+  assert.equal(note?.order?.mine.text, "慢一点，换成古筝");
+  assert.equal(note?.order?.reason, NOT_DOWNLOADED);
+  assert.ok((note?.order?.prompt ?? "").endsWith("纯音乐，无人声，无歌词"));
+
+  // Run 2: the page is reloaded (same library, same session, a new core);
+  // the main process still holds the result and says so.
+  const second = harness({ kind: "desktop", origin, clock: first.clock });
+  assert.ok(second.bridge);
+  second.bridge.settings = {
+    ...second.bridge.settings,
+    pendingResult: { provider: "tencent" },
+  };
+  await second.core.start();
+  assert.equal(studio(second).project?.id, "paid", "the last work is back");
+  assert.equal(ui(second).dialog, null, "reopening it asks nothing");
+  assert.deepEqual(offer(second), banner, "and so is the offer, word for word");
+  assert.match(second.core.closeRisk() ?? "", /还没有下载下来/);
+  assert.equal(second.bridge.risk.at(-1), true);
+  // 重新下载 files the result exactly as the first run would have.
+  second.bridge.download = async () => MP3_ANSWER();
+  assert.equal(await redownload(second), true);
+  const work = studio(second).project;
+  assert.ok(work);
+  assert.equal(work.provider, "tencent");
+  assert.equal(work.parentId, "paid");
+  assert.equal(work.revision, 2);
+  assert.equal(work.title, "雨夜");
+  assert.equal(work.config.instrument, "guzheng");
+  assert.equal(work.cloud?.prompt, note?.order?.prompt);
+  assert.equal(work.audioBlob?.size, MP3_BYTES.length);
+  assert.equal(studio(second).stored, true);
+  assert.equal(studio(second).audio?.kind, "mix");
+  assert.equal(studio(second).thread.at(-2)?.text, "慢一点，换成古筝");
+  assert.equal(studio(second).thread.at(-1)?.revision, 2);
+  assert.equal(studio(second).thread.at(-1)?.text, note?.order?.reply);
+  assert.equal(offer(second), null);
+  assert.equal(second.session.value.pendingOrder, null);
+  assert.equal(second.core.closeRisk(), null);
+  assert.equal(
+    second.bridge.calls.filter((call) => call.startsWith("generateMusic"))
+      .length,
+    0,
+    "nothing was generated again",
+  );
+
+  // The main process holds a result and nothing was written down about it:
+  // the audio is still fetched and filed, under a plain title that says so.
+  const bare = harness({ kind: "desktop" });
+  assert.ok(bare.bridge);
+  bare.bridge.settings = {
+    ...bare.bridge.settings,
+    pendingResult: { provider: "volcengine" },
+  };
+  await bare.core.start();
+  assert.deepEqual(offer(bare), {
+    provider: "volcengine",
+    name: "火山引擎 AI 音乐",
+    text: "火山引擎 AI 音乐已经生成并计费的音乐还没有下载下来。点「重新下载」再取一次，不会再次计费。",
+  });
+  bare.bridge.download = async () => MP3_ANSWER();
+  assert.equal(await redownload(bare), true);
+  assert.deepEqual(
+    bare.bridge.calls.filter((call) => call.startsWith("retry")),
+    ["retryLastDownload:volcengine"],
+  );
+  const found = studio(bare).project;
+  assert.equal(found?.provider, "volcengine");
+  assert.equal(found?.title, "取回的云端音乐");
+  assert.equal(found?.audioBlob?.size, MP3_BYTES.length);
+  assert.ok(bare.storage.records.get(found?.id ?? "")?.audioBlob);
+  assert.match(
+    studio(bare).thread.at(-1)?.text ?? "",
+    /当时的描述没有保留下来/,
+  );
+
+  // The main process holds nothing (the app was restarted): a note from the
+  // last run is history — no banner, and the note goes.
+  const stale = sharedOrigin();
+  const one = harness({ kind: "desktop", origin: stale });
+  await one.core.start();
+  assert.ok(one.bridge);
+  one.core.actions.setProvider("tencent");
+  one.bridge.generate = failing;
+  assert.equal(
+    await paid(one, () => one.core.actions.send("雨夜咖啡馆")),
+    false,
+  );
+  assert.ok(one.session.value.pendingOrder);
+  const two = harness({ kind: "desktop", origin: stale, clock: one.clock });
+  await two.core.start();
+  assert.equal(offer(two), null);
+  assert.equal(two.session.value.pendingOrder, null);
+  assert.equal(two.core.closeRisk(), null);
+
+  // A session that cannot be trusted never becomes an order.
+  const forged = sharedOrigin();
+  forged.session.raw = JSON.stringify({
+    pendingOrder: {
+      provider: "tencent",
+      order: { title: 7, config: "x", mine: { id: "m" } },
+    },
+  });
+  const three = harness({ kind: "desktop", origin: forged });
+  assert.ok(three.bridge);
+  three.bridge.settings = {
+    ...three.bridge.settings,
+    pendingResult: { provider: "tencent" },
+  };
+  await three.core.start();
+  assert.match(
+    offer(three)?.text ?? "",
+    /^腾讯云 TokenHub 已经生成并计费的音乐还没有下载下来/,
+  );
+  three.bridge.download = async () => MP3_ANSWER();
+  assert.equal(await redownload(three), true);
+  assert.equal(studio(three).project?.title, "取回的云端音乐");
+});
+
+test("FQ-01 / FQ-03: what the main process holds decides, whatever the failure was called", async () => {
+  // A submitted task whose status could not be read: not a "download" failure
+  // in words, but the main process keeps the task and says so.
+  const TASK_KEPT =
+    "火山引擎任务状态连续 5 次查询失败，已停止等待。任务已经提交，可能仍在服务商那边运行并计费：点「重新下载」可以继续查询并取回这首音乐，不会再次提交，也不会再次计费。（任务编号 task-0003）";
+  const { h, bridge } = await desktop();
+  h.core.actions.setProvider("volcengine");
+  bridge.generate = async () => {
+    bridge.settings = {
+      ...bridge.settings,
+      pendingResult: { provider: "volcengine" },
+    };
+    throw new Error(TASK_KEPT);
+  };
+  assert.equal(
+    await paid(h, () => h.core.actions.send("雨夜咖啡馆，30 秒")),
+    false,
+  );
+  assert.deepEqual(offer(h), {
+    provider: "volcengine",
+    name: "火山引擎 AI 音乐",
+    // the reason already names the way out: it is not said twice
+    text: TASK_KEPT,
+  });
+  assert.deepEqual(
+    toasts(h).filter((text) => text.startsWith("生成失败")),
+    [],
+  );
+  assert.match(h.core.closeRisk() ?? "", /重新生成需要再次付费/);
+  // The task ended without a result: the main process lets go, and so does the page.
+  const NO_RESULT =
+    "这个任务没有产生可以取回的音乐，请先检查账户记录。（任务编号 task-0003）";
+  bridge.download = async () => {
+    bridge.settings = { ...bridge.settings, pendingResult: null };
+    throw new Error(NO_RESULT);
+  };
+  assert.equal(await redownload(h), false);
+  assert.equal(offer(h), null);
+  assert.equal(toasts(h).at(-1), NO_RESULT);
+  assert.equal(h.core.closeRisk(), null);
+
+  // A failure with nothing held is a failure: no offer.
+  const plain = await desktop();
+  plain.h.core.actions.setProvider("tencent");
+  plain.bridge.settings = { ...plain.bridge.settings, pendingResult: null };
+  plain.bridge.generate = async () => {
+    throw new Error("API Key 无效或已过期，请检查所选服务的密钥。");
+  };
+  assert.equal(
+    await paid(plain.h, () => plain.h.core.actions.send("雨夜咖啡馆")),
+    false,
+  );
+  assert.equal(offer(plain.h), null);
+  assert.equal(
+    toasts(plain.h).at(-1),
+    "生成失败：API Key 无效或已过期，请检查所选服务的密钥。",
+  );
+  assert.equal(plain.h.core.closeRisk(), null);
+
+  // The main process refuses at the door: it holds a result this page did
+  // not know of. Nothing was sent — and the request that was refused must
+  // never be mistaken for the one that is waiting.
+  const REFUSED =
+    "还有一首已经付费的音乐没有取回，这次没有发出新的生成请求。请先点「重新下载」把它取回；确认不要它之后，才能开始新的生成。";
+  const door = await desktop();
+  door.h.core.actions.setProvider("tencent");
+  door.bridge.generate = async () => {
+    door.bridge.settings = {
+      ...door.bridge.settings,
+      pendingResult: { provider: "tencent" },
+    };
+    throw new Error(REFUSED);
+  };
+  door.h.core.actions.setComposerText("夏日海边的吉他");
+  assert.equal(await paid(door.h, () => door.h.core.actions.send()), false);
+  await settle();
+  assert.equal(toasts(door.h).at(-1), REFUSED, "said as it is: not 生成失败");
+  assert.equal(studio(door.h).composerText, "夏日海边的吉他");
+  assert.ok(offer(door.h), "the result that stood in the way gets its banner");
+  door.bridge.download = async () => MP3_ANSWER();
+  assert.equal(await redownload(door.h), true);
+  assert.equal(
+    studio(door.h).project?.title,
+    "取回的云端音乐",
+    "filed as what it is — not under the request that was refused",
+  );
+  assert.notEqual(studio(door.h).thread[0]?.text, "夏日海边的吉他");
 });
 
 test("MAIN-02: stopping the wait after the service finished still leaves the result fetchable", async () => {
@@ -2331,20 +2826,16 @@ test("MAIN-02: stopping the wait after the service finished still leaves the res
   // what the main process answers when the result existed and only the download was cut short
   gate.reject(new Error(DOWNLOAD_CANCELLED));
   assert.equal(await sent, false);
-  assert.equal(
-    offer(h)?.text,
-    `${DOWNLOAD_CANCELLED}也可以点「重新下载」再取一次，不会再次计费。`,
-  );
+  assert.equal(offer(h)?.text, `${DOWNLOAD_CANCELLED}${HINT}`);
   // Cancelling the download itself costs nothing and keeps the offer.
   const again = defer<{ audio: ArrayBuffer; mimeType: string }>();
   bridge.download = () => again.promise;
-  const toast = offer(h);
-  toast?.action?.run();
-  h.core.actions.dismissToast(toast?.id ?? -1);
+  const fetching = h.core.actions.downloadPending();
   await settle();
   assert.equal(studio(h).job?.stage, "downloading");
   assert.match(studio(h).job?.phase ?? "", /重新下载.*不会再次计费/);
   assert.match(h.core.closeRisk() ?? "", /还没有下载下来/);
+  assert.ok(offer(h), "on offer while it is being fetched");
   h.core.actions.cancelJob();
   assert.equal(
     bridge.calls.filter((call) => call === "cancelGeneration").length,
@@ -2353,9 +2844,23 @@ test("MAIN-02: stopping the wait after the service finished still leaves the res
   );
   assert.equal(toasts(h).at(-1), "已取消下载，没有发送新的生成请求。");
   again.reject(new Error(DOWNLOAD_CANCELLED));
+  assert.equal(await fetching, false);
   for (let i = 0; i < 20 && studio(h).job; i++) await settle();
   assert.ok(offer(h), "still on offer");
+  assert.equal(
+    toasts(h).at(-1),
+    "已取消下载，没有发送新的生成请求。",
+    "the user stopped it: no second notice about a failure",
+  );
   assert.equal(paidCalls(h), 1);
+  // The main process no longer has it (the app was told by a reply, not by a guess).
+  bridge.download = async () => {
+    throw new Error(NOTHING_WAITING);
+  };
+  assert.equal(await redownload(h), false);
+  assert.equal(offer(h), null, "nothing to fetch, nothing to offer");
+  assert.equal(toasts(h).at(-1), NOTHING_WAITING);
+  assert.equal(h.core.closeRisk(), null);
   // A failure that is not about a download is not turned into an offer.
   const { h: other, bridge: plain } = await desktop();
   other.core.actions.setProvider("tencent");
@@ -2366,10 +2871,735 @@ test("MAIN-02: stopping the wait after the service finished still leaves the res
     await paid(other, () => other.core.actions.send("雨夜咖啡馆")),
     false,
   );
-  assert.equal(offer(other), undefined);
+  assert.equal(offer(other), null);
   assert.equal(
     toasts(other).at(-1),
     "生成失败：API Key 无效或已过期，请检查所选服务的密钥。",
   );
   assert.equal(other.core.closeRisk(), null);
+});
+
+/* ================================================================== */
+/* what was left unfinished comes back                                  */
+/* ================================================================== */
+
+test("FQ-05: unapplied inspector edits and unsent words survive a restart, with the work they belong to", async () => {
+  const origin = sharedOrigin();
+  const first = harness({
+    origin,
+    records: [localProject("a"), localProject("b", { title: "另一首" })],
+  });
+  await first.core.start();
+  await first.core.actions.openProject("a");
+  first.core.actions.setDraft("instrument", "guzheng");
+  first.core.actions.setDraft("bpm", 90);
+  first.core.actions.setComposerText("下次继续：加点弦乐");
+  // remembered a moment after the last change — not only when the page is hidden
+  first.clock.advance(500);
+  assert.deepEqual(first.session.value.parked, [
+    { id: "a", draft: { bpm: 90, instrument: "guzheng" } },
+  ]);
+  assert.equal(first.session.value.composerText, "下次继续：加点弦乐");
+
+  // quit and relaunch (v0.3.0: the words came back, the edits were gone)
+  const second = harness({ origin, clock: first.clock });
+  await second.core.start();
+  assert.equal(studio(second).project?.id, "a");
+  assert.equal(studio(second).draft.instrument, "guzheng");
+  assert.equal(studio(second).draft.bpm, 90);
+  assert.deepEqual(view(second).changedFields, ["bpm", "instrument"]);
+  assert.equal(studio(second).composerText, "下次继续：加点弦乐");
+  assert.notEqual(
+    studio(second).project?.config.instrument,
+    "guzheng",
+    "pending is pending: the work itself is as it was",
+  );
+  assert.ok(
+    toasts(second).some((text) =>
+      /有 2 项修改没有应用，已经放回来了/.test(text),
+    ),
+  );
+  assert.equal(second.player.loads.at(-1)?.options?.autoplay, false);
+
+  // Leaving the work parks its words with it; both are remembered.
+  assert.equal(second.core.actions.newPiece(), true);
+  assert.equal(studio(second).composerText, "");
+  assert.deepEqual(second.session.value.parked, [
+    {
+      id: "a",
+      draft: { bpm: 90, instrument: "guzheng" },
+      text: "下次继续：加点弦乐",
+    },
+  ]);
+  // ...and another work has its own
+  await second.core.actions.openProject("b");
+  second.core.actions.setDraft("reverb", 0.9);
+  second.core.flush();
+  assert.deepEqual(
+    second.session.value.parked.map((note) => note.id),
+    ["a", "b"],
+  );
+
+  const third = harness({ origin, clock: first.clock });
+  await third.core.start();
+  assert.equal(studio(third).project?.id, "b", "the work that was open");
+  assert.equal(studio(third).draft.reverb, 0.9);
+  assert.equal(studio(third).draft.bpm, studio(third).project?.config.bpm);
+  await third.core.actions.openProject("a");
+  assert.equal(studio(third).draft.instrument, "guzheng");
+  assert.equal(studio(third).draft.bpm, 90);
+  assert.equal(
+    studio(third).composerText,
+    "下次继续：加点弦乐",
+    "the words typed for it are back with it",
+  );
+
+  // Applied edits are no longer pending — here or after the next start.
+  third.core.actions.setComposerText("");
+  assert.equal(await third.core.actions.applyDraft(), true);
+  const made = studio(third).project;
+  assert.ok(made);
+  assert.equal(made.config.instrument, "guzheng");
+  assert.deepEqual(view(third).changedFields, []);
+  assert.deepEqual(
+    third.session.value.parked.map((note) => note.id),
+    ["b"],
+    "nothing is kept for the work whose edits were applied, nor for the new one",
+  );
+  // 还原 takes a note back as well
+  await third.core.actions.openProject("b");
+  assert.equal(studio(third).draft.reverb, 0.9);
+  third.core.actions.resetDraft();
+  third.clock.advance(500);
+  assert.deepEqual(third.session.value.parked, []);
+
+  // A work that is deleted for good takes its note with it.
+  third.core.actions.setDraft("bpm", 77);
+  third.clock.advance(500);
+  assert.equal(third.session.value.parked.length, 1);
+  assert.equal(third.core.actions.removeProject("b"), "removed");
+  assert.equal(
+    third.session.value.parked.length,
+    1,
+    "while it can still be undone the edits wait with it",
+  );
+  third.clock.advance(8000);
+  await settle();
+  assert.deepEqual(third.session.value.parked, []);
+
+  // What is read back is checked like anything else that was stored.
+  const forged = sharedOrigin();
+  forged.storage.records.set("a", localProject("a"));
+  forged.session.raw = JSON.stringify({
+    lastProjectId: "a",
+    parked: [
+      {
+        id: "a",
+        draft: {
+          bpm: 9999,
+          instrument: "kazoo",
+          mood: 7,
+          loop: "yes",
+          energy: 0.25,
+          seed: 1,
+          volumes: { drums: 0 },
+        },
+        text: 42,
+      },
+      { id: "zz" },
+      "junk",
+    ],
+  });
+  const fourth = harness({ origin: forged });
+  await fourth.core.start();
+  const config = studio(fourth).project?.config;
+  assert.ok(config);
+  assert.deepEqual(
+    studio(fourth).draft,
+    { ...draftOf(config), bpm: 200, energy: 0.25 },
+    "values the engine accepts, clamped; everything else is left out",
+  );
+  assert.equal(studio(fourth).composerText, "");
+  assert.deepEqual(config, localProject("a").config, "the work is untouched");
+});
+
+test("FQ-05: two tabs keep their own unfinished edits apart", async () => {
+  const origin = sharedOrigin();
+  origin.storage.records.set("a", localProject("a"));
+  origin.storage.records.set("b", localProject("b"));
+  const one = harness({ origin });
+  const two = harness({ origin, clock: one.clock });
+  await one.core.start();
+  await two.core.start();
+  await one.core.actions.openProject("a");
+  await two.core.actions.openProject("b");
+  one.core.actions.setDraft("bpm", 90);
+  two.core.actions.setDraft("bpm", 120);
+  one.clock.advance(500);
+  assert.deepEqual(
+    one.session.value.parked.map((note) => [note.id, note.draft?.bpm]).sort(),
+    [
+      ["a", 90],
+      ["b", 120],
+    ],
+  );
+  // one tab finishing its edit does not take the other tab's note away
+  one.core.actions.resetDraft();
+  one.clock.advance(500);
+  assert.deepEqual(
+    two.session.value.parked.map((note) => [note.id, note.draft?.bpm]),
+    [["b", 120]],
+  );
+});
+
+test("FQ-14: undoing the deletion of the open work puts it back in the studio", async () => {
+  const h = harness({
+    records: [localProject("a"), localProject("b", { title: "另一首" })],
+  });
+  await h.core.start();
+  await h.core.actions.openProject("a");
+  h.core.actions.setDraft("bpm", 90);
+  assert.equal(h.core.actions.removeProject("a"), "removed");
+  assert.equal(studio(h).project, null);
+  h.core.actions.navigate("library");
+  const loads = h.player.loads.length;
+  h.core.actions.undoRemove();
+  for (let i = 0; i < 10; i++) await settle();
+  assert.equal(
+    studio(h).project?.id,
+    "a",
+    "v0.3.0 said 已恢复 and left the studio empty",
+  );
+  assert.ok(studio(h).audio);
+  assert.equal(studio(h).draft.bpm, 90, "its unapplied edit is back with it");
+  assert.equal(ui(h).page, "library", "the page the user is on stays");
+  assert.equal(h.player.loads.length, loads + 1);
+  assert.equal(h.player.loads.at(-1)?.options?.autoplay, false, "paused");
+  assert.ok(toasts(h).includes("已恢复"));
+  assert.ok(h.storage.records.has("a"));
+
+  // Not when the studio has been used for something else since.
+  assert.equal(h.core.actions.removeProject("a"), "removed");
+  h.core.actions.setComposerText("新的想法：下雨天的钢琴");
+  h.core.actions.undoRemove();
+  for (let i = 0; i < 10; i++) await settle();
+  assert.equal(studio(h).project, null, "the user has moved on");
+  assert.equal(studio(h).composerText, "新的想法：下雨天的钢琴");
+  assert.deepEqual(ids(h), ["a", "b"]);
+  h.core.actions.setComposerText("");
+  // ...or another work was opened in the meantime
+  await h.core.actions.openProject("a");
+  assert.equal(h.core.actions.removeProject("a"), "removed");
+  await h.core.actions.openProject("b");
+  h.core.actions.undoRemove();
+  for (let i = 0; i < 10; i++) await settle();
+  assert.equal(studio(h).project?.id, "b");
+  assert.deepEqual(ids(h), ["a", "b"]);
+  // A work that was not open is simply back in the list.
+  assert.equal(h.core.actions.removeProject("a"), "removed");
+  h.core.actions.undoRemove();
+  for (let i = 0; i < 10; i++) await settle();
+  assert.equal(studio(h).project?.id, "b");
+  // 全部撤销 with several deletions: the one that was open returns to the studio.
+  assert.equal(h.core.actions.removeProject("a"), "removed");
+  assert.equal(h.core.actions.removeProject("b"), "removed");
+  assert.equal(studio(h).project, null);
+  h.core.actions.undoRemove();
+  for (let i = 0; i < 10; i++) await settle();
+  assert.equal(studio(h).project?.id, "b");
+  assert.deepEqual(ids(h), ["a", "b"]);
+  assert.ok(toasts(h).includes("已恢复 2 首作品"));
+});
+
+/* ================================================================== */
+/* what the producer says                                               */
+/* ================================================================== */
+
+test("FQ-02: the answer is the app's; a model's own words are a note beside it, and no chip shows a raw id", () => {
+  const plan: AgentPlan = {
+    config: localProject("x").config,
+    title: "x",
+    reply: "好的：速度 80 → 74 BPM，主奏乐器换成柔和钢琴。旋律保持不变。",
+    modelNote: "  已将速度放慢并换成钢琴主奏，\n整体更松弛。 ",
+    reasoning: [
+      "速度 80 → 74 BPM",
+      "主奏乐器更换为 piano",
+      "降低 drums 音量",
+      "风格保持 chill",
+      "调性 F# minor",
+      "没有从「rock 一点的 piano」里听出风格",
+    ],
+    tags: [],
+    unchanged: false,
+    brain: "llm",
+  };
+  const turn = agentTurn("t1", "2026-10-09T08:00:00.000Z", plan, {
+    revision: 2,
+  });
+  assert.equal(turn.text, plan.reply, "the app's answer, as it is");
+  assert.equal(turn.note, "已将速度放慢并换成钢琴主奏， 整体更松弛。");
+  assert.deepEqual(turn.reasoning, [
+    "速度 80 → 74 BPM",
+    "主奏乐器更换为柔和钢琴",
+    "降低鼓组音量",
+    "风格保持慵懒松弛",
+    "调性 F# 小调",
+    // what stands in quotes is the user's own wording
+    "没有从「rock 一点的 piano」里听出风格",
+  ]);
+  // names for ids: only whole words, only outside quotes
+  assert.equal(plainNames("主奏 epiano，风格 lofi"), "主奏电钢琴，风格 lofi");
+  assert.equal(plainNames("换成 guzheng 和 dizi"), "换成古筝和竹笛");
+  assert.equal(plainNames("bass 轻一点"), "贝斯轻一点");
+  assert.equal(plainNames("pianoforte, basset"), "pianoforte, basset");
+  assert.equal(plainNames("C major → A minor"), "C 大调 → A 小调");
+  assert.equal(plainNames("H major"), "H major");
+  assert.equal(plainNames("旋律保持不变"), "旋律保持不变");
+  // the offline rules write their own chips: nothing is rewritten there
+  assert.deepEqual(
+    agentTurn("t2", turn.at, {
+      reply: "好的。",
+      reasoning: ["加入 strings 的感觉"],
+      brain: "rules",
+    }).reasoning,
+    ["加入 strings 的感觉"],
+  );
+  // a note is at most 400 characters, one line, and never repeats the answer
+  const long = agentTurn("t3", turn.at, {
+    ...plan,
+    modelNote: "很".repeat(900),
+  });
+  assert.equal(long.note?.length, 400);
+  assert.equal(
+    agentTurn("t4", turn.at, { ...plan, modelNote: plan.reply }).note,
+    undefined,
+  );
+  assert.equal(
+    agentTurn("t5", turn.at, { ...plan, modelNote: " \n " }).note,
+    undefined,
+  );
+  assert.equal(
+    agentTurn("t6", turn.at, plan, { direct: true }).note,
+    undefined,
+    "a direct control has no model behind it",
+  );
+  assert.equal(cleanNote(42), "");
+  // stored with the work, and read back
+  const stored = normalizeProject({
+    ...localProject("p"),
+    chat: [turn, { ...turn, id: "t9", note: "x".repeat(900) }],
+  });
+  assert.equal(stored.chat?.[0].note, turn.note);
+  assert.equal(stored.chat?.[1].note?.length, 400);
+  assert.equal(
+    normalizeProject({
+      ...localProject("p"),
+      chat: [{ ...turn, note: "   " }],
+    }).chat?.[0].note,
+    undefined,
+  );
+  assert.throws(
+    () =>
+      normalizeProject({ ...localProject("p"), chat: [{ ...turn, note: 7 }] }),
+    /模型说明必须是文字/,
+  );
+});
+
+test("FQ-02: a model's note reaches the thread and the library next to the app's answer", async () => {
+  const h = harness();
+  await h.core.start();
+  // the producer port: an answer as the llm brain returns it under the contract
+  const deps = (
+    h.core as unknown as { kernel: { deps: { producePlan: unknown } } }
+  ).kernel.deps;
+  const rules = deps.producePlan as (
+    request: Parameters<typeof planWithRules>[0],
+  ) => Promise<AgentPlan>;
+  deps.producePlan = async (request: Parameters<typeof planWithRules>[0]) => ({
+    ...(await rules(request)),
+    brain: "llm",
+    model: "qwen3.5:9b",
+    modelNote: "做了一段轻快的钢琴，像夏天的海边。",
+  });
+  assert.equal(await h.core.actions.send("夏日海边的轻快钢琴"), true);
+  const turn = studio(h).thread.at(-1);
+  assert.equal(turn?.brain, "llm");
+  assert.equal(turn?.note, "做了一段轻快的钢琴，像夏天的海边。");
+  assert.notEqual(turn?.text, turn?.note);
+  const id = studio(h).project?.id ?? "";
+  assert.equal(h.storage.records.get(id)?.chat?.at(-1)?.note, turn?.note);
+});
+
+test("NEW-07: a promise that the melody stays is taken out clause by clause — whichever way round it is put", () => {
+  const base = localProject("b");
+  const cloud: Project = { ...base, provider: "tencent" };
+  const TRUTH = "云端服务会按新的设置重新生成，旋律会和上一版不同。";
+  const plan = (reply: string, modelNote?: string): AgentPlan => ({
+    config: { ...base.config, bpm: 90 },
+    title: "x",
+    reply,
+    ...(modelNote !== undefined ? { modelNote } : {}),
+    reasoning: [],
+    tags: [],
+    unchanged: false,
+    brain: "llm",
+  });
+  const cases: [string, string][] = [
+    // the reviewer's five: verb first, 没有动, 还是原来, 主题, English
+    ["我保留了原来的旋律，只是放慢了速度。", `放慢了速度。${TRUTH}`],
+    ["主旋律没有动，速度降到了 90。", `速度降到了 90。${TRUTH}`],
+    ["旋律还是原来那条，只是换了乐器。", `换了乐器。${TRUTH}`],
+    ["速度慢了一些；原曲的主题不变。", `速度慢了一些。${TRUTH}`],
+    [
+      "Slower now. I kept the melody the same, with more reverb.",
+      `Slower now. with more reverb.${TRUTH}`,
+    ],
+    // v0.3.0 dropped the whole sentence, and with it what was changed
+    [
+      "我把速度放慢了一些，主奏换成了长笛，旋律素材保持不变。",
+      `我把速度放慢了一些，主奏换成了长笛。${TRUTH}`,
+    ],
+    // not promises: the parameter 旋律丰富度, and the truth itself
+    [
+      "旋律丰富度保持不变，速度降到 90。",
+      `旋律丰富度保持不变，速度降到 90。${TRUTH}`,
+    ],
+    [`好的：速度 112 → 90 BPM。${TRUTH}`, `好的：速度 112 → 90 BPM。${TRUTH}`],
+    [
+      "这是一次新的生成，不保留原旋律，其余按你的设置重新生成。",
+      "这是一次新的生成，不保留原旋律，其余按你的设置重新生成。",
+    ],
+  ];
+  for (const [said, expected] of cases) {
+    const honest = honestPlan(plan(said), "tencent", cloud);
+    assert.equal(honest.reply, expected, said);
+    // said once — in the app's sentence, or in the producer's own words
+    assert.equal(
+      honest.reply.split(TRUTH).length - 1,
+      expected.endsWith(TRUTH) ? 1 : 0,
+      `the truth is said once: ${honest.reply}`,
+    );
+    assert.match(honest.reply, /重新生成/);
+    assert.equal(
+      honestPlan(honest, "tencent", cloud).reply,
+      honest.reply,
+      "twice changes nothing",
+    );
+  }
+  // The model's own note is held to the same; an emptied note is no note.
+  const noted = honestPlan(
+    plan(
+      `好的：速度 112 → 90 BPM。${TRUTH}`,
+      "放慢了速度，旋律保持不变，整体更从容。",
+    ),
+    "tencent",
+    cloud,
+  );
+  assert.equal(noted.modelNote, "放慢了速度，整体更从容。");
+  assert.equal(noted.reply, `好的：速度 112 → 90 BPM。${TRUTH}`);
+  assert.equal(
+    honestPlan(plan(`好的。${TRUTH}`, "旋律完全保留。"), "tencent", cloud)
+      .modelNote,
+    undefined,
+  );
+  // A local engine-2 refinement keeps its tune: nothing is touched.
+  const local = plan("我保留了原来的旋律，只是放慢了速度。", "旋律保持不变。");
+  assert.equal(honestPlan(local, "local", base), local);
+});
+
+test("FQ-15: 换一版旋律 said to a cloud engine is answered as what it is — a new paid piece", async () => {
+  const { h } = await desktop({ records: [cloudWork("paid")] });
+  assert.equal(await h.core.actions.openProject("paid"), true);
+  h.core.actions.setComposerText("换一版旋律");
+  assert.equal(await paid(h, () => h.core.actions.send()), true);
+  const reply = studio(h).thread.at(-1)?.text ?? "";
+  assert.match(
+    reply,
+    /重新生成/,
+    `v0.3.0: 「好的：换一组新的旋律。」 — as if only the tune changed: ${reply}`,
+  );
+  assert.doesNotMatch(reply, /保持不变|保留/);
+  // NEW-08: the chip that would say so is not offered for a cloud engine;
+  // the button that does it is labelled 重新生成一版（计费）.
+  assert.equal(studio(h).provider, "tencent");
+  assert.ok(!view(h).suggestions.includes("换一版旋律"));
+  assert.ok(view(h).suggestions.length >= 4, "the other chips stay");
+  assert.equal(view(h).variationLabel, "重新生成一版（计费）");
+  h.core.actions.setProvider("local");
+  assert.equal(view(h).suggestions.at(-1), "换一版旋律");
+  assert.equal(view(h).variationLabel, "换一版旋律");
+  // a local work: the chip follows the engine that is selected, not the work
+  const local = localProject("mine");
+  assert.equal(suggestionsFor(local, "local").at(-1), "换一版旋律");
+  assert.ok(!suggestionsFor(local, "tencent").includes("换一版旋律"));
+  assert.deepEqual(
+    suggestionsFor(local, "tencent"),
+    suggestionsFor(local, "local").slice(0, -1),
+  );
+  assert.deepEqual(suggestionsFor(null, "tencent"), []);
+});
+
+test("NEW-01: 应用调整 with the local engine on a cloud work says once that it is rewritten", () => {
+  const cloud: Project = {
+    ...localProject("paid"),
+    provider: "tencent",
+  };
+  const draft = { ...draftOf(cloud.config), instrument: "guzheng" as const };
+  const direct = planFromDraft(cloud, draft, "local").plan;
+  const honest = honestPlan(direct, "local", cloud);
+  const SENTENCE = "改用本地作曲后，会按这些设置重新写一首。";
+  assert.equal(
+    honest.reply,
+    `已按你的调整生成新版本：主奏乐器换成古筝。${SENTENCE}`,
+  );
+  assert.equal(
+    honest.reply.split(SENTENCE).length - 1,
+    1,
+    "v0.3.0 said it twice",
+  );
+  assert.equal(honest, direct, "already true: left alone");
+  // and through the whole flow, as the thread shows it
+  // (engine 1 → engine 2 and cloud → cloud say their sentence once as well)
+  for (const [provider, base] of [
+    ["tencent", cloud],
+    [
+      "local",
+      { ...localProject("old"), config: { ...cloud.config, engine: 1 } },
+    ],
+  ] as const) {
+    const plan = honestPlan(
+      planFromDraft(base as Project, draft, provider).plan,
+      provider,
+      base as Project,
+    );
+    const sentences = plan.reply.match(/[^。]+。/g) ?? [];
+    assert.equal(
+      new Set(sentences).size,
+      sentences.length,
+      `no sentence twice: ${plan.reply}`,
+    );
+  }
+});
+
+test("NEW-02: the user's own words in quotes are never rewritten by the fitted tempo", () => {
+  const request = buildAgentRequest({
+    text: "100 BPM，C 大调，30 秒",
+    project: null,
+    thread: [],
+    pins: {},
+    provider: "local",
+    nextSeed: 7,
+  });
+  const plan = planWithRules(request);
+  const fitted = fittedTiming(plan.config);
+  const truthful = truthfulTiming(plan, "local", null);
+  const quoting = truthful.reasoning.filter((line) =>
+    line.includes("「100 BPM"),
+  );
+  assert.ok(
+    plan.reasoning.some((line) => line.includes("「100 BPM，C 大调，30 秒」")),
+    "the producer quotes the request it could not hear a style in",
+  );
+  assert.deepEqual(
+    quoting,
+    plan.reasoning.filter((line) => line.includes("「100 BPM")),
+    "quoted as typed (v0.3.0 turned it into the fitted tempo)",
+  );
+  if (formatBpm(fitted.bpm) !== "100") {
+    // outside the quotation the statement about the piece is still corrected
+    assert.ok(
+      truthful.reasoning.some((line) =>
+        line.includes(`实际 ${formatBpm(fitted.bpm)} BPM（设定 100）`),
+      ),
+    );
+    assert.doesNotMatch(
+      truthful.reasoning.join("\n"),
+      new RegExp(`「${formatBpm(fitted.bpm)} BPM`),
+    );
+  }
+  // the general rule, whatever the numbers
+  const made: AgentPlan = {
+    ...plan,
+    config: { ...plan.config, bpm: 140, duration: 60, loop: true },
+    reply: "好的，140 BPM 的版本；你说的是「140 BPM，60 秒」。",
+    reasoning: ["没有从「140 BPM 的 60 秒」里听出风格", "速度 140 BPM"],
+  };
+  const real = fittedTiming(made.config);
+  const fixed = truthfulTiming(made, "local", null);
+  assert.ok(fixed.reply.includes("「140 BPM，60 秒」"));
+  assert.ok(fixed.reasoning[0].includes("「140 BPM 的 60 秒」"));
+  if (formatBpm(real.bpm) !== "140") {
+    assert.ok(
+      fixed.reply.startsWith(`好的，${formatBpm(real.bpm)} BPM 的版本`),
+    );
+    assert.equal(fixed.reasoning[1], `速度 ${formatBpm(real.bpm)} BPM`);
+  }
+  assert.equal(
+    outsideQuotes("a「b」c“d”e", (part) => part.toUpperCase()),
+    "A「b」C“d”E",
+  );
+});
+
+test("NEW-06: a draft nobody could hear is said to make no version — before 应用调整 is pressed", async () => {
+  const h = harness({
+    records: [
+      localProject(
+        "loop",
+        {},
+        { bpm: 80, duration: 60, loop: true, mood: "chill" },
+      ),
+    ],
+  });
+  await h.core.start();
+  await h.core.actions.openProject("loop");
+  const config = studio(h).project?.config;
+  assert.ok(config);
+  // find a nudge the loop fits back onto the same bars (v0.3.0: 80 → 82)
+  const nudge = [1, 2, -1, -2].find((step) => {
+    const next = { ...config, bpm: config.bpm + step };
+    const before = fittedTiming(config);
+    const after = fittedTiming(next);
+    return before.bpm === after.bpm && before.duration === after.duration;
+  });
+  if (nudge === undefined) return; // this composer fits no nudge back: nothing to say
+  h.core.actions.setDraft("bpm", config.bpm + nudge);
+  assert.deepEqual(view(h).changedFields, ["bpm"]);
+  assert.equal(view(h).applyInaudible, true);
+  assert.equal(view(h).applyHint, INAUDIBLE_HINT);
+  assert.doesNotMatch(view(h).applyHint, /会生成一个新版本/);
+  assert.match(view(h).applyHint, /不会生成新版本/);
+  // pressing it anyway (a shortcut, a test) is answered the same way
+  const versions = ids(h).length;
+  assert.equal(await h.core.actions.applyDraft(), false);
+  assert.equal(ids(h).length, versions);
+  assert.match(
+    studio(h).thread.at(-1)?.text ?? "",
+    /听起来会和现在这一版完全一样/,
+  );
+  // an edit that can be heard promises its version again
+  h.core.actions.setDraft("instrument", "guzheng");
+  assert.equal(view(h).applyInaudible, false);
+  assert.match(view(h).applyHint, /^应用调整会生成一个新版本/);
+  // a cloud engine decides for itself: nothing is claimed
+  assert.equal(
+    draftInaudible(studio(h).project, "tencent", studio(h).draft),
+    false,
+  );
+  assert.equal(draftInaudible(null, "local", studio(h).draft), false);
+});
+
+test("FQ-15: a request that changes nothing audible says why", () => {
+  // a style that writes a pad by itself: 加点弦乐铺底 asks for what is there
+  const styled = STYLES.map((style) =>
+    localProject(
+      `s-${style.id}`,
+      {},
+      { ...stylePreset(style.id), mood: style.id },
+    ),
+  );
+  let checked = 0;
+  for (const work of styled) {
+    const plan = planWithRules({
+      text: "加点弦乐铺底",
+      mode: "refine",
+      current: work.config,
+      provider: "local",
+      history: [],
+      nextSeed: work.config.seed,
+    });
+    if (plan.unchanged) continue;
+    const answered = inaudiblePlan(plan, "local", work);
+    if (!answered.unchanged) continue;
+    checked++;
+    assert.equal(
+      answered.reply,
+      "这样改完，听起来会和现在这一版完全一样，所以没有生成新版本。",
+    );
+    assert.ok(
+      answered.reasoning.length > 0,
+      `${work.config.mood}: v0.3.0 gave no reason at all`,
+    );
+    assert.ok(
+      answered.reasoning.some((line) => /^这一版已经有/.test(line)),
+      `${work.config.mood}: ${answered.reasoning.join(" / ")}`,
+    );
+  }
+  assert.ok(checked > 0, "at least one style already plays a pad");
+});
+
+test("FQ-11: the wait for the producer is worded by where the model runs", async () => {
+  const { h, bridge } = await desktop();
+  const waiting = async (kind: "ollama" | "anthropic" | "openai") => {
+    assert.deepEqual(
+      await h.core.actions.saveLlm(
+        kind === "ollama"
+          ? { kind, preset: "ollama", apiKey: "", model: "qwen3.5:9b" }
+          : kind === "anthropic"
+            ? {
+                kind,
+                preset: "anthropic",
+                apiKey: "sk-ant-test-0000",
+                model: "claude-opus-5-5",
+              }
+            : {
+                kind,
+                preset: "deepseek",
+                apiKey: "sk-test-0000",
+                model: "deepseek-chat",
+                baseUrl: "https://api.deepseek.com",
+              },
+      ),
+      { ok: true },
+    );
+    const gate = defer<never>();
+    bridge.plan = () => gate.promise;
+    const running = h.core.actions.send("雨夜咖啡馆的慵懒钢琴");
+    await settle();
+    const job = studio(h).job;
+    assert.equal(job?.stage, "planning");
+    assert.equal(job?.brain, "llm");
+    h.core.actions.cancelJob();
+    gate.reject(new Error("已取消"));
+    await running;
+    return job;
+  };
+  const local = await waiting("ollama");
+  assert.equal(local?.llm, "ollama");
+  assert.match(local?.phase ?? "", /本机模型可能需要一两分钟/);
+  for (const kind of ["anthropic", "openai"] as const) {
+    const hosted = await waiting(kind);
+    assert.equal(hosted?.llm, kind);
+    assert.equal(
+      hosted?.phase,
+      "制作人（大模型）正在理解你的想法，通常几秒到一分钟",
+    );
+    assert.doesNotMatch(
+      hosted?.phase ?? "",
+      /本机/,
+      "v0.3.0 told a Claude user that a local model may take minutes",
+    );
+  }
+  // the offline rules carry no model at all
+  await h.core.actions.removeLlm();
+  assert.equal(await h.core.actions.send("夏日海边"), true);
+  assert.equal(studio(h).job, null);
+});
+
+test("FQ-16: files exported in a row share one notice", async () => {
+  const { h } = await withWork();
+  for (const request of [
+    { kind: "mix" },
+    { kind: "stem", track: "melody" },
+    { kind: "stem", track: "bass" },
+    { kind: "project" },
+  ] as const)
+    assert.equal(await h.core.actions.exportWork(request), true);
+  assert.equal(h.files.length, 4);
+  const started = toasts(h).filter((text) => text.startsWith("已开始下载"));
+  assert.equal(
+    started.length,
+    1,
+    `v0.3.0 stacked one per file: ${JSON.stringify(started)}`,
+  );
+  assert.ok(started[0].includes(h.files.at(-1)?.name ?? "?"), "the latest one");
 });

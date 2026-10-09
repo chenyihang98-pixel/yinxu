@@ -1,8 +1,19 @@
 /** Derived views of the state. Pure; memoised by the hooks. */
 import type { Platform } from "../platform";
 import { changedFields } from "./logic";
-import { activeBrain, brainOptions, engineOptions } from "./options";
-import { applyHint, paidNotice, suggestionsFor, variationLabel } from "./plan";
+import {
+  activeBrain,
+  brainOptions,
+  durationRange,
+  engineOptions,
+} from "./options";
+import {
+  applyHint,
+  draftInaudible,
+  paidNotice,
+  suggestionsFor,
+  variationLabel,
+} from "./plan";
 import type { SettingsState, StudioState, StudioView } from "./types";
 
 type Capabilities = Pick<Platform, "canUseCloud" | "canUseLlm">;
@@ -42,10 +53,16 @@ export function studioView(
     engines: engineOptions(platform, settings),
     brains,
     activeBrain: activeBrain(studio.brain, brains),
-    suggestions: suggestionsFor(studio.project),
+    suggestions: suggestionsFor(studio.project, studio.provider),
     unsaved: isUnsaved(studio),
     paid: paidNotice(studio.provider, !!studio.project),
     applyHint: applyHint(studio.project, studio.provider, studio.draft),
     variationLabel: variationLabel(studio.provider),
+    applyInaudible: draftInaudible(
+      studio.project,
+      studio.provider,
+      studio.draft,
+    ),
+    durationRange: durationRange(studio.provider),
   };
 }

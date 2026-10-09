@@ -13,12 +13,17 @@
 //
 // One step also loads the desktop renderer build (dist/, when it exists) in
 // the same browser with a stand-in for the Electron bridge: the paid flows —
-// billing notice, the question before a paid request, an unsaved paid result
-// — cannot be reached in the web build, which has no cloud engines. Another
+// billing notice, the question before a paid request (and what a double-click
+// does to it), a length the service does not take, an unsaved paid result, a
+// paid result whose file never arrived (the banner, its questions, a reload,
+// 重新下载, 放弃这次结果) — cannot be reached in the web build, which has no
+// cloud engines. Another
 // opens the web build as a 1366×768 window (the size at which v0.3.0 hid the
 // inspector's buttons) for what the review asked to be true on screen:
-// pending edits stay reachable and are never dropped, the mixer and the
-// chips follow what the piece contains, 循环试听 follows the structure.
+// pending edits stay reachable and are never dropped (a pill leads to them
+// when their panel is off screen), the style chips are one stop for the Tab
+// key, chord names are printed wherever they fit, the mixer and the chips
+// follow what the piece contains, 循环试听 follows the structure.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -53,6 +58,9 @@ const MIME = {
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** 18 → "0:18": a length as the transport shows it. */
+const clock = (seconds) =>
+  `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 
 async function until(read, test, description, timeout = 30000) {
   const deadline = Date.now() + timeout;
@@ -374,7 +382,10 @@ function standInBridge({ mp3Base64 }) {
   window.__paid = paid;
   window.__saved = [];
   window.__risk = [];
+  window.__calls = [];
   window.__putFailures = 0;
+  /** the next n downloads of a finished result fail (the music exists, its file does not arrive) */
+  window.__downloadFailures = 0;
   const put = IDBObjectStore.prototype.put;
   IDBObjectStore.prototype.put = function (...args) {
     if (window.__putFailures > 0) {
@@ -383,33 +394,87 @@ function standInBridge({ mp3Base64 }) {
     }
     return put.apply(this, args);
   };
+  // What the main process holds outlives a reload of the page (sessionStorage does, too).
+  const held = () => sessionStorage.getItem("__held");
+  const hold = (provider) =>
+    provider
+      ? sessionStorage.setItem("__held", provider)
+      : sessionStorage.removeItem("__held");
+  window.__held = held;
+  const NOT_DOWNLOADED =
+    "音乐已生成，但下载失败（已尝试 4 次，网络不稳定或文件服务器暂时不可用）。重新生成会再次计费：请先检查网络，再到服务控制台找回这首音乐。（任务编号 smoke-0001）";
+  const answer = () => ({
+    audio: bytes.slice().buffer,
+    mimeType: "audio/mpeg",
+  });
+  const later = (run) =>
+    new Promise((resolve, reject) =>
+      setTimeout(() => {
+        try {
+          resolve(run());
+        } catch (error) {
+          reject(error);
+        }
+      }, 200),
+    );
+  const download = () => {
+    if (window.__downloadFailures > 0) {
+      window.__downloadFailures--;
+      throw new Error(NOT_DOWNLOADED);
+    }
+    hold(null);
+    return answer();
+  };
   window.museDesktop = Object.freeze({
     getSettings: async () => ({
       providers: {
         tencent: { configured: true, model: "minimax-music-v3.0" },
-        volcengine: { configured: false },
+        volcengine: { configured: true },
         aliyun: { configured: false },
         elevenlabs: { configured: false },
       },
       llm: { configured: false },
       dataPath: "C:\\stand-in",
       version: "0.3.0-smoke",
+      pendingResult: held() ? { provider: held() } : null,
     }),
     saveProviderCredentials: async () => {},
     deleteProviderCredentials: async () => {},
-    generateMusic: () => {
-      localStorage.setItem("__paid", String(paid() + 1));
-      return new Promise((resolve) =>
-        setTimeout(
-          () =>
-            resolve({ audio: bytes.slice().buffer, mimeType: "audio/mpeg" }),
-          200,
-        ),
+    generateMusic: (input) => {
+      window.__calls.push(
+        `generateMusic:${input.provider}:${input.duration}${input.discardPending === true ? ":discardPending" : ""}`,
       );
+      // like the main process: no new paid request while a paid result waits, unless it may go
+      if (held() && input.discardPending !== true)
+        return Promise.reject(
+          new Error(
+            "还有一首已经付费的音乐没有取回，这次没有发出新的生成请求。请先点「重新下载」把它取回；确认不要它之后，才能开始新的生成。",
+          ),
+        );
+      hold(null);
+      localStorage.setItem("__paid", String(paid() + 1));
+      return later(() => {
+        // the service has made (and billed) the music; fetching its file may fail
+        hold(input.provider);
+        return download();
+      });
     },
     cancelGeneration: async () => {},
-    retryLastDownload: async () => {
-      throw new Error("没有等待重新下载的音乐。");
+    retryLastDownload: (provider) => {
+      window.__calls.push(`retryLastDownload:${provider}`);
+      if (held() !== provider)
+        return Promise.reject(
+          new Error(
+            "没有等待重新下载的音乐。如需这首音乐，请到服务控制台查找，或重新生成。",
+          ),
+        );
+      return later(download);
+    },
+    discardPendingResult: async (provider) => {
+      window.__calls.push(`discardPendingResult:${provider}`);
+      if (held() !== provider) return false;
+      hold(null);
+      return true;
     },
     setUnsavedWork: async (value) => void window.__risk.push(value),
     saveAudio: async (input) => {
@@ -432,8 +497,11 @@ function standInBridge({ mp3Base64 }) {
 
 /**
  * The paid flows, in the real interface: with a cloud engine the cost is on
- * screen, nothing is sent without a yes (a chip never sends), and a result
- * whose save failed stays, is not left unasked, and can be exported.
+ * screen, nothing is sent without a deliberate yes (a chip never sends, a
+ * double-click answers nothing), a length the service does not take is
+ * settled before the paid question, a result whose save failed stays, is not
+ * left unasked and can be exported — and a result whose file never arrived
+ * stays on offer until it is fetched or knowingly given up.
  */
 async function desktopRenderer(browser, origin) {
   const mp3 = fs.readFileSync(
@@ -521,6 +589,131 @@ async function desktopRenderer(browser, origin) {
       await $("composer-input").inputValue(),
       "雨夜咖啡馆，慵懒的钢琴",
     );
+    // NEW-04: the selector shows the whole name of the engine, billing included (it was cut off at 220 px).
+    assert.deepEqual(
+      await $("composer-engine").evaluate((select) => {
+        const style = getComputedStyle(select);
+        const context = document.createElement("canvas").getContext("2d");
+        context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const text = select.selectedOptions[0].textContent;
+        const room =
+          select.clientWidth -
+          parseFloat(style.paddingLeft) -
+          parseFloat(style.paddingRight);
+        return { text, fits: context.measureText(text).width <= room + 1 };
+      }),
+      { text: "腾讯云 TokenHub · 按服务商计费", fits: true },
+    );
+
+    // NEW-09: a double-click on 生成 BGM opens the question — and answers nothing. (v0.3.0: the
+    // second click landed on the backdrop, which is 取消; with other geometry it could land on a button.)
+    await $("send-button").dblclick();
+    await sleep(150);
+    assert.equal(
+      await $("dialog-paid").count(),
+      1,
+      "the question is still there",
+    );
+    assert.equal(
+      await $("modal-shield").count(),
+      1,
+      "and takes no pointer input yet",
+    );
+    assert.equal(await paid(), 0);
+    assert.equal(
+      await page.evaluate(() =>
+        document.activeElement?.getAttribute("data-testid"),
+      ),
+      "dialog-choice-cancel",
+      "the safe answer keeps the focus",
+    );
+    assert.equal(
+      await $("send-button").isDisabled(),
+      true,
+      "the control that opened the question is disabled while it is open",
+    );
+    // Enter right after it opened (a second or held Enter) is not an answer either.
+    await page.keyboard.press("Enter");
+    await page.keyboard.down("Enter");
+    assert.equal(await $("dialog-paid").count(), 1);
+    await $("modal-shield").waitFor({ state: "detached" });
+    // A key that is being held never answers, however long the question has been open.
+    await sleep(100);
+    await page.keyboard.down("Enter"); // still down: auto-repeat
+    await page.keyboard.down("Enter");
+    await page.keyboard.up("Enter");
+    assert.equal(await $("dialog-paid").count(), 1);
+    assert.equal(await paid(), 0);
+    // After that moment a deliberate Enter on the focused 取消 does cancel.
+    await page.keyboard.press("Enter");
+    await $("dialog-paid").waitFor({ state: "detached" });
+    assert.equal(await paid(), 0);
+    assert.equal(await $("send-button").isEnabled(), true);
+    // The same from the keyboard: Ctrl+Enter, Enter, Enter in one breath.
+    await $("composer-input").focus();
+    await page.keyboard.press("Control+Enter");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter");
+    await sleep(100);
+    assert.equal(
+      await $("dialog-paid").count(),
+      1,
+      "three quick Enters: asked, not answered",
+    );
+    assert.equal(await paid(), 0);
+    await page.keyboard.press("Escape");
+    await $("dialog-paid").waitFor({ state: "detached" });
+
+    // FQ-04: a length the service does not take is settled BEFORE the paid question — v0.3.0
+    // asked to confirm the payment and then refused with 生成失败.
+    await $("composer-duration").selectOption("15");
+    await $("composer-engine").selectOption("volcengine");
+    assert.deepEqual(
+      await $("composer-duration").evaluate((select) =>
+        [...select.options]
+          .filter((option) => option.disabled)
+          .map((option) => option.textContent),
+      ),
+      ["15 秒 · 该引擎不支持"],
+      "the selector says which lengths this engine takes",
+    );
+    await $("send-button").click();
+    await $("dialog-duration").waitFor();
+    assert.equal(await $("dialog-paid").count(), 0, "the length comes first");
+    assert.match(
+      await $("dialog-duration").innerText(),
+      /火山引擎 AI 音乐支持 30–120 秒，这次的时长是 15 秒。[\s\S]*改为 30 秒[\s\S]*还没有发送任何请求/,
+    );
+    await $("dialog-choice-cancel").click();
+    await $("dialog-duration").waitFor({ state: "detached" });
+    assert.equal(await page.locator('[role="dialog"]').count(), 0);
+    assert.equal(await paid(), 0);
+    assert.deepEqual(
+      (
+        await page.locator('[data-testid="toast"] > span').allInnerTexts()
+      ).filter((text) => text.startsWith("生成失败")),
+      [],
+      "nothing failed: nothing was sent",
+    );
+    await $("send-button").click();
+    await $("dialog-choice-fit").click();
+    await $("dialog-paid").waitFor();
+    assert.equal(
+      await $("composer-duration").inputValue(),
+      "30",
+      "what was agreed is what the composer now shows",
+    );
+    assert.equal(await paid(), 0, "and only now the paid question");
+    await page.keyboard.press("Escape");
+    await $("dialog-paid").waitFor({ state: "detached" });
+    await $("composer-engine").selectOption("tencent");
+    await $("composer-duration").selectOption("");
+    assert.equal(
+      await page.evaluate(() => window.__calls.length),
+      0,
+      "none of this reached the service",
+    );
+
     await $("send-button").click();
     await $("dialog-choice-confirm").click();
     await mixLoaded(1);
@@ -670,6 +863,7 @@ async function desktopRenderer(browser, origin) {
       await $("work-meta").innerText(),
       /^生成要求：慵懒松弛 · 约 \d+ BPM · /,
     );
+    await pendingResult(page, { $, paid, idle, mixLoaded });
     await $("nav-library").click();
     await $("library-page").waitFor();
     for (const line of await page.locator(".work-line").allInnerTexts())
@@ -698,10 +892,14 @@ async function desktopRenderer(browser, origin) {
       await $("llm-model-hint").innerText(),
       /在服务商控制台的模型列表里复制模型名称/,
     );
-    assert.equal(
-      await $("llm-console-link").count(),
-      1,
-      "with the way to that console",
+    // FQ-15: one link per destination. 打开服务商控制台 opened the very page 获取 API Key opens.
+    assert.equal(await $("llm-console-link").count(), 0);
+    assert.equal(await $("llm-key-link").count(), 1);
+    assert.equal(await $("llm-key-warning").count(), 0);
+    // NEW-08: with a cloud engine a failing model is not replaced without a question; the notice says so.
+    assert.match(
+      await $("llm-notice").innerText(),
+      /模型不可用时，制作人会改用离线规则；选了云端生成时会先问你。$/,
     );
     const looks = await page.evaluate(() => {
       const model = document.querySelector('[data-testid="llm-model"]');
@@ -739,6 +937,16 @@ async function desktopRenderer(browser, origin) {
     await $("llm-model").fill("some-model");
     assert.equal(await $("llm-save").isEnabled(), true);
     assert.equal(await $("llm-save-reason").count(), 0);
+    // FQ-15: a key that does not look like the vendor's is pointed out — and can still be saved.
+    await $("llm-preset").selectOption("anthropic");
+    await $("llm-key").fill("sk-proj-not-an-anthropic-key");
+    assert.match(
+      await $("llm-key-warning").innerText(),
+      /不是以 sk-ant- 开头[\s\S]*仍然可以保存/,
+    );
+    assert.equal(await $("llm-save").isEnabled(), true);
+    await $("llm-key").fill("sk-ant-api03-0123456789");
+    assert.equal(await $("llm-key-warning").count(), 0);
     await $("llm-preset").selectOption("ollama");
     assert.match(
       await $("llm-notice").innerText(),
@@ -756,6 +964,251 @@ async function desktopRenderer(browser, origin) {
   } finally {
     await context.close();
   }
+}
+
+/**
+ * FQ-01: a paid result that was generated but not delivered. Starts with a
+ * stored cloud work loaded and 本次会话不再提示 ticked for its service — the
+ * state in which v0.3.0 lost such a result to one stray click, or to the next
+ * request, without a word.
+ */
+async function pendingResult(page, { $, paid, idle, mixLoaded }) {
+  const risk = () => page.evaluate(() => window.__risk.at(-1));
+  const held = () => page.evaluate(() => window.__held());
+  const calls = () => page.evaluate(() => window.__calls);
+  const toasts = () =>
+    page.locator('[data-testid="toast"] > span').allInnerTexts();
+  const dismissToasts = async () => {
+    await page.evaluate(() => {
+      for (const button of document.querySelectorAll(
+        '[data-testid="toast-close"]',
+      ))
+        button.click();
+    });
+    await page.waitForSelector('[data-testid="toast"]', {
+      state: "detached",
+      timeout: 5000,
+    });
+  };
+  const before = await paid();
+  const works = (await records(page)).length;
+  const revision = Number(await $("player-card").getAttribute("data-revision"));
+
+  // The service makes the music (and bills it); the file does not arrive.
+  await page.evaluate(() => {
+    window.__downloadFailures = 1;
+  });
+  await $("composer-input").fill("安静一点");
+  await $("composer-input").press("Enter");
+  await $("pending-banner").waitFor({ timeout: 30000 });
+  await idle();
+  assert.equal(await paid(), before + 1, "one paid request");
+  assert.equal(await held(), "tencent", "the main process holds the result");
+  const banner = (await $("pending-text").innerText()).replace(/\s+/g, " ");
+  assert.match(
+    banner,
+    /^腾讯云 TokenHub 的一次付费生成还没有取回。 ?音乐已生成，但下载失败（已尝试 4 次[\s\S]*（任务编号 smoke-0001）也可以点「重新下载」再取一次，不会再次计费。$/,
+  );
+  assert.deepEqual(
+    (await toasts()).filter((text) => text.startsWith("生成失败")),
+    [],
+    "the music WAS made",
+  );
+  assert.equal(
+    await page.locator('[data-testid="toast-action"]').count(),
+    0,
+    "the offer does not live in a notice that can be closed",
+  );
+  assert.equal(await risk(), true, "closing the window asks first");
+  assert.equal((await records(page)).length, works);
+  assert.equal(
+    await $("composer-input").inputValue(),
+    "安静一点",
+    "the words are handed back",
+  );
+  // (a) Closing every notice loses nothing: the banner, the offer and the question on closing stay.
+  await dismissToasts();
+  assert.equal(await $("pending-banner").count(), 1);
+  assert.equal(await $("pending-download").isEnabled(), true);
+  assert.equal(await risk(), true);
+  // ...on every page
+  for (const target of ["library", "inspiration", "studio"]) {
+    await $(`nav-${target}`).click();
+    assert.equal(await $("pending-banner").count(), 1, `on ${target}`);
+  }
+  assert.deepEqual(await page.evaluate(layoutProblems), []);
+
+  // (b) A new paid request does not replace it unasked — not even with 本次会话不再提示 ticked.
+  await $("composer-input").press("Enter");
+  await $("dialog-pending").waitFor();
+  assert.equal(await $("dialog-paid").count(), 0);
+  assert.match(
+    await $("dialog-pending").innerText(),
+    /还有一首付费生成的音乐没有取回[\s\S]*腾讯云 TokenHub 已经生成并计费的音乐还没有下载下来[\s\S]*发送新的生成请求后，它就无法再取回了/,
+  );
+  assert.deepEqual(
+    await page
+      .locator('[data-testid="dialog-pending"] .modal-foot button')
+      .allInnerTexts(),
+    ["取消", "重新下载", "放弃它，继续发送"],
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      document.activeElement?.getAttribute("data-testid"),
+    ),
+    "dialog-choice-stay",
+  );
+  await page.keyboard.press("Escape");
+  await $("dialog-pending").waitFor({ state: "detached" });
+  assert.equal(await paid(), before + 1, "nothing was sent");
+  assert.equal(await $("pending-banner").count(), 1);
+  // 新建创作 and opening another work ask as well; the safe answer changes nothing.
+  await $("new-piece").click();
+  await $("dialog-pending").waitFor();
+  assert.deepEqual(
+    await page
+      .locator('[data-testid="dialog-pending"] .modal-foot button')
+      .allInnerTexts(),
+    ["取消", "重新下载", "稍后再取，继续"],
+  );
+  await $("dialog-choice-stay").click();
+  await $("dialog-pending").waitFor({ state: "detached" });
+  assert.equal(
+    await $("player-card").getAttribute("data-revision"),
+    String(revision),
+  );
+  const loadedId = await $("player-card").getAttribute("data-project");
+  await $("nav-library").click();
+  await page
+    .locator(
+      `[data-testid="library-card"]:not([data-project="${loadedId}"]) [data-testid="library-open"]`,
+    )
+    .first()
+    .click();
+  await $("dialog-pending").waitFor();
+  await page.keyboard.press("Escape");
+  await $("dialog-pending").waitFor({ state: "detached" });
+  await $("nav-studio").click();
+  assert.equal(
+    await $("player-card").getAttribute("data-revision"),
+    String(revision),
+    "the work that was loaded is still the one",
+  );
+  // 放弃这次结果 is a question, and says what it costs.
+  await $("pending-discard").click();
+  await $("dialog-discard").waitFor();
+  assert.match(
+    await $("dialog-discard").innerText(),
+    /放弃这首已经生成的音乐？[\s\S]*已经由腾讯云 TokenHub 生成并计费。放弃后，这里不再提供重新下载。[\s\S]*重新付费生成/,
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      document.activeElement?.getAttribute("data-testid"),
+    ),
+    "dialog-choice-keep",
+  );
+  await $("dialog-choice-keep").click();
+  await $("dialog-discard").waitFor({ state: "detached" });
+  assert.equal(await $("pending-banner").count(), 1);
+  assert.equal(await held(), "tencent");
+
+  // A reload of the page: the main process still holds the result, and says so — the banner is back.
+  await page.reload();
+  await mixLoaded(revision);
+  await $("pending-banner").waitFor({ timeout: 15000 });
+  assert.equal(
+    (await $("pending-text").innerText()).replace(/\s+/g, " "),
+    banner,
+    "word for word",
+  );
+  assert.equal(await risk(), true);
+  assert.equal(await page.locator('[role="dialog"]').count(), 0);
+
+  // 重新下载 that fails again: still on offer, still nothing sent.
+  await page.evaluate(() => {
+    window.__downloadFailures = 1;
+  });
+  await $("pending-download").click();
+  await page.waitForSelector(
+    '[data-testid="job-status"][data-stage="downloading"]',
+  );
+  assert.match(
+    await $("job-phase").innerText(),
+    /正在重新下载已经生成的音乐，不会再次计费/,
+  );
+  assert.equal(
+    await $("pending-download").isDisabled(),
+    true,
+    "not twice at once",
+  );
+  await idle();
+  assert.equal(await $("pending-banner").count(), 1);
+  assert.ok(
+    (await toasts()).some((text) => /还是没有下载下来/.test(text)),
+    JSON.stringify(await toasts()),
+  );
+  assert.equal(await paid(), before + 1);
+  // 重新下载 that succeeds: stored, decoded and loaded exactly like a fresh result.
+  await $("pending-download").click();
+  await mixLoaded(revision + 1);
+  await $("pending-banner").waitFor({ state: "detached" });
+  await page.waitForSelector('[data-testid="save-state"][data-state="saved"]', {
+    timeout: 15000,
+  });
+  assert.equal(await paid(), before + 1, "fetched, not generated again");
+  assert.equal(await held(), null);
+  assert.equal(await risk(), false);
+  const stored = await records(page);
+  assert.equal(stored.length, works + 1);
+  const delivered = stored.find((record) => record.revision === revision + 1);
+  assert.equal(delivered.provider, "tencent");
+  assert.ok(delivered.parentId, "a version of the work it was asked for");
+  assert.deepEqual(
+    delivered.chat
+      .slice(-2)
+      .map((turn) => [turn.role, turn.revision ?? turn.text]),
+    [
+      ["user", "安静一点"],
+      ["agent", revision + 1],
+    ],
+    "the request it answers, then the producer's answer with its version",
+  );
+  assert.ok(
+    !delivered.chat.some((turn) => turn.error),
+    "no failure note is stored with it",
+  );
+  assert.equal(await $("composer-engine").inputValue(), "tencent");
+  assert.deepEqual(
+    (await calls()).filter((call) => call.startsWith("generateMusic")),
+    [],
+    "no request since the reload",
+  );
+
+  // 放弃这次结果, confirmed: gone here and in the main process; closing no longer asks; a reload brings nothing back.
+  await page.evaluate(() => {
+    window.__downloadFailures = 1;
+  });
+  await $("composer-input").fill("再安静一点");
+  await $("composer-input").press("Enter");
+  // (the reload forgot 本次会话不再提示: the paid question is back)
+  await $("dialog-paid").waitFor();
+  await $("dialog-choice-confirm").click();
+  await $("pending-banner").waitFor({ timeout: 30000 });
+  await idle();
+  assert.equal(await paid(), before + 2);
+  await $("pending-discard").click();
+  await $("dialog-choice-discard").click();
+  await $("pending-banner").waitFor({ state: "detached" });
+  assert.equal(await held(), null, "the main process let go of it");
+  assert.ok((await calls()).includes("discardPendingResult:tencent"));
+  assert.equal(await risk(), false);
+  await page.reload();
+  await mixLoaded(revision + 1);
+  await sleep(500);
+  assert.equal(await $("pending-banner").count(), 0);
+  assert.equal((await records(page)).length, works + 1);
+  await $("composer-input").fill("");
+  return { paid: before + 2 };
 }
 
 /* ---------------- the web build as a small desktop window ---------------- */
@@ -808,10 +1261,11 @@ async function reviewWindow(browser, origin, watch) {
     });
   };
   /** On screen and not covered: the point in its middle hits it. */
+  /** true, or what is wrong — so a failed assertion says it */
   const reachable = (id) =>
     page.evaluate((testId) => {
       const node = document.querySelector(`[data-testid="${testId}"]`);
-      if (!node) return false;
+      if (!node) return "not on the page";
       const box = node.getBoundingClientRect();
       const x = box.left + box.width / 2;
       const y = box.top + box.height / 2;
@@ -821,9 +1275,12 @@ async function reviewWindow(browser, origin, watch) {
         box.left < 0 ||
         box.right > innerWidth
       )
-        return false;
+        return `off screen: ${Math.round(box.left)},${Math.round(box.top)} – ${Math.round(box.right)},${Math.round(box.bottom)} in ${innerWidth}×${innerHeight}`;
       const hit = document.elementFromPoint(x, y);
-      return !!hit && (hit === node || node.contains(hit));
+      return (
+        (!!hit && (hit === node || node.contains(hit))) ||
+        `covered by ${hit ? hit.outerHTML.slice(0, 120) : "nothing"}`
+      );
     }, id);
   const pending = () =>
     page
@@ -860,8 +1317,126 @@ async function reviewWindow(browser, origin, watch) {
     await page.goto(`${origin}${APP_PATH}`);
     await $("studio-empty").waitFor({ timeout: 30000 });
 
+    /* FQ-13 — the 23 style chips are one stop for the Tab key; the arrows move between them */
+    const focused = () =>
+      page.evaluate(() => document.activeElement?.getAttribute("data-testid"));
+    await $("composer-input").focus();
+    await page.keyboard.press("Tab");
+    assert.equal(
+      await focused(),
+      "style-chip-auto",
+      "Tab lands on the chosen chip",
+    );
+    await page.keyboard.press("Tab");
+    assert.equal(
+      await focused(),
+      "composer-duration",
+      "v0.3.0: 22 more chips stood between the description and the selectors",
+    );
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await focused(), "style-chip-auto");
+    await page.keyboard.press("ArrowRight");
+    assert.equal(await focused(), "style-chip-bright");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    assert.equal(await focused(), "style-chip-festive", "the row wraps around");
+    await page.keyboard.press("Home");
+    assert.equal(await focused(), "style-chip-auto");
+    await page.keyboard.press("End");
+    await page.keyboard.press("ArrowUp");
+    assert.equal(await focused(), "style-chip-romantic");
+    assert.equal(
+      await pressed("style-chip-romantic"),
+      "false",
+      "moving is not choosing",
+    );
+    await page.keyboard.press("Enter");
+    assert.equal(await pressed("style-chip-romantic"), "true");
+    assert.equal(await pressed("style-chip-auto"), "false");
+    assert.equal(
+      await page.locator('.style-chips .chip[tabindex="0"]').count(),
+      1,
+      "exactly one chip takes Tab",
+    );
+    // Leaving the row and coming back lands on the chosen style.
+    await page.keyboard.press("Tab");
+    assert.equal(await focused(), "composer-duration");
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await focused(), "style-chip-romantic");
+    await page.keyboard.press("Enter");
+    assert.equal(
+      await pressed("style-chip-auto"),
+      "true",
+      "a second Enter unpins",
+    );
+
     /* UX-02 — 应用调整 / 全部还原 / 换一版旋律 are on screen however the panel is scrolled */
     await generate("雨夜咖啡馆，慵懒的钢琴和轻轻的鼓点");
+
+    /* FQ-07 — a chord is named wherever its name fits, and names never run into each other */
+    const chordFacts = () =>
+      $("chord-strip").evaluate((strip) => {
+        const nodes = [...strip.querySelectorAll(".chord")];
+        const box = (node) => {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          return range.getBoundingClientRect();
+        };
+        const drawn = nodes.filter(
+          (node, index) =>
+            index === 0 || nodes[index - 1].textContent !== node.textContent,
+        );
+        const shown = drawn.filter((node) => node.hasAttribute("data-shown"));
+        let overlaps = 0;
+        for (let index = 1; index < shown.length; index++)
+          if (box(shown[index]).left < box(shown[index - 1]).right + 1)
+            overlaps++;
+        // A chord with no name printed although its name fits between the printed names with
+        // room to spare. Counted on the names the layout prints (data-label), not on what the
+        // pill of the chord that is playing leaves visible at this moment: the layout does not
+        // depend on the playhead, and this check must not either. The layout keeps 3 px between
+        // names and measures each a pixel or two wider than it is drawn (figures are set
+        // tabular, which the canvas it measures with does not know), so a name that would only
+        // just fit is rightly left out; SPARE px beyond the gap is what counts as room. (In 70
+        // random pieces at 390 px, each looked at six times while playing, every name the
+        // layout left out had at most 2.25 px to spare; the defect of v0.3.0 was an
+        // overestimate of about 1.4 px per character.)
+        const SPARE = 4;
+        const printed = drawn.filter((node) => node.hasAttribute("data-label"));
+        const missing = [];
+        drawn.forEach((node) => {
+          if (node.hasAttribute("data-label")) return;
+          const left = node.getBoundingClientRect().left;
+          const width = box(node).width + 6;
+          const before = printed.filter(
+            (other) => other.getBoundingClientRect().left < left,
+          );
+          const after = printed.filter(
+            (other) => other.getBoundingClientRect().left > left,
+          );
+          const from = before.length ? box(before.at(-1)).right + 3 : -Infinity;
+          const to = after.length
+            ? after[0].getBoundingClientRect().left - 3
+            : strip.getBoundingClientRect().right;
+          if (left >= from + SPARE && left + width + 1 + SPARE <= to)
+            missing.push(node.textContent);
+        });
+        return {
+          drawn: drawn.length,
+          printed: printed.length,
+          shown: shown.length,
+          overlaps,
+          missing,
+        };
+      });
+    const chordsWide = await chordFacts();
+    assert.equal(chordsWide.overlaps, 0, JSON.stringify(chordsWide));
+    assert.deepEqual(
+      chordsWide.missing,
+      [],
+      "v0.3.0 left names out although there was room (the width of a name was overestimated)",
+    );
+    assert.ok(chordsWide.shown >= 2, JSON.stringify(chordsWide));
     for (const id of ["apply-draft", "reset-draft", "new-melody"])
       assert.equal(
         await reachable(id),
@@ -900,6 +1475,34 @@ async function reviewWindow(browser, origin, watch) {
       /这 2 项修改不会用上，会留在新版本上等待应用/,
       "the tip says what happens to the pending edits",
     );
+    // FQ-16: that tip does not lie over the line it comments on (it covered the hint under 应用调整).
+    await clearToasts();
+    await $("new-melody").hover();
+    await page.waitForSelector(".tooltip");
+    assert.deepEqual(
+      await page.evaluate(() => {
+        const tip = document.querySelector(".tooltip").getBoundingClientRect();
+        const over = (id) => {
+          const box = document
+            .querySelector(`[data-testid="${id}"]`)
+            .getBoundingClientRect();
+          return (
+            tip.left < box.right &&
+            tip.right > box.left &&
+            tip.top < box.bottom &&
+            tip.bottom > box.top
+          );
+        };
+        return {
+          hint: over("apply-hint"),
+          apply: over("apply-draft"),
+          summary: over("pending-summary"),
+          inside: tip.left >= 0 && tip.bottom <= innerHeight,
+        };
+      }),
+      { hint: false, apply: false, summary: false, inside: true },
+    );
+    await page.mouse.move(4, 4);
 
     /* UX-02 — 换一版旋律 and a chat message keep the pending edits, and say so */
     await clearToasts();
@@ -929,6 +1532,18 @@ async function reviewWindow(browser, origin, watch) {
     await loaded(3);
     assert.deepEqual(await pending(), ["changed-bpm", "changed-instrument"]);
     assert.equal(await $("inspector-bpm-number").inputValue(), "96");
+    // FQ-13: the version tags of the thread are full-size targets (they measured 28×20).
+    const tags = await page
+      .locator('button[data-testid="turn-version"]')
+      .evaluateAll((nodes) =>
+        nodes.map((node) => {
+          const box = node.getBoundingClientRect();
+          return [Math.round(box.width), Math.round(box.height)];
+        }),
+      );
+    assert.ok(tags.length >= 2, JSON.stringify(tags));
+    for (const [width, height] of tags)
+      assert.ok(width >= 28 && height >= 28, `version tag ${width}×${height}`);
 
     /* UX-08 — the finished job focuses the play button; no tip parks itself on the time axis */
     assert.equal(
@@ -1077,8 +1692,15 @@ async function reviewWindow(browser, origin, watch) {
       (await chipTexts()).includes("加点沙锤"),
       JSON.stringify(await chipTexts()),
     );
-    // the card's line and the header give the real length of this loop
-    assert.match(await $("time-display").innerText(), /\/ 0:18$/);
+    // the card's line and the header give the real length of this loop (fitted to whole bars, not the 15 s asked for)
+    const loopSeconds = Number(
+      await $("player-card").getAttribute("data-duration"),
+    );
+    assert.notEqual(Math.round(loopSeconds), 15);
+    assert.ok(
+      (await $("time-display").innerText()).endsWith(`/ ${clock(loopSeconds)}`),
+      await $("time-display").innerText(),
+    );
 
     /* UX-09 — 循环试听 follows the structure; a choice is kept per structure */
     assert.equal(await pressed("loop-toggle"), "true", "a 循环片段 loops");
@@ -1147,6 +1769,8 @@ async function reviewWindow(browser, origin, watch) {
     );
 
     /* UX-02 on a narrow window: the panel is a card; while edits are pending its buttons stick to the page */
+    // (a notice from the last generation may still be up: it sits where the footer will be)
+    await clearToasts();
     await page.setViewportSize({ width: 390, height: 780 });
     await $("inspector-toggle").waitFor();
     if ((await $("inspector-toggle").getAttribute("aria-expanded")) === "false")
@@ -1164,9 +1788,81 @@ async function reviewWindow(browser, origin, watch) {
       [],
       "the sticky footer on a phone",
     );
+    /* FQ-06 — with the panel off screen, a pill says that edits are waiting and leads to them */
+    for (const size of [
+      { width: 390, height: 780 },
+      { width: 1060, height: 720 },
+    ]) {
+      await page.setViewportSize(size);
+      await $("inspector").scrollIntoViewIfNeeded();
+      await $("pending-pill").waitFor({ state: "detached" });
+      assert.equal(
+        await reachable("apply-draft"),
+        true,
+        `apply-draft with the panel in view at ${size.width} px`,
+      );
+      await page.evaluate(() =>
+        document.querySelector(".studio").scrollTo(0, 0),
+      );
+      await $("pending-pill").waitFor();
+      assert.match(
+        String(await reachable("apply-draft")),
+        /^off screen/,
+        "the buttons are below the fold here…",
+      );
+      // …and v0.3.0 showed nothing that said an edit was waiting.
+      assert.equal((await $("pending-pill").innerText()).trim(), "1 项未应用");
+      await sleep(400);
+      assert.equal(await reachable("pending-pill"), true);
+      assert.deepEqual(await page.evaluate(layoutProblems), []);
+      const pillBox = await $("pending-pill").boundingBox();
+      assert.ok(pillBox.height >= 28, `pill ${pillBox.height} px tall`);
+      await $("pending-pill").click();
+      await $("pending-pill").waitFor({ state: "detached" });
+      await until(
+        () => reachable("apply-draft"),
+        (value) => value === true,
+        `the pill leads to 应用调整 at ${size.width} px`,
+      );
+      assert.equal(await reachable("reset-draft"), true);
+    }
+    // a folded panel is opened by the pill
+    await page.setViewportSize({ width: 390, height: 780 });
+    await $("inspector-toggle").scrollIntoViewIfNeeded();
+    if ((await $("inspector-toggle").getAttribute("aria-expanded")) === "true")
+      await $("inspector-toggle").click();
+    await page.evaluate(() => document.querySelector(".studio").scrollTo(0, 0));
+    await $("pending-pill").click();
+    await until(
+      () => $("inspector-toggle").getAttribute("aria-expanded"),
+      (value) => value === "true",
+      "the pill opens the folded panel",
+    );
+    await until(
+      () => reachable("apply-draft"),
+      (value) => value === true,
+      "and shows its buttons",
+    );
+    // chord names on a phone: fewer of them, and still none over another
+    await page.evaluate(() => document.querySelector(".studio").scrollTo(0, 0));
+    await sleep(200);
+    const chordsNarrow = await chordFacts();
+    assert.equal(chordsNarrow.overlaps, 0, JSON.stringify(chordsNarrow));
+    assert.deepEqual(chordsNarrow.missing, [], JSON.stringify(chordsNarrow));
+    await $("inspector").scrollIntoViewIfNeeded();
     await $("reset-draft").click();
     assert.equal(await $("apply-draft").isDisabled(), true);
-    return { works: (await records(page)).length };
+    await page.evaluate(() => document.querySelector(".studio").scrollTo(0, 0));
+    await sleep(300);
+    assert.equal(
+      await $("pending-pill").count(),
+      0,
+      "nothing waiting: no pill",
+    );
+    return {
+      works: (await records(page)).length,
+      chords: { wide: chordsWide, narrow: chordsNarrow },
+    };
   } finally {
     await context.close();
   }
@@ -1398,11 +2094,21 @@ async function main() {
       (text) => text.startsWith("将创作：") && text.includes("设定 15 秒"),
       "plan preview",
     );
-    // UX-04: a loop is fitted to whole bars; 15 s at 80 BPM is 18 s, and the line says so before anything is made
-    assert.match(
-      preview,
-      /^将创作：慵懒松弛 · 80 BPM · .* · 18 秒（设定 15 秒） · 循环片段$/,
+    // UX-04: a loop is fitted to whole bars; 15 s at 80 BPM is not 15 s of audio, and the line
+    // says what it will be before anything is made. (How many bars the composer picks is its
+    // own business: every later statement is held against this one and against the audio.)
+    const fitted =
+      /^将创作：慵懒松弛 · 80 BPM · .* · (\d+(?:\.\d)?) 秒（设定 15 秒） · 循环片段$/.exec(
+        preview,
+      )?.[1];
+    assert.ok(fitted, preview);
+    assert.notEqual(fitted, "15");
+    assert.equal(
+      (Number(fitted) * 80) % 240,
+      0,
+      `${fitted} s at 80 BPM is a whole number of bars`,
     );
+
     // Three clicks before the interface can repaint: one job, one work.
     await $("send-button").evaluate((button) => {
       button.click();
@@ -1438,20 +2144,22 @@ async function main() {
       /^慵懒松弛 · 80 BPM · .* · 循环片段/,
     );
     // UX-04: header, clock, footnote and reply agree with the audio (v0.3.0: "15 秒" everywhere, player 0:18)
-    assert.equal(duration1, 18);
+    assert.equal(duration1, Number(fitted));
     assert.equal(
       (await $("fit-notice").innerText()).trim(),
-      "设定 15 秒；循环片段按整小节对齐，实际是 18 秒",
+      `设定 15 秒；循环片段按整小节对齐，实际是 ${fitted} 秒`,
     );
-    assert.match(await $("time-display").innerText(), /\/ 0:18$/);
+    assert.ok(
+      (await $("time-display").innerText()).endsWith(`/ ${clock(duration1)}`),
+      await $("time-display").innerText(),
+    );
     const said1 = await frame
       .locator('[data-testid="thread-turn"][data-role="agent"] .turn-text')
       .first()
       .innerText();
-    assert.match(
-      said1,
-      /18 秒，循环片段。$/,
-      "the producer names the structure as the rest of the interface does",
+    assert.ok(
+      said1.endsWith(`${fitted} 秒，循环片段。`),
+      `the producer names the length of the audio and the structure as the rest of the interface does: ${said1}`,
     );
     assert.doesNotMatch(said1, /15 秒/);
     const chips1 = await frame
@@ -1461,7 +2169,7 @@ async function main() {
       .allInnerTexts();
     assert.ok(chips1.includes("按你的设定：15 秒"), JSON.stringify(chips1));
     assert.ok(
-      chips1.includes("循环片段按整小节对齐：实际 18 秒（设定 15 秒）"),
+      chips1.includes(`循环片段按整小节对齐：实际 ${fitted} 秒（设定 15 秒）`),
       JSON.stringify(chips1),
     );
     assert.equal(
@@ -1975,6 +2683,15 @@ async function main() {
 
     /* 8 — reload restores the session and the library */
     step = "reload";
+    // FQ-05: an inspector edit that was not applied is part of what a reload brings back.
+    await $("inspector-reverb").focus();
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+    const pendingReverb = await $("inspector-reverb").inputValue();
+    assert.equal(
+      await frame.locator('[data-testid="changed-reverb"]').count(),
+      1,
+    );
     await $("composer-input").fill("再明亮一点");
     // the composer text is remembered half a second after typing stops
     await until(
@@ -2005,6 +2722,26 @@ async function main() {
       await pressed("mixer-melody-solo"),
       "false",
       "solo is not part of a work",
+    );
+    assert.equal(
+      await $("inspector-reverb").inputValue(),
+      pendingReverb,
+      "v0.3.0: the words came back, the unapplied edit was gone",
+    );
+    assert.equal(
+      await frame.locator('[data-testid="changed-reverb"]').count(),
+      1,
+    );
+    assert.match(await $("apply-draft").innerText(), /应用调整（1 项）/);
+    assert.notEqual(
+      String(Math.round(third.config.reverb * 100)),
+      pendingReverb,
+      "pending is pending: the stored work is as it was",
+    );
+    await $("reset-reverb").click();
+    assert.equal(
+      await frame.locator('[data-testid="changed-reverb"]').count(),
+      0,
     );
     await $("nav-library").click();
     assert.equal(
@@ -2134,8 +2871,31 @@ async function main() {
       4,
       "nothing is deleted during the undo window",
     );
+    // It was the work that is open in the studio: it leaves the studio too.
+    await $("mini-transport").waitFor({ state: "detached" });
     await $("toast-action").click();
     assert.equal(await cards.count(), 4);
+    // FQ-14: 撤销 puts it back where it was — in the studio as well (v0.3.0 said 已恢复 and
+    // left the studio empty), paused, with its mix and the words typed for it; the page stays.
+    await $("mini-transport").waitFor({ timeout: 120000 });
+    await idle();
+    assert.equal(
+      await $("library-page").count(),
+      1,
+      "the page the user is on stays",
+    );
+    assert.equal(
+      await pressed("mini-play"),
+      "false",
+      "it does not start playing",
+    );
+    await $("nav-studio").click();
+    await frame.waitForSelector(
+      `[data-testid="player-card"][data-project="${third.id}"][data-audio="stems"]`,
+    );
+    assert.equal(await $("composer-input").inputValue(), "再明亮一点");
+    assert.equal(await $("mixer-melody-fader").inputValue(), "30");
+    await $("nav-library").click();
     await cardOf(first.id).locator('[data-testid="library-delete"]').click();
     assert.equal(await cards.count(), 3);
     await until(
@@ -2313,6 +3073,16 @@ async function main() {
 
     /* 10b — inspiration → composer with a pinned style → a new piece */
     step = "inspiration";
+    // The work from step 8 is loaded (撤销 brought it back in step 9). The words typed for it
+    // stay with it: the new-piece composer starts empty, and gets a half-written description.
+    await $("new-piece").click();
+    await $("studio-empty").waitFor();
+    assert.equal(
+      await $("composer-input").inputValue(),
+      "",
+      "the words typed for the work stay with that work",
+    );
+    await $("composer-input").fill("写了半句的描述");
     await $("nav-inspiration").click();
     await $("inspiration-page").waitFor();
     assert.equal(
@@ -2332,10 +3102,37 @@ async function main() {
     );
     // A style card pins its style and writes nothing for the user: the style's own blurb used to be
     // put into the description and parsed as if they had typed it (19 of 22 cards came out wrong).
-    // It wipes nothing either: the words still in the composer from step 8 are untouched.
-    assert.equal(await $("composer-input").inputValue(), "再明亮一点");
+    // It wipes nothing either: the description that was being written is untouched.
+    assert.equal(await $("composer-input").inputValue(), "写了半句的描述");
     await $("composer-input").fill("");
-    assert.match(await $("style-hint").innerText(), /已选「国风古韵」/);
+    // NEW-03: the hint says the pin is enough — the style's blurb is not repeated in it
+    // (it stands next to 风格) — and sits inside the box, in line with the preview above it.
+    assert.equal(
+      (await $("style-hint").innerText()).trim(),
+      "已选「国风古韵」风格，可以直接生成，也可以再写几句想要的画面。",
+    );
+    assert.deepEqual(
+      await frame.evaluate(() => {
+        const hint = document.querySelector('[data-testid="style-hint"]');
+        const box = document
+          .querySelector(".composer-box")
+          .getBoundingClientRect();
+        const text = document.createRange();
+        text.selectNodeContents(hint);
+        const words = text.getBoundingClientRect();
+        const preview = document
+          .querySelector('[data-testid="plan-preview"] span')
+          .getBoundingClientRect();
+        return {
+          inset:
+            words.left - box.left >= 12 &&
+            box.right - words.right >= 12 &&
+            box.bottom - words.bottom >= 8,
+          aligned: Math.abs(words.left - preview.left) <= 1,
+        };
+      }),
+      { inset: true, aligned: true },
+    );
     const pinnedPreview = await until(
       () => $("plan-preview").innerText(),
       (text) => text.startsWith("将创作："),

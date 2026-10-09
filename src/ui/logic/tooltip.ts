@@ -31,29 +31,49 @@ interface Box {
   width: number;
 }
 
+export type TipSide = "top" | "bottom" | "left";
+
+/** "left" / "bottom" from a `data-tip-side` attribute; anything else is "top". */
+export function tipSide(value: string | undefined): TipSide {
+  return value === "bottom" || value === "left" ? value : "top";
+}
+
 /**
  * Where the bubble goes: centred on its anchor, on the preferred side, kept
- * inside the viewport. It moves to the other side only when the preferred
- * one has no room.
+ * inside the viewport. "top" and "bottom" move to the other side only when
+ * the preferred one has no room. "left" puts the bubble beside its anchor —
+ * for a control with something worth reading right above it — and, where
+ * there is no room beside it, below it rather than above.
  */
 export function tipPlacement(
   anchor: Box,
   bubble: { width: number; height: number },
   viewport: { width: number; height: number },
-  side: "top" | "bottom" = "top",
+  side: TipSide = "top",
 ): { left: number; top: number } {
+  if (side === "left") {
+    const beside = anchor.left - bubble.width - MARGIN;
+    if (beside >= EDGE) {
+      const middle = (anchor.top + anchor.bottom) / 2 - bubble.height / 2;
+      const top = Math.max(
+        EDGE,
+        Math.min(viewport.height - bubble.height - EDGE, middle),
+      );
+      return { left: Math.round(beside), top: Math.round(top) };
+    }
+  }
   const above = anchor.top - bubble.height - MARGIN;
   const below = anchor.bottom + MARGIN;
   const fitsAbove = above >= EDGE;
   const fitsBelow = below + bubble.height <= viewport.height - EDGE;
   const top =
-    side === "bottom"
-      ? fitsBelow || !fitsAbove
-        ? below
-        : above
-      : fitsAbove
+    side === "top"
+      ? fitsAbove
         ? above
-        : below;
+        : below
+      : fitsBelow || !fitsAbove
+        ? below
+        : above;
   const centre = anchor.left + anchor.width / 2 - bubble.width / 2;
   const left = Math.max(
     EDGE,

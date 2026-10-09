@@ -534,6 +534,28 @@ async function mockedRun(run, shared) {
     },
   );
 
+  /**
+   * The offer to fetch a paid result again: the banner that cannot be closed
+   * (never a toast, which one click on its X would lose).
+   */
+  const offer = {
+    /** Wait for the banner whose text matches; returns that text. */
+    text: (pattern, timeout = 20000) =>
+      until(
+        async () =>
+          (await $("pending-text").allInnerTexts()).find((shown) =>
+            pattern.test(shown),
+          ) ?? null,
+        Boolean,
+        `the offer ${pattern}`,
+        timeout,
+      ),
+    /** Click 重新下载. */
+    accept: () => $("pending-download").click(),
+    /** Is 重新下载 still on offer? */
+    shown: async () => (await $("pending-banner").count()) > 0,
+  };
+
   await run.step(
     "aliyun: the music exists but its download keeps failing → the notice says so and offers 重新下载; that needs no new paid request",
     async () => {
@@ -545,12 +567,13 @@ async function mockedRun(run, shared) {
       const before = (await requests()).length;
       await $("send-button").click();
       // four attempts with 1 s, 2 s and 4 s between them
-      const text = await app.toast(/音乐已生成，但下载失败/, 40000);
+      const text = await offer.text(/音乐已生成，但下载失败/, 40000);
       await app.idle();
-      assert.match(
+      assert.match(text, /音乐已生成，但下载失败（已尝试 4 次/);
+      assert.doesNotMatch(
         text,
-        /^音乐已生成，但下载失败（已尝试 4 次/,
-        "it was generated: not reported as 生成失败",
+        /生成失败：|没有生成成功/,
+        "it was generated: not reported as a failed generation",
       );
       assert.match(text, /重新生成会再次计费/);
       assert.match(
@@ -593,7 +616,13 @@ async function mockedRun(run, shared) {
         )
       ).messageBoxes.at(-1);
       assert.deepEqual(question.buttons, ["返回应用", "仍然关闭"]);
+      assert.match(question.message, /已经生成的音乐还没有取回/);
       assert.match(question.detail, /重新生成需要再次付费[\s\S]*重新下载/);
+      assert.deepEqual(
+        (await app.settings()).pendingResult,
+        { provider: "aliyun" },
+        "the main process says what it holds",
+      );
       await app.setState({ closeAnswer: 1 });
       // The bridge takes a service id only; the address stays in the main process.
       const wrong = await page.evaluate(() =>
@@ -604,7 +633,7 @@ async function mockedRun(run, shared) {
       );
       assert.match(wrong, /没有等待重新下载的音乐/);
       // Still failing: the offer comes back, and still nothing new is submitted.
-      await $("toast-action").click();
+      await offer.accept();
       await page.waitForSelector(
         '[data-testid="job-status"][data-stage="downloading"]',
       );
@@ -614,14 +643,14 @@ async function mockedRun(run, shared) {
       );
       await app.idle(40000);
       assert.match(
-        await app.toast(/音乐已生成，但下载失败/),
+        await offer.text(/音乐已生成，但下载失败/),
         /也可以点「重新下载」再取一次/,
       );
       assert.equal((await app.records()).length, countBefore);
       // The storage recovers: 重新下载 delivers the work, stored before it is decoded.
       await app.setState({ aliyun: { downloadFail: 0 } });
       const beforeRetry = (await requests()).length;
-      await $("toast-action").click();
+      await offer.accept();
       await app.loaded(1, "mix", 60000);
       const retried = (await requests()).slice(beforeRetry);
       assert.deepEqual(
@@ -647,11 +676,7 @@ async function mockedRun(run, shared) {
         "",
         "the description has been answered",
       );
-      assert.deepEqual(
-        (await app.toasts()).filter((item) => item.includes("重新下载")),
-        [],
-        "nothing is left to fetch",
-      );
+      assert.equal(await offer.shown(), false, "nothing is left to fetch");
       const gone = await page.evaluate(() =>
         window.museDesktop.retryLastDownload("aliyun").then(
           () => null,
@@ -659,10 +684,238 @@ async function mockedRun(run, shared) {
         ),
       );
       assert.match(gone, /没有等待重新下载的音乐/, "it can be fetched once");
+      assert.equal((await app.settings()).pendingResult, null);
       if ((await pressed("play-button")) === "true")
         await $("play-button").click();
       await app.clearToasts();
       return { text };
+    },
+  );
+
+  /**
+   * The bridge itself, as the page would call it: {ok, mimeType, bytes} for audio,
+   * {ok, value} for anything else, {ok: false, message} for a rejection. Used where
+   * a step is about what the main process holds, whatever the interface shows.
+   */
+  const bridge = (method, ...args) =>
+    page.evaluate(
+      async ([name, list]) => {
+        try {
+          const result = await window.museDesktop[name](...list);
+          return result && result.audio
+            ? {
+                ok: true,
+                mimeType: result.mimeType,
+                bytes: result.audio.byteLength,
+              }
+            : { ok: true, value: result ?? null };
+        } catch (error) {
+          return { ok: false, message: error.message };
+        }
+      },
+      [method, args],
+    );
+  /** Close the window, answer "返回应用", and return the question that was asked. */
+  const askedOnClose = async () => {
+    const boxes = (await app.state()).messageBoxes.length;
+    await app.setState({ closeAnswer: 0 });
+    await app.main(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].close();
+    });
+    const question = (
+      await until(
+        app.state,
+        (state) => state.messageBoxes.length === boxes + 1,
+        "the question before closing",
+      )
+    ).messageBoxes.at(-1);
+    await app.setState({ closeAnswer: 1 });
+    assert.equal(await $("nav-studio").count(), 1, "the window is still there");
+    return question;
+  };
+  const REFUSED =
+    "还有一首已经付费的音乐没有取回，这次没有发出新的生成请求。请先点「重新下载」把它取回；确认不要它之后，才能开始新的生成。";
+  const PROMPT = "雨夜咖啡馆的慵懒钢琴，纯音乐";
+
+  await run.step(
+    "a paid result the main process holds: reported, asked about on close whatever the page says, never replaced unasked",
+    async () => {
+      await app.setState({ aliyun: { downloadFail: 99 } });
+      const works = (await app.records()).length;
+      const before = (await requests()).length;
+      const posts = async () =>
+        (await requests())
+          .slice(before)
+          .filter(
+            (request) =>
+              request.method === "POST" && !/QuerySong/.test(request.url),
+          )
+          .map((request) => new URL(request.url).hostname);
+      // Straight through the bridge: the page raises no flag of its own for this one.
+      const lost = await bridge("generateMusic", {
+        provider: "aliyun",
+        prompt: PROMPT,
+        duration: 15,
+      });
+      assert.equal(lost.ok, false);
+      assert.match(lost.message, /^音乐已生成，但下载失败（已尝试 4 次/);
+      assert.deepEqual((await app.settings()).pendingResult, {
+        provider: "aliyun",
+      });
+      const question = await askedOnClose();
+      assert.equal(question.message, "有一首已经生成的音乐还没有取回");
+      assert.deepEqual(question.buttons, ["返回应用", "仍然关闭"]);
+      assert.match(question.detail, /再也取不回[\s\S]*「重新下载」/);
+      assert.equal(question.cancelId, 0);
+      // A new paid generation is refused, for the same service and for another one; nothing is sent.
+      for (const provider of ["aliyun", "tencent"])
+        assert.deepEqual(
+          await bridge("generateMusic", {
+            provider,
+            prompt: PROMPT,
+            duration: 15,
+          }),
+          { ok: false, message: REFUSED },
+        );
+      assert.deepEqual(await posts(), [
+        "llm-cloud-fixture.cn-beijing.maas.aliyuncs.com",
+      ]);
+      assert.deepEqual((await app.settings()).pendingResult, {
+        provider: "aliyun",
+      });
+      // The user has been asked and gives the result up for a new one: now it goes out, once.
+      const fresh = await bridge("generateMusic", {
+        provider: "tencent",
+        prompt: PROMPT,
+        duration: 15,
+        discardPending: true,
+      });
+      assert.deepEqual(fresh, {
+        ok: true,
+        mimeType: "audio/mpeg",
+        bytes: fixture("mp3").length,
+      });
+      assert.deepEqual(await posts(), [
+        "llm-cloud-fixture.cn-beijing.maas.aliyuncs.com",
+        "tokenhub.tencentmaas.com",
+      ]);
+      assert.equal((await app.settings()).pendingResult, null);
+      assert.match(
+        (await bridge("retryLastDownload", "aliyun")).message,
+        /没有等待重新下载的音乐/,
+      );
+      // Giving up without a new request: discardPendingResult, by the id of the service that holds it.
+      const again = await bridge("generateMusic", {
+        provider: "aliyun",
+        prompt: PROMPT,
+        duration: 15,
+      });
+      assert.equal(again.ok, false);
+      assert.deepEqual(await bridge("discardPendingResult", "volcengine"), {
+        ok: true,
+        value: false,
+      });
+      assert.deepEqual((await app.settings()).pendingResult, {
+        provider: "aliyun",
+      });
+      assert.deepEqual(await bridge("discardPendingResult", "aliyun"), {
+        ok: true,
+        value: true,
+      });
+      assert.equal((await app.settings()).pendingResult, null);
+      await app.setState({ aliyun: { downloadFail: 0 } });
+      assert.equal(
+        (await posts()).length,
+        3,
+        "three actions, three paid requests",
+      );
+      assert.equal(
+        (await app.records()).length,
+        works,
+        "none of this went through the interface: the library is as it was",
+      );
+    },
+  );
+
+  await run.step(
+    "volcengine: five failed status queries keep the paid task; 重新下载 resumes the wait and downloads without a new submission",
+    async () => {
+      await app.setState({ volc: { pollFail: 502 } });
+      const before = (await requests()).length;
+      const actions = async (from = before) =>
+        (await requests())
+          .slice(from)
+          .map(
+            (request) =>
+              new URL(request.url).searchParams.get("Action") ??
+              `${request.method} ${new URL(request.url).hostname}`,
+          );
+      const started = Date.now();
+      // The status service is down for the whole wait: 5 queries, 2 + 4 + 8 + 15 s apart.
+      const stopped = await bridge("generateMusic", {
+        provider: "volcengine",
+        prompt: PROMPT,
+        duration: 30,
+      });
+      const waited = Date.now() - started;
+      assert.deepEqual(stopped, {
+        ok: false,
+        message:
+          "火山引擎任务状态连续 5 次查询失败，已停止等待。任务已经提交，可能仍在服务商那边运行并计费：点「重新下载」可以继续查询并取回这首音乐，不会再次提交，也不会再次计费。（任务编号 fixture-volc-task）",
+      });
+      assert.deepEqual(await actions(), [
+        "GenBGMForTime",
+        "QuerySong",
+        "QuerySong",
+        "QuerySong",
+        "QuerySong",
+        "QuerySong",
+      ]);
+      assert.deepEqual(
+        (await app.settings()).pendingResult,
+        { provider: "volcengine" },
+        "the task is kept",
+      );
+      const question = await askedOnClose();
+      assert.equal(question.message, "有一个已经提交的生成任务还没有取回");
+      assert.match(question.detail, /可能已经生成并计费[\s\S]*「重新下载」/);
+      assert.deepEqual(
+        await bridge("generateMusic", {
+          provider: "volcengine",
+          prompt: PROMPT,
+          duration: 30,
+        }),
+        { ok: false, message: REFUSED },
+        "not submitted a second time",
+      );
+      // The status service is back: the same task is queried until it is done, then downloaded.
+      await app.setState({ volc: { pollFail: 0 } });
+      const mark = (await requests()).length;
+      const collected = await bridge("retryLastDownload", "volcengine");
+      assert.deepEqual(collected, {
+        ok: true,
+        mimeType: "audio/mp4",
+        bytes: fixture("m4a").length,
+      });
+      assert.deepEqual(await actions(mark), [
+        "QuerySong",
+        "QuerySong",
+        "GET v3-default.douyinvod.com",
+      ]);
+      const sent = (await requests()).slice(mark);
+      assert.match(sent[0].headers.authorization, /^HMAC-SHA256 Credential=/);
+      assert.equal(sent[2].headers.authorization, undefined);
+      assert.equal(
+        (await actions()).filter((action) => /^GenBGM/.test(action)).length,
+        1,
+        "one billable request for the whole action, the resume included",
+      );
+      assert.equal((await app.settings()).pendingResult, null);
+      assert.match(
+        (await bridge("retryLastDownload", "volcengine")).message,
+        /没有等待重新下载的音乐/,
+      );
+      return { waitedSeconds: +(waited / 1000).toFixed(1) };
     },
   );
 
@@ -671,14 +924,31 @@ async function mockedRun(run, shared) {
     async () => {
       await app.newPiece();
       await $("composer-engine").selectOption("volcengine");
-      await describe("轻快的口哨", 15);
       const before = (await requests()).length;
-      await $("send-button").click();
-      const text = await app.toast(/30–120 秒/);
-      await app.idle();
-      assert.match(text, /火山引擎 AI 音乐支持 30–120 秒，这次的时长是 15 秒/);
+      // The interface knows each service's range: 15 秒 cannot be chosen for this one …
+      assert.equal(
+        await $("composer-duration").locator('option[value="15"]').isEnabled(),
+        false,
+        "15 秒 is not offered with 火山引擎",
+      );
+      assert.equal(
+        await $("composer-duration").locator('option[value="30"]').isEnabled(),
+        true,
+      );
+      // … and whatever a page asks for, the main process sends no such request.
+      assert.deepEqual(
+        await bridge("generateMusic", {
+          provider: "volcengine",
+          prompt: "轻快的口哨",
+          duration: 15,
+        }),
+        {
+          ok: false,
+          message: "火山引擎音乐 v5.0 支持 30–120 秒，请调整生成时长。",
+        },
+      );
       assert.equal((await requests()).length, before);
-      await app.clearToasts();
+      return { offeredByTheInterface: false };
     },
   );
 
@@ -894,7 +1164,15 @@ async function mockedRun(run, shared) {
         ],
       );
       assert.equal(work.chat.at(-1).brain, "llm");
-      assert.equal(work.chat.at(-1).text, DEFAULT_PLAN.reply);
+      // The turn's text is written by the app from the plan as it was made; the model's own
+      // words are kept with the turn as a secondary note and shown as 模型说明.
+      const turn = work.chat.at(-1);
+      assert.equal(turn.note, DEFAULT_PLAN.reply, JSON.stringify(turn));
+      assert.notEqual(turn.text, DEFAULT_PLAN.reply);
+      assert.equal(
+        await page.locator('[data-testid="turn-note"]').last().innerText(),
+        `模型说明：${DEFAULT_PLAN.reply}`,
+      );
       assert.equal(
         await page.locator('[data-testid="turn-brain"]').last().innerText(),
         "claude-opus-5-5",
@@ -944,6 +1222,14 @@ async function mockedRun(run, shared) {
       assert.equal(next.config.seed, first.config.seed);
       assert.equal(next.title, first.title, "a refinement keeps the title");
       assert.equal(next.chat.length, 4);
+      // The reply states the change that was made, in the app's words; the model's sentence
+      // (true of this change) is the note under it.
+      const said = next.chat.at(-1);
+      assert.match(
+        said.text,
+        /^好的：速度 84 → 72 BPM，主奏乐器换成柔和钢琴，空间混响 \d+% → 60%。/,
+      );
+      assert.equal(said.note, "放慢到 72，换成钢琴，空间更大。");
       const calls = await llmRequests();
       assert.equal(calls.length, before + 1);
       const sent = JSON.stringify(calls.at(-1).body.messages);
@@ -1005,9 +1291,10 @@ async function mockedRun(run, shared) {
       await page.waitForSelector(
         '[data-testid="job-status"][data-stage="planning"]',
       );
+      // a hosted model: the wait is not worded as a model on this computer
       assert.equal(
         await $("job-phase").innerText(),
-        "制作人（大模型）正在理解你的想法，本机模型可能需要一两分钟",
+        "制作人（大模型）正在理解你的想法，通常几秒到一分钟",
       );
       await until(
         app.state,
@@ -1157,9 +1444,14 @@ async function mockedRun(run, shared) {
         "saving a hosted model never calls it",
       );
       assert.deepEqual(
-        state.messageBoxes.map((box) => box.buttons[0]),
-        ["继续等待", "返回应用"],
-        "the close question was asked only by the two steps that tried to close",
+        state.messageBoxes.map((box) => box.message),
+        [
+          "云端音乐还在生成",
+          "有一首已经生成的音乐还没有取回",
+          "有一首已经生成的音乐还没有取回",
+          "有一个已经提交的生成任务还没有取回",
+        ],
+        "the close question was asked only by the four steps that tried to close",
       );
       assert.deepEqual(app.errors, []);
       const hosts = [

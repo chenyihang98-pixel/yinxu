@@ -1,12 +1,25 @@
 /**
  * A question from the app core (`ui.dialog`): a paid request about to be
  * sent, a language model that failed before a paid request, an unsaved
- * result about to be left. Escape and the close button give the dialog's
- * cancel answer; nothing behind it can be used until it is answered.
+ * result about to be left, a paid result that is still to be fetched, a
+ * length the service does not offer. Escape and the close button give the
+ * dialog's cancel answer; nothing behind it can be used until it is answered.
+ *
+ * The answer has to be deliberate: for a moment after the question appears
+ * it takes no click and no Enter (see logic/dialogGuard), so the double-click
+ * or the repeated Enter that opened it can neither dismiss nor confirm it.
  */
 import { useState } from "react";
-import { CircleAlert, CircleDollarSign, Save } from "lucide-react";
+import {
+  CircleAlert,
+  CircleDollarSign,
+  CloudDownload,
+  Save,
+  Timer,
+  Trash2,
+} from "lucide-react";
 import type { AppActions, Dialog } from "../../state/types";
+import { DIALOG_HOLD_MS } from "../logic/dialogGuard";
 import { Button } from "../primitives/Button";
 import { Modal } from "../primitives/Modal";
 
@@ -14,7 +27,10 @@ const ICONS = {
   paid: CircleDollarSign,
   fallback: CircleAlert,
   unsaved: Save,
-} as const;
+  pending: CloudDownload,
+  discard: Trash2,
+  duration: Timer,
+} as const satisfies Record<Dialog["kind"], unknown>;
 
 export function CoreDialog(props: { dialog: Dialog; actions: AppActions }) {
   const { dialog, actions } = props;
@@ -27,6 +43,7 @@ export function CoreDialog(props: { dialog: Dialog; actions: AppActions }) {
   return (
     <Modal
       local
+      holdMs={DIALOG_HOLD_MS}
       title={dialog.title}
       icon={<Icon size={18} />}
       testId={`dialog-${dialog.kind}`}

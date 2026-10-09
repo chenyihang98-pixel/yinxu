@@ -23,6 +23,17 @@ export class LibraryFlows {
   private readonly studio: StudioFlows;
   /** soft deletes whose undo window is still open, oldest first */
   private readonly removals = new Map<string, { timer: unknown }>();
+  /**
+   * The work that was loaded in the studio when it was deleted, with what
+   * the studio looked like right after: 撤销 puts it back there as long as
+   * nothing else has happened in the studio since.
+   */
+  private unloaded: {
+    id: string;
+    seq: number | null;
+    text: string;
+    pins: string;
+  } | null = null;
 
   constructor(kernel: Kernel, studio: StudioFlows) {
     this.kernel = kernel;
@@ -128,7 +139,10 @@ export class LibraryFlows {
     }
     this.kernel.dispatch({ type: "library/hide", id, expiresAt });
     // The composer is empty again: it offers the user's own engine.
-    if (current) this.studio.restoreEngine();
+    if (current) {
+      this.studio.restoreEngine();
+      this.unloaded = { id, ...this.studioMark() };
+    }
     const timer = this.kernel.deps.timers.set(
       () => void this.finishRemoval(id),
       wait,
@@ -169,6 +183,16 @@ export class LibraryFlows {
     );
   }
 
+  /** What tells whether the studio was used since a work was taken out of it. */
+  private studioMark(): { seq: number | null; text: string; pins: string } {
+    const { lastLoad, composerText, pins } = this.kernel.state.studio;
+    return {
+      seq: lastLoad?.seq ?? null,
+      text: composerText,
+      pins: JSON.stringify(pins),
+    };
+  }
+
   readonly undoRemove: AppActions["undoRemove"] = (id) => {
     const ids =
       id === undefined
@@ -177,6 +201,24 @@ export class LibraryFlows {
           ? [id]
           : [];
     if (ids.length === 0) return;
+    // The work that was open when it was deleted goes back into the studio —
+    // unless the studio has been used for something else in the meantime.
+    const was = this.unloaded;
+    let reopen: string | null = null;
+    if (was && ids.includes(was.id)) {
+      this.unloaded = null;
+      const { studio } = this.kernel.state;
+      const now = this.studioMark();
+      if (
+        !studio.project &&
+        !studio.job &&
+        !this.kernel.questioning &&
+        now.seq === was.seq &&
+        now.text === was.text &&
+        now.pins === was.pins
+      )
+        reopen = was.id;
+    }
     const works: Project[] = [];
     for (const item of ids) {
       const pending = this.removals.get(item);
@@ -192,7 +234,7 @@ export class LibraryFlows {
     }
     this.kernel.writeSession();
     this.showUndo();
-    void this.putBack(works);
+    void this.putBack(works, reopen);
   };
 
   /**
@@ -200,7 +242,10 @@ export class LibraryFlows {
    * each one is written back if it is missing (another tab may have carried
    * the deletion out while the window was open here).
    */
-  private async putBack(works: Project[]): Promise<void> {
+  private async putBack(
+    works: Project[],
+    reopen: string | null = null,
+  ): Promise<void> {
     const failed: Project[] = [];
     let reason: unknown;
     for (const work of works) {
@@ -215,6 +260,9 @@ export class LibraryFlows {
       this.kernel.toast(
         works.length > 1 ? `已恢复 ${works.length} 首作品` : "已恢复",
       );
+      // Back where it was, paused; the page the user is on stays.
+      if (reopen && !this.kernel.state.studio.project && !this.kernel.busy)
+        await this.studio.open(reopen, { reason: "restored", autoplay: false });
       return;
     }
     this.kernel.toast(
@@ -229,10 +277,13 @@ export class LibraryFlows {
     if (!pending) return;
     this.kernel.deps.timers.clear(pending.timer);
     this.removals.delete(id);
+    if (this.unloaded?.id === id) this.unloaded = null;
     this.showUndo();
     try {
       await this.kernel.remove(id);
       this.kernel.settleRemoval(id);
+      // nothing is kept for a work that no longer exists
+      this.studio.forget(id);
       this.kernel.writeSession();
       this.kernel.dispatch({ type: "library/removed", id });
       void this.kernel.refreshStorage();
@@ -372,6 +423,7 @@ export class LibraryFlows {
       this.kernel.settleRemoval(id);
       this.kernel.writeSession();
     }
+    if (this.unloaded?.id === id) this.unloaded = null;
     this.studio.gone(id);
     this.kernel.dispatch({ type: "library/damagedRemoved", id });
     if (pending) this.showUndo();

@@ -16,6 +16,7 @@ import {
   localProject,
   platformOf,
   settle,
+  sharedOrigin,
   stems,
 } from "./helpers/app-fakes";
 import type { Harness } from "./helpers/app-fakes";
@@ -718,10 +719,71 @@ test("session restore: the last work and the composer text, without playing", as
     brain: "llm",
     pendingRemovals: [],
     pendingMixes: [],
+    parked: [],
+    pendingOrder: null,
   });
   assert.equal(h.core.actions.newPiece(), true);
   assert.equal(h.session.value.lastProjectId, null);
   assert.equal(h.player.unloads, 1);
+});
+
+test("ND-3: a note about a pending deletion that cannot be read is ignored — never carried out", async () => {
+  // v0.3.0 turned every unreadable time into "due now": the work was deleted at the next start.
+  for (const expiresAt of [
+    "2099-01-01T00:00:00Z",
+    "soon",
+    null,
+    -1,
+    1e300,
+    {},
+    [0],
+    true,
+  ]) {
+    const origin = sharedOrigin();
+    origin.storage.records.set("x2", localProject("x2"));
+    origin.session.raw = JSON.stringify({
+      lastProjectId: "x2",
+      pendingRemovals: [{ id: "x2", expiresAt }],
+      // a fader note dated beyond what a Date can hold: never applied, and not kept around either
+      pendingMixes: [{ id: "x2", volumes: { drums: 0.11 }, at: 1e300 }],
+    });
+    const h = harness({ origin });
+    await h.core.start();
+    const what = `expiresAt ${JSON.stringify(expiresAt)}`;
+    assert.deepEqual(h.storage.deletes, [], what);
+    assert.ok(h.storage.records.has("x2"), what);
+    assert.equal(studio(h).project?.id, "x2", `${what}: and it opens as usual`);
+    assert.notEqual(studio(h).project?.config.volumes.drums, 0.11);
+    assert.deepEqual(toasts(h), []);
+    // the next write of the session no longer carries the unreadable notes
+    h.core.actions.setComposerText("继续");
+    h.clock.advance(500);
+    assert.deepEqual(h.session.value.pendingRemovals, [], what);
+    assert.deepEqual(h.session.value.pendingMixes, [], what);
+  }
+  // What CAN be read is still carried out: the bare id v0.3.0 wrote, and a note that is due.
+  const origin = sharedOrigin();
+  for (const id of ["bare", "due", "open"])
+    origin.storage.records.set(id, localProject(id));
+  const now = Date.UTC(2026, 9, 9, 8, 0, 0);
+  origin.session.raw = JSON.stringify({
+    pendingRemovals: [
+      "bare",
+      { id: "due", expiresAt: now - 1 },
+      // its undo window is still open in another tab: left alone
+      { id: "open", expiresAt: now + 8000 },
+    ],
+    // a fader note written by a clock that runs a little ahead: applied, but the
+    // record is never stamped with a date in the future
+    pendingMixes: [{ id: "open", volumes: { drums: 0.25 }, at: now + 60_000 }],
+  });
+  const h = harness({ origin });
+  assert.equal(h.clock.time, now);
+  await h.core.start();
+  assert.deepEqual([...h.storage.deletes].sort(), ["bare", "due"]);
+  const kept = h.storage.records.get("open");
+  assert.equal(kept?.config.volumes.drums, 0.25);
+  assert.equal(kept?.updatedAt, new Date(now).toISOString());
 });
 
 test("an unreadable library is reported and does not stop composing", async () => {
@@ -1250,26 +1312,207 @@ test("cloud: service errors are shown as they are; a failed save keeps the audio
   assert.equal(await h.core.actions.exportWork({ kind: "original" }), true);
 });
 
-test("service limits are checked against the planned configuration before paying (APP-19)", async () => {
+test("FQ-04: a length the service does not take is settled before the paid question, never after (APP-19)", async () => {
   const { h, bridge } = await desktop({
     records: [localProject("mine", {}, { duration: 60 })],
   });
+  const ui = () => h.core.getState().ui;
+  const sent: { duration: number; prompt: string }[] = [];
+  bridge.generate = async (input) => {
+    sent.push({ duration: input.duration, prompt: input.prompt });
+    return { audio: MP3_BYTES.slice().buffer, mimeType: "audio/mpeg" };
+  };
   await h.core.actions.openProject("mine");
   h.core.actions.setProvider("volcengine");
-  // The current work is 60 s, but the message asks for 15 s: refused, unpaid.
-  assert.equal(
-    await paid(h, () => h.core.actions.send("改成 15 秒"), true),
-    false,
-  );
+  // The work is 60 s, the message asks for 15 s. v0.3.0 asked to confirm the
+  // payment and then refused with 生成失败; now the length is the first question.
+  let running = h.core.actions.send("改成 15 秒");
+  await settle();
+  let dialog = ui().dialog;
+  assert.equal(dialog?.kind, "duration", "the length comes before the money");
+  assert.equal(dialog.title, "火山引擎 AI 音乐不支持这个时长");
   assert.match(
-    lastToast(h),
-    /火山引擎 AI 音乐支持 30–120 秒，这次的时长是 15 秒/,
+    dialog.body.join(""),
+    /火山引擎 AI 音乐支持 30–120 秒，这次的时长是 15 秒。.*改为 30 秒.*还没有发送任何请求/,
   );
-  assert.ok(!bridge.calls.some((call) => call.startsWith("generateMusic")));
-  assert.equal(studio(h).thread.at(-1)?.error, true);
-  // And the other way round: a 15 s work refined to 45 s is fine.
+  assert.deepEqual(
+    dialog.choices.map((choice) => choice.label),
+    ["取消", "改为 30 秒"],
+  );
+  assert.equal(dialog.cancel, "cancel");
+  assert.equal(studio(h).job, null, "nothing has started");
+  // 取消: nothing is sent, nothing "failed", and no paid question ever appears.
+  h.core.actions.answerDialog(dialog.id, "cancel");
+  assert.equal(await running, false);
+  assert.equal(ui().dialog, null);
+  assert.equal(paidCalls(h), 0);
+  assert.deepEqual(
+    toasts(h).filter((text) => text.startsWith("生成失败")),
+    [],
+    "a refusal before anything is sent is not a failed generation",
+  );
+  assert.notEqual(studio(h).thread.at(-1)?.error, true);
+  // 改为 30 秒: only now the paid question; one request, for 30 seconds.
+  running = h.core.actions.send("改成 15 秒");
+  assert.equal((await answer(h, "fit")).kind, "duration");
+  dialog = ui().dialog;
+  assert.equal(dialog?.kind, "paid", "the paid question follows the length");
+  assert.equal(paidCalls(h), 0);
+  await answer(h, "confirm", true);
+  assert.equal(await running, true);
+  assert.deepEqual(
+    sent.map((request) => request.duration),
+    [30],
+  );
+  assert.match(sent[0].prompt, /30 秒/);
+  assert.equal(studio(h).project?.config.duration, 30);
+  assert.equal(studio(h).thread.at(-1)?.error, undefined);
+  // A length the service takes is not asked about at all.
   assert.equal(await h.core.actions.send("改成 45 秒"), true);
   assert.equal(studio(h).project?.config.duration, 45);
+  assert.deepEqual(
+    sent.map((request) => request.duration),
+    [30, 45],
+  );
+
+  // A new piece: the composer's own 时长 is the thing that is corrected, visibly.
+  const fresh = await desktop();
+  const freshUi = () => fresh.h.core.getState().ui;
+  fresh.h.core.actions.setProvider("volcengine");
+  fresh.h.core.actions.setPin("duration", 15);
+  fresh.h.core.actions.setComposerText("雨夜咖啡馆的慵懒钢琴");
+  const first = fresh.h.core.actions.send();
+  await settle();
+  assert.equal(freshUi().dialog?.kind, "duration");
+  assert.equal(
+    studio(fresh.h).composerText,
+    "雨夜咖啡馆的慵懒钢琴",
+    "the description is still in the composer while the question is open",
+  );
+  await answer(fresh.h, "fit");
+  assert.equal(studio(fresh.h).pins.duration, 30);
+  assert.equal(freshUi().dialog?.kind, "paid");
+  await answer(fresh.h, "cancel");
+  assert.equal(await first, false);
+  assert.equal(paidCalls(fresh.h), 0);
+  assert.equal(studio(fresh.h).composerText, "雨夜咖啡馆的慵懒钢琴");
+  // the selector says which lengths the engine takes
+  assert.deepEqual(view(fresh.h).durationRange, [30, 120]);
+  fresh.h.core.actions.setProvider("tencent");
+  assert.equal(view(fresh.h).durationRange, null);
+  fresh.h.core.actions.setProvider("local");
+  assert.equal(view(fresh.h).durationRange, null);
+
+  // 应用调整 and 重新生成一版 are held to the same.
+  const direct = await desktop({
+    records: [
+      cloudWork("short", {}),
+      localProject("quick", {}, { duration: 15 }),
+    ],
+  });
+  const d = direct.h;
+  const requests: number[] = [];
+  direct.bridge.generate = async (input) => {
+    requests.push(input.duration);
+    return { audio: MP3_BYTES.slice().buffer, mimeType: "audio/mpeg" };
+  };
+  await d.core.actions.openProject("quick");
+  d.core.actions.setProvider("volcengine");
+  const again = d.core.actions.variation();
+  await settle();
+  assert.equal(d.core.getState().ui.dialog?.kind, "duration");
+  await answer(d, "fit");
+  await answer(d, "confirm", true);
+  assert.equal(await again, true);
+  assert.deepEqual(requests, [30]);
+  assert.equal(studio(d).project?.config.duration, 30);
+  assert.ok(
+    studio(d)
+      .thread.at(-1)
+      ?.reasoning?.some((line) =>
+        /时长按火山引擎 AI 音乐支持的范围改为 30 秒/.test(line),
+      ),
+    "the thread says why the length is not the one of the version before",
+  );
+  d.core.actions.setDraft("duration", 15);
+  const applied = d.core.actions.applyDraft();
+  await settle();
+  assert.equal(d.core.getState().ui.dialog?.kind, "duration");
+  await answer(d, "fit");
+  assert.equal(await applied, false, "30 s is what the work already has");
+  assert.equal(studio(d).draft.duration, 30, "the draft shows what was agreed");
+  assert.match(lastToast(d), /时长已改为 30 秒/);
+  assert.deepEqual(requests, [30], "nothing more was sent");
+});
+
+test("FQ-04: a language model that plans a length the service does not take is asked about before anything is sent", async () => {
+  const { h, bridge } = await desktop();
+  assert.deepEqual(
+    await h.core.actions.saveLlm({
+      kind: "anthropic",
+      preset: "anthropic",
+      apiKey: "sk-ant-test-0000",
+      model: "claude-opus-5-5",
+    }),
+    { ok: true },
+  );
+  // The words name no length (the rules foresee the default); the model picks 20 s.
+  bridge.plan = async (input) => ({
+    model: "claude-opus-5-5",
+    plan: {
+      reply: "做了一段短小的提示音乐。",
+      title: "提示音",
+      style: input.current.style,
+      instrument: input.current.instrument,
+      key: input.current.key,
+      bpm: input.current.bpm,
+      duration: 20,
+      energy: input.current.energy,
+      complexity: input.current.complexity,
+      reverb: input.current.reverb,
+      loop: false,
+      newMelody: false,
+      volumes: input.current.volumes,
+      arrangement: {
+        progression: [],
+        form: [],
+        drums: "auto",
+        bass: "auto",
+        swing: -1,
+        layers: { pad: "auto", arp: "auto", counter: "auto", perc: "auto" },
+        melody: { density: -1, register: "auto", motion: "auto" },
+      },
+      reasoning: [],
+      cloudPrompt: "",
+    },
+  });
+  const sent: number[] = [];
+  bridge.generate = async (input) => {
+    sent.push(input.duration);
+    return { audio: MP3_BYTES.slice().buffer, mimeType: "audio/mpeg" };
+  };
+  h.core.actions.setProvider("volcengine");
+  h.core.actions.setComposerText("一段轻快的旋律");
+  const running = h.core.actions.send();
+  assert.equal((await answer(h, "confirm")).kind, "paid");
+  await settle();
+  const dialog = h.core.getState().ui.dialog;
+  assert.equal(dialog?.kind, "duration", "asked, not refused with 生成失败");
+  assert.equal(studio(h).job?.stage, "asking");
+  assert.match(dialog.body.join(""), /这次的时长是 20 秒/);
+  assert.deepEqual(sent, [], "nothing has been sent");
+  h.core.actions.answerDialog(dialog.id, "cancel");
+  assert.equal(await running, false);
+  assert.deepEqual(sent, []);
+  assert.equal(lastToast(h), "已取消，没有发送生成请求。");
+  assert.equal(studio(h).composerText, "一段轻快的旋律", "the words come back");
+  // and with a yes it goes out once, for the agreed length
+  const second = h.core.actions.send();
+  await answer(h, "confirm");
+  await answer(h, "fit");
+  assert.equal(await second, true);
+  assert.deepEqual(sent, [30]);
+  assert.equal(studio(h).project?.config.duration, 30);
 });
 
 test("a loaded work borrows the engine selector; leaving it returns the user's own choice", async () => {
@@ -1444,7 +1687,15 @@ test("the language model plans only when it is selected and configured; failures
   assert.equal(h.plans.at(-1)?.llm, true);
   const turn = studio(h).thread.at(-1);
   assert.equal(turn?.brain, "llm");
-  assert.equal(turn?.text, "慢下来了，换成了古筝。");
+  // FQ-02: the answer is written by the app from what really changed; the
+  // model's own words stand beside it as a note, in the thread and in the library.
+  assert.match(turn?.text ?? "", /速度 112 → 90 BPM/);
+  assert.match(turn?.text ?? "", /主奏乐器换成古筝/);
+  assert.equal(turn?.note, "慢下来了，换成了古筝。");
+  assert.equal(
+    h.storage.records.get(studio(h).project?.id ?? "")?.chat?.at(-1)?.note,
+    "慢下来了，换成了古筝。",
+  );
   assert.equal(studio(h).turnNotes[turn?.id ?? ""]?.model, "claude-opus-5-5");
   assert.equal(studio(h).project?.config.bpm, 90);
   assert.equal(studio(h).project?.config.instrument, "guzheng");

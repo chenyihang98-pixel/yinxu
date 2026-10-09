@@ -97,7 +97,8 @@ const state = globalThis.__museTest = {
   menus: [],
   savePath: null,
   tencent: { fail: 0, hang: false, delay: 150, garbage: false },
-  volc: { polls: 0, pollsNeeded: 2 },
+  // pollFail: an HTTP status every status query is answered with (0: the task runs and finishes as usual)
+  volc: { polls: 0, pollsNeeded: 2, pollFail: 0 },
   aliyun: { fail: 0, downloadFail: 0 },
   llm: { plans: [], fail: 0, failAlways: 0, hang: false, delay: 100, calls: 0 },
   defaultPlan: ${JSON.stringify(DEFAULT_PLAN)},
@@ -166,6 +167,7 @@ const mockFetch = async (rawUrl, options = {}) => {
     const action = url.searchParams.get('Action');
     if (action === 'GenBGMForTime' || action === 'GenBGM') { state.volc.polls = 0; return json({ Code: 0, Result: { TaskID: 'fixture-volc-task' } }); }
     if (action === 'QuerySong') {
+      if (state.volc.pollFail) return new Response('fixture: the status service is down', { status: state.volc.pollFail });
       state.volc.polls++;
       return state.volc.polls < state.volc.pollsNeeded
         ? json({ Code: 0, Result: { Status: 1 } })

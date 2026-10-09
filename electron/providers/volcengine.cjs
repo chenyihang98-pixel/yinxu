@@ -220,11 +220,24 @@ function wait(milliseconds, signal) {
   });
 }
 
+/** For a caller that cannot resume the wait (no `onRunning`): where the submitted task can still be found. */
+const TASK_CONSOLE_ADVICE =
+  "音乐可能仍会生成并计费，请到控制台按任务编号查看，不要重复提交。";
+
 /**
  * `submitFetch` carries the one billable request (GenBGM / GenBGMForTime);
  * status queries and the download are free and go through `fetchImpl`.
- * `onResult(fetchAgain)` hands over a function that downloads the finished
- * result again (`{signal, fetchImpl, maxBytes}` optional) without a new task.
+ *
+ * Once the task has been accepted it is something paid for, whatever happens to
+ * this call, and the caller is told how to get at it:
+ *   onTask(ref)           its (shortened) id, for messages;
+ *   onRunning(resume)     `resume(context)` waits for the same task again and
+ *                         downloads its result, without a new submission;
+ *                         onRunning(null) follows if the task ends without a
+ *                         usable result - then there is nothing left to resume;
+ *   onResult(fetchAgain)  the music exists: `fetchAgain(context)` downloads it again.
+ * `context` is `{signal, fetchImpl, maxBytes}` (all optional) plus, for `resume`,
+ * the caller's `onRunning` / `onResult` for that attempt.
  */
 async function generate({
   input,
@@ -236,14 +249,20 @@ async function generate({
   helpers = {},
   onTask,
   onResult,
+  onRunning,
 }) {
   const body = buildBody(input);
   const verifiedCredentials = validateCredentials(credentials);
   const sleep = helpers.sleep ?? wait;
   const requestJson = helpers.requestJson ?? shared.requestJson;
   const downloadAudio = helpers.downloadAudio ?? shared.downloadAudio;
-  const request = async (action, requestBody, fetcher = fetchImpl) => {
-    checkAbort(signal);
+  // The messages promise only what this caller can do: resume the wait, or look in the console.
+  const advice =
+    typeof onRunning === "function"
+      ? shared.TASK_RUNNING_ADVICE
+      : TASK_CONSOLE_ADVICE;
+  const request = async (action, requestBody, fetcher, abort) => {
+    checkAbort(abort);
     const signed = signRequest({
       action,
       body: requestBody,
@@ -252,17 +271,14 @@ async function generate({
     const data = await requestJson(
       fetcher,
       signed.url,
-      { ...signed.options, signal },
+      { ...signed.options, signal: abort },
       { onHttpError: httpFailure },
     );
-    checkAbort(signal);
+    checkAbort(abort);
     return assertSuccess(data);
   };
-  let taskRef = "";
-  const tagged = (message) =>
-    taskRef && !message.includes(taskRef)
-      ? `${message}（任务编号 ${taskRef}）`
-      : message;
+
+  let taskId;
   try {
     // Do not retry this billable submission or switch billing modes automatically.
     const submission = await request(
@@ -271,6 +287,7 @@ async function generate({
         : "GenBGMForTime",
       body,
       submitFetch,
+      signal,
     );
     if (
       typeof submission.TaskID !== "string" ||
@@ -279,106 +296,133 @@ async function generate({
       throw new MusicError(
         "火山引擎响应缺少有效任务编号，未自动重试，请先检查账户任务记录。",
       );
-    taskRef = shortTaskId(submission.TaskID);
-    if (typeof onTask === "function") onTask(taskRef);
-    let failures = 0;
-    for (let attempt = 0; attempt < MAX_POLLS; attempt++) {
-      let task;
-      try {
-        task = await request("QuerySong", { TaskID: submission.TaskID });
-        failures = 0;
-      } catch (error) {
-        checkAbort(signal);
-        if (!isTransient(error)) throw error;
-        failures++;
-        if (failures >= MAX_POLL_FAILURES)
-          throw new MusicError(
-            `火山引擎任务状态连续 ${MAX_POLL_FAILURES} 次查询失败，已停止等待。音乐可能仍会生成并计费，请到控制台按任务编号查看，不要重复提交。`,
-          );
-        if (attempt < MAX_POLLS - 1)
-          await sleep(
-            Math.min(
-              POLL_INTERVAL_MS * 2 ** (failures - 1),
-              MAX_POLL_BACKOFF_MS,
-            ),
-            signal,
-          );
-        continue;
-      }
-      if (task.Status === 2) {
-        const detail = task.SongDetail;
-        let audioUrl;
-        try {
-          audioUrl = new URL(detail?.AudioUrl);
-        } catch {
-          throw new MusicError("火山引擎任务完成，但没有返回有效音频地址。");
-        }
-        if (
-          audioUrl.protocol !== "https:" ||
-          audioUrl.username ||
-          audioUrl.password ||
-          (audioUrl.port && audioUrl.port !== "443") ||
-          !AUDIO_HOSTS.includes(audioUrl.hostname)
-        ) {
-          throw new MusicError(
-            "火山引擎音频地址不在官方 CDN 白名单中，已停止下载。",
-          );
-        }
-        checkAbort(signal);
-        // The download is free and repeatable: it has its own retries, and the caller may ask for it again later.
-        const fetchResult = async (context = {}) => {
-          const audio = await downloadAudio(audioUrl.href, {
-            fetchImpl: context.fetchImpl ?? fetchImpl,
-            signal: context.signal,
-            maxBytes: context.maxBytes ?? maxBytes,
-            allowedHostSuffixes: AUDIO_HOSTS,
-            ...(helpers.sleep ? { sleep: helpers.sleep } : {}),
-          });
-          return {
-            ...audio,
-            requestedDuration: input.duration,
-            ...(Number.isFinite(detail.Duration) && detail.Duration > 0
-              ? { providerDuration: detail.Duration }
-              : {}),
-          };
-        };
-        if (typeof onResult === "function") {
-          onResult(async (context) => {
-            try {
-              return await fetchResult(context);
-            } catch (error) {
-              throw error instanceof MusicError
-                ? new MusicError(tagged(error.message))
-                : error;
-            }
-          });
-        }
-        const result = await fetchResult({ signal });
-        checkAbort(signal);
-        return result;
-      }
-      if (task.Status === 3)
-        throw new MusicError(failureMessage(task.FailureReason?.Code));
-      if (task.Status !== 0 && task.Status !== 1)
-        throw new MusicError(
-          "火山引擎返回了未知任务状态，未重新提交，请先检查账户任务记录。",
-        );
-      if (attempt < MAX_POLLS - 1) await sleep(POLL_INTERVAL_MS, signal);
-    }
-    throw new MusicError(
-      "火山引擎音乐任务等待超过 5 分钟。任务可能仍在运行，请先检查账户记录再重试。",
-    );
+    taskId = submission.TaskID;
   } catch (error) {
     checkAbort(signal);
-    // After a successful submission every failure names the task so it can be found in the console.
-    if (error instanceof MusicError)
-      throw new MusicError(tagged(error.message));
+    if (error instanceof MusicError) throw error;
     throw new MusicError(
-      tagged(
-        "无法连接火山引擎音乐服务，请检查网络。任务未自动重试，请先检查账户记录。",
-      ),
+      "无法连接火山引擎音乐服务，请检查网络。任务未自动重试，请先检查账户记录。",
     );
   }
+  const taskRef = shortTaskId(taskId);
+  if (typeof onTask === "function") onTask(taskRef);
+  // After a successful submission every failure names the task so it can be found in the console.
+  const tagged = (message) =>
+    message.includes(taskRef) ? message : `${message}（任务编号 ${taskRef}）`;
+
+  /** Wait for the task and download its result: once below, and again whenever the caller resumes. */
+  const collect = async (context) => {
+    const abort = context.signal;
+    const fetcher = context.fetchImpl ?? fetchImpl;
+    const limit = context.maxBytes ?? maxBytes;
+    const ended = () => {
+      if (typeof context.onRunning === "function") context.onRunning(null);
+    };
+    /** The wait stops here, the task does not: it can still finish and be collected. */
+    const stillRunning = (what) => new MusicError(`${what}${advice}`);
+    try {
+      let failures = 0;
+      for (let attempt = 0; attempt < MAX_POLLS; attempt++) {
+        let task;
+        try {
+          task = await request("QuerySong", { TaskID: taskId }, fetcher, abort);
+          failures = 0;
+        } catch (error) {
+          checkAbort(abort);
+          // The query was refused, not the task.
+          if (!isTransient(error)) throw stillRunning(error.message);
+          failures++;
+          if (failures >= MAX_POLL_FAILURES)
+            throw stillRunning(
+              `火山引擎任务状态连续 ${MAX_POLL_FAILURES} 次查询失败，已停止等待。`,
+            );
+          if (attempt < MAX_POLLS - 1)
+            await sleep(
+              Math.min(
+                POLL_INTERVAL_MS * 2 ** (failures - 1),
+                MAX_POLL_BACKOFF_MS,
+              ),
+              abort,
+            );
+          continue;
+        }
+        if (task.Status === 2) {
+          const detail = task.SongDetail;
+          let audioUrl;
+          try {
+            audioUrl = new URL(detail?.AudioUrl);
+          } catch {
+            ended();
+            throw new MusicError("火山引擎任务完成，但没有返回有效音频地址。");
+          }
+          if (
+            audioUrl.protocol !== "https:" ||
+            audioUrl.username ||
+            audioUrl.password ||
+            (audioUrl.port && audioUrl.port !== "443") ||
+            !AUDIO_HOSTS.includes(audioUrl.hostname)
+          ) {
+            ended();
+            throw new MusicError(
+              "火山引擎音频地址不在官方 CDN 白名单中，已停止下载。",
+            );
+          }
+          checkAbort(abort);
+          // The download is free and repeatable: it has its own retries, and the caller may ask for it again later.
+          const fetchResult = async (again = {}) => {
+            const audio = await downloadAudio(audioUrl.href, {
+              fetchImpl: again.fetchImpl ?? fetcher,
+              signal: again.signal,
+              maxBytes: again.maxBytes ?? limit,
+              allowedHostSuffixes: AUDIO_HOSTS,
+              ...(helpers.sleep ? { sleep: helpers.sleep } : {}),
+            });
+            return {
+              ...audio,
+              requestedDuration: input.duration,
+              ...(Number.isFinite(detail.Duration) && detail.Duration > 0
+                ? { providerDuration: detail.Duration }
+                : {}),
+            };
+          };
+          if (typeof context.onResult === "function") {
+            context.onResult(async (again) => {
+              try {
+                return await fetchResult(again);
+              } catch (error) {
+                throw error instanceof MusicError
+                  ? new MusicError(tagged(error.message))
+                  : error;
+              }
+            });
+          }
+          const result = await fetchResult({ signal: abort });
+          checkAbort(abort);
+          return result;
+        }
+        if (task.Status === 3) {
+          ended();
+          throw new MusicError(failureMessage(task.FailureReason?.Code));
+        }
+        if (task.Status !== 0 && task.Status !== 1)
+          throw stillRunning("火山引擎返回了未知任务状态，未重新提交。");
+        if (attempt < MAX_POLLS - 1) await sleep(POLL_INTERVAL_MS, abort);
+      }
+      throw stillRunning("火山引擎音乐任务等待超过 5 分钟，已停止等待。");
+    } catch (error) {
+      checkAbort(abort);
+      if (error instanceof MusicError)
+        throw new MusicError(tagged(error.message));
+      throw new MusicError(
+        tagged(
+          "无法连接火山引擎音乐服务，请检查网络。任务未自动重试，请先检查账户记录。",
+        ),
+      );
+    }
+  };
+  if (typeof onRunning === "function")
+    onRunning((context = {}) => collect(context));
+  return collect({ signal, onResult, onRunning });
 }
 
 module.exports = {

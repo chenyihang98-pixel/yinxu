@@ -53,6 +53,7 @@ const BRIDGE_KEYS = [
   "cancelGeneration",
   "deleteLlmSettings",
   "deleteProviderCredentials",
+  "discardPendingResult",
   "generateMusic",
   "getSettings",
   "openExternal",
@@ -272,6 +273,11 @@ async function checkBuild(run, label, launch, shared) {
         "the data folder is the throw-away profile",
       );
       assert.deepEqual(settings.llm, { configured: false });
+      assert.equal(
+        settings.pendingResult,
+        null,
+        "no paid result is waiting in a fresh start",
+      );
       assert.deepEqual(settings.providers, {
         elevenlabs: { configured: false },
         tencent: { configured: false },
@@ -294,7 +300,7 @@ async function checkBuild(run, label, launch, shared) {
   );
 
   await step(
-    "the bridge has exactly its 13 methods and the renderer has no Node",
+    "the bridge has exactly its 14 methods and the renderer has no Node",
     async () => {
       const bridge = await page.evaluate(() => ({
         keys: Object.keys(window.museDesktop).sort(),
@@ -308,7 +314,7 @@ async function checkBuild(run, label, launch, shared) {
           typeof window.module !== "undefined",
       }));
       assert.deepEqual(bridge.keys, BRIDGE_KEYS);
-      assert.equal(bridge.keys.length, 13);
+      assert.equal(bridge.keys.length, 14);
       assert.deepEqual(
         [bridge.functions, bridge.frozen, bridge.node],
         [true, true, false],

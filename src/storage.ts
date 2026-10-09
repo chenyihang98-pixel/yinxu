@@ -68,6 +68,8 @@ const STORE_NAME = "projects";
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_ID_LENGTH = 120;
 const MAX_CHAT_TURNS = 40;
+/** AgentTurn.note: the model's own words under an answer. */
+const MAX_TURN_NOTE_CHARS = 400;
 const UNTITLED = "未命名作品";
 const PROVIDERS: readonly Provider[] = [
   "local",
@@ -300,6 +302,12 @@ function normalizeTurn(value: unknown): AgentTurn {
       .filter(Boolean)
       .slice(0, 8);
   }
+  // A language model's own words, kept apart from the answer. Optional; an
+  // empty one is simply not stored.
+  const note =
+    source.note === undefined
+      ? ""
+      : textValue(source.note, "模型说明", MAX_TURN_NOTE_CHARS, true);
   return {
     id: idValue(source.id, "对话编号"),
     role,
@@ -321,6 +329,7 @@ function normalizeTurn(value: unknown): AgentTurn {
     ...(source.error !== undefined
       ? { error: booleanValue(source.error, "对话错误标记") }
       : {}),
+    ...(note ? { note } : {}),
   };
 }
 

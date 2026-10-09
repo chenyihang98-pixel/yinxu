@@ -759,7 +759,7 @@ test("MAIN-02 service: retryLastDownload shares the single-flight lock, cancel a
   assert.equal(service.pendingDownload, "aliyun");
 });
 
-test("MAIN-02 service: cancelling during the download says the music exists and keeps it; a new generation replaces it", async () => {
+test("MAIN-02 service: cancelling during the download says the music exists and keeps it; FQ-01: a new generation no longer replaces it unasked", async () => {
   let mode = "hang";
   const hang = (_url, { signal }) =>
     new Promise((_resolve, reject) =>
@@ -792,7 +792,7 @@ test("MAIN-02 service: cancelling during the download says the music exists and 
   );
   assert.equal(service.pendingDownload, null);
 
-  // A failed download followed by a new generation: the old result is no longer "the last one".
+  // A failed download followed by a new generation.
   mode = "hang";
   const again = service.generate(
     { ...INPUT, provider: "volcengine" },
@@ -808,13 +808,23 @@ test("MAIN-02 service: cancelling during the download says the music exists and 
     null,
     "kept per service instance, in memory only",
   );
-  await assert.rejects(
-    service.generate({ ...INPUT, provider: "tencent" }, { apiKey: "short" }),
-  );
+  // It used to be dropped "as soon as another generation starts" - paid music gone without a
+  // question. Now the generation is refused, for the same service and for any other
+  // (tests/music-pending-result.test.cjs has the rest).
+  for (const provider of ["tencent", "volcengine"]) {
+    await assert.rejects(
+      service.generate({ ...INPUT, provider }, KEYS[provider]),
+      (error) => error.name === "MusicError" && error.code === "PENDING_RESULT",
+      provider,
+    );
+    assert.equal(service.pendingDownload, "volcengine");
+    assert.equal(service.busy, false);
+  }
+  mode = "ok";
   assert.equal(
-    service.pendingDownload,
-    null,
-    "replaced as soon as another generation starts",
+    (await service.retryLastDownload("volcengine")).mimeType,
+    "audio/mpeg",
+    "and the result can still be fetched",
   );
 });
 

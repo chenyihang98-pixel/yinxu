@@ -3,7 +3,8 @@
  * producer thread, the mixer and the inspector — two columns from 1100 px
  * (main + a 320 px inspector, each scrolling on its own), one column below.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, SlidersHorizontal } from "lucide-react";
 import { useApp } from "../../state/context";
 import { draftFit } from "../../state/format";
 import { configFromDraft } from "../../state/logic";
@@ -62,7 +63,9 @@ function Opening(props: { job: Job; restoring: boolean }) {
 
 export function StudioPage() {
   useRenderCount("StudioPage");
-  const { studio, library, platform, player, actions } = useApp();
+  const { studio, library, platform, player, actions, ui } = useApp();
+  // A question from the app is open: what opened it cannot open another.
+  const asking = ui.dialog !== null;
   const { project, audio, job } = studio;
   const wide = useMediaQuery("(min-width: 1100px)");
   // Below 720 px the inspector starts folded so the page stays short.
@@ -76,6 +79,36 @@ export function StudioPage() {
     () => setInspectorOpen((value) => !value),
     [],
   );
+  // In the one-column layouts the inspector is a card far down the page.
+  // While it is off screen, pending edits are said in a pill that leads there.
+  const side = useRef<HTMLDivElement>(null);
+  const [sideSeen, setSideSeen] = useState(true);
+  const loaded = studio.project !== null;
+  useEffect(() => {
+    const node = side.current;
+    if (!node || wide || typeof IntersectionObserver === "undefined") {
+      setSideSeen(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      // several changes can arrive at once, oldest first: the last one counts
+      const latest = entries.at(-1);
+      if (latest) setSideSeen(latest.isIntersecting);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [wide, loaded]);
+  const showInspector = useCallback(() => {
+    setInspectorOpen(true);
+    // after the panel has opened, so its full height is scrolled to
+    requestAnimationFrame(() => {
+      const node = side.current;
+      node?.scrollIntoView({ block: "start", behavior: "smooth" });
+      node
+        ?.querySelector<HTMLElement>('[data-testid="inspector-toggle"]')
+        ?.focus({ preventScroll: true });
+    });
+  }, []);
   const changedFields = useStableList(studio.changedFields);
   const listed = useStableList(library.projects, sameListing);
   const suggestions = useStableList(studio.suggestions);
@@ -111,7 +144,12 @@ export function StudioPage() {
     if (job?.kind === "open")
       return <Opening job={job} restoring={studio.lastLoad === null} />;
     return (
-      <ComposerHero studio={studio} platform={platform} actions={actions} />
+      <ComposerHero
+        studio={studio}
+        platform={platform}
+        asking={asking}
+        actions={actions}
+      />
     );
   }
 
@@ -149,6 +187,7 @@ export function StudioPage() {
             provider={studio.provider}
             activeBrain={studio.activeBrain}
             platform={platform}
+            asking={asking}
             actions={actions}
           />
           {audio && (
@@ -161,7 +200,7 @@ export function StudioPage() {
           )}
         </div>
       </div>
-      <div className="studio-side">
+      <div className="studio-side" ref={side}>
         <Inspector
           draft={studio.draft}
           changedFields={changedFields}
@@ -173,6 +212,9 @@ export function StudioPage() {
           applyHint={studio.applyHint}
           variationLabel={studio.variationLabel}
           fit={fit}
+          inaudible={studio.applyInaudible}
+          durationRange={studio.durationRange}
+          asking={asking}
           notes={arrangement?.notes ?? NO_NOTES}
           collapsible={!wide}
           open={wide || inspectorOpen}
@@ -180,6 +222,21 @@ export function StudioPage() {
           actions={actions}
         />
       </div>
+      {!wide && changedFields.length > 0 && !sideSeen && (
+        <div className="pending-dock">
+          <button
+            type="button"
+            className="pending-pill"
+            data-testid="pending-pill"
+            aria-label={`「声音微调」里有 ${changedFields.length} 项修改还没有应用，前往查看`}
+            onClick={showInspector}
+          >
+            <SlidersHorizontal size={14} aria-hidden />
+            <span>{changedFields.length} 项未应用</span>
+            <ArrowDown size={14} aria-hidden />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

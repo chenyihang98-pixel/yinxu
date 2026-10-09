@@ -4,11 +4,12 @@
  * gets focus back on close, and the page behind is inert (the shell reads
  * `ui.modal` and the `localOverlays` count).
  */
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { localOverlays } from "../hooks/uiStores";
+import { keyHeld } from "../logic/dialogGuard";
 import { focusables, trapTarget } from "../logic/focus";
 import { IconButton, classes } from "./Button";
 
@@ -29,6 +30,12 @@ export interface ModalProps {
   footer?: ReactNode;
   /** rendered between the header and the body (tabs) */
   toolbar?: ReactNode;
+  /**
+   * For questions: how long after opening the dialog takes no pointer input
+   * and no activation key (logic/dialogGuard). The gesture that opened it —
+   * a double-click, a held or repeated Enter — then cannot answer it.
+   */
+  holdMs?: number;
   children: ReactNode;
 }
 
@@ -36,6 +43,15 @@ export function Modal(props: ModalProps) {
   const { title, onClose, local } = props;
   const dialog = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  const holdMs = props.holdMs ?? 0;
+  const [openedAt] = useState(() => performance.now());
+  const [held, setHeld] = useState(holdMs > 0);
+
+  useEffect(() => {
+    if (!(holdMs > 0)) return;
+    const timer = setTimeout(() => setHeld(false), holdMs);
+    return () => clearTimeout(timer);
+  }, [holdMs]);
 
   useEffect(() => {
     const before =
@@ -68,6 +84,20 @@ export function Modal(props: ModalProps) {
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const node = dialog.current;
+    if (
+      holdMs > 0 &&
+      keyHeld({
+        key: event.key,
+        repeat: event.repeat,
+        sinceOpenMs: event.timeStamp - openedAt,
+        holdMs,
+      })
+    ) {
+      // Enter / Space from the gesture that opened the question: not an answer.
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (event.key === "Tab" && node) {
       const active =
         document.activeElement instanceof HTMLElement
@@ -130,6 +160,16 @@ export function Modal(props: ModalProps) {
         <div className="modal-body">{props.children}</div>
         {props.footer && <footer className="modal-foot">{props.footer}</footer>}
       </div>
+      {held && (
+        // Over everything for the first moment: a click that was already on
+        // its way (the second half of a double-click) lands here.
+        <div
+          className="modal-shield"
+          data-testid="modal-shield"
+          // the press must not take the focus off the safe answer either
+          onMouseDown={(event) => event.preventDefault()}
+        />
+      )}
     </div>,
     document.body,
   );

@@ -35,7 +35,12 @@ import { TRACKS } from "../music/score";
 import { providerName } from "../providers";
 import type { MusicConfig, Project, Provider } from "../types";
 import { formatBpm, formatSeconds, structureLabel } from "./format";
-import { cleanMessage, configFromDraft, joinText } from "./logic";
+import {
+  cleanMessage,
+  configFromDraft,
+  joinText,
+  outsideQuotes,
+} from "./logic";
 import { audibleKey, fittedTiming, scoreFacts } from "./score";
 import type { Draft, PaidNotice, Pins } from "./types";
 
@@ -79,9 +84,15 @@ export function buildAgentRequest(input: {
   pins: Pins;
   provider: Provider;
   nextSeed: number;
+  /**
+   * A length the user agreed to for this one request (the selected service
+   * does not take the one they asked for): it wins like any pin.
+   */
+  duration?: number;
 }): AgentRequest {
   const text = cleanMessage(input.text);
   const nextSeed = input.nextSeed >>> 0;
+  const agreed = cleanPins({ duration: input.duration });
   if (input.project)
     return {
       text,
@@ -91,8 +102,9 @@ export function buildAgentRequest(input: {
       history: [...input.thread],
       title: input.project.title,
       nextSeed,
+      ...(agreed.duration !== undefined ? { pins: agreed } : {}),
     };
-  const pins = cleanPins(input.pins);
+  const pins = { ...cleanPins(input.pins), ...agreed };
   return {
     text,
     mode: "new",
@@ -161,14 +173,58 @@ export function paidNotice(
   };
 }
 
-/** A sentence that promises the tune survives. */
-const KEEPS_MELODY =
-  /(?:旋律|素材|动机)[^，。；！？!?]*(?:保持不变|不变|保留|延续|沿用|一致)/;
-/** A sentence that already says the tune is made anew. */
-const SAYS_NEW =
-  /重新生成|不保留原旋律|旋律会和上一版不同|新的旋律|重新编写旋律|重新作曲/;
+/**
+ * A clause that promises the tune survives — whichever way round it is put:
+ * "旋律保持不变", "主旋律没有动", "我保留了原来的旋律", "旋律还是原来那条",
+ * "the melody stays the same".
+ */
+const KEEPS_MELODY = new RegExp(
+  [
+    "(?:旋律(?!丰富度)|素材|动机|主题|曲调)[^，。；！？!?,;]*(?:保持不变|不变|保留|延续|沿用|一致|没有动|没动|不动|没有改|没改|照旧)",
+    "(?:保留|保持|沿用|延续|留着|没有动|没动|不动|没有改|没改|不改)[^，。；！？!?,;]*(?:旋律(?!丰富度)|主题|动机|曲调)",
+    "(?:旋律(?!丰富度)|主题|动机|曲调)[^，。；！？!?,;]*(?:还是|仍是|仍然是|依旧是|依然是)[^，。；！？!?,;]*(?:原来|之前|上一版|原先)",
+    "\\b(?:kept|keeps?|keeping|preserv\\w*|retain\\w*|same|unchanged|untouched)\\b[^,.;!?，。；！？]*\\b(?:melody|melodies|tune|theme|motif)\\b",
+    "\\b(?:melody|melodies|tune|theme|motif)\\b[^,.;!?，。；！？]*\\b(?:unchanged|untouched|same|kept|preserved|retained|intact|stays?|remains?)\\b",
+  ].join("|"),
+  "i",
+);
+/** A clause that says the opposite: the tune is made anew, or not kept. */
+const NOT_KEPT =
+  /重新生成|不(?:会|再|能)?保留|没有保留|无法保留|旋律会和上一版不同|新的旋律|重新编写旋律|重新作曲|重新写一首|(?:new|different) (?:melody|tune)/i;
 
-const LEGACY_TRUTH = "新版引擎会重新编写旋律，原作品保留。";
+interface MelodyTruth {
+  /** the sentence that says it */
+  text: string;
+  /** a reply that matches has said it already */
+  said: RegExp;
+}
+
+const LEGACY_TRUTH: MelodyTruth = {
+  text: "新版引擎会重新编写旋律，原作品保留。",
+  said: /新的旋律|重新编写旋律|重新作曲|重新写一首/,
+};
+const LOCAL_TRUTH: MelodyTruth = {
+  text: "改用本地作曲后，会按这些设置重新写一首。",
+  said: /重新写一首|重新作曲|重新编写旋律/,
+};
+/**
+ * A cloud service makes a whole new piece. "换一组新的旋律" alone does not
+ * say that: everything else is new as well, and it is billed.
+ */
+const CLOUD_TRUTH: MelodyTruth = {
+  text: CLOUD_MELODY_NOTE,
+  said: /重新生成|不保留原旋律|旋律会和上一版不同/,
+};
+
+function truthFor(
+  provider: Provider,
+  base: Project | null,
+): MelodyTruth | null {
+  if (!base) return null;
+  if (provider !== "local") return CLOUD_TRUTH;
+  if (base.provider !== "local") return LOCAL_TRUTH;
+  return base.config.engine === 1 ? LEGACY_TRUTH : null;
+}
 
 /**
  * What a new version made from `base` on `provider` does to the tune, when
@@ -180,44 +236,75 @@ export function melodyTruth(
   provider: Provider,
   base: Project | null,
 ): string | null {
-  if (!base) return null;
-  // one sentence for it, the same one the producer's own replies use
-  if (provider !== "local") return CLOUD_MELODY_NOTE;
-  if (base.provider !== "local")
-    return "改用本地作曲后，会按这些设置重新写一首。";
-  return base.config.engine === 1 ? LEGACY_TRUTH : null;
+  return truthFor(provider, base)?.text ?? null;
+}
+
+const promises = (text: string) =>
+  KEEPS_MELODY.test(text) && !NOT_KEPT.test(text);
+
+/** What a sentence may start with once the clause before it is gone. */
+const DANGLING = /^(?:只是|但是|但|不过|同时|并且|而且|并|另外|只)(?=.)/;
+
+/**
+ * `text` without the clauses that promise a kept melody. Whatever else a
+ * sentence says — what was changed — stays; a sentence that was nothing but
+ * the promise goes.
+ */
+function withoutPromises(text: string): string {
+  const sentences = (text.match(/[^。！？!?]+[。！？!?]*/g) ?? [text]).flatMap(
+    // an English full stop ends a sentence too ("76.8 BPM" is not one)
+    (sentence) => sentence.split(/(?<=[A-Za-z]\.)(?=\s)/),
+  );
+  return sentences
+    .map((sentence) => {
+      const end = /[。！？!?.\s]*$/.exec(sentence)?.[0] ?? "";
+      const body = sentence.slice(0, sentence.length - end.length);
+      // clauses, each with the mark that follows it
+      const clauses = body.match(/[^，；,;]+[，；,;]?/g) ?? [body];
+      const kept = clauses.filter((clause) => !promises(clause));
+      if (kept.length === clauses.length) return sentence;
+      if (kept.length === 0) return "";
+      const rest = kept
+        .join("")
+        .replace(/[，；,;\s]+$/, "")
+        .trim()
+        .replace(DANGLING, "");
+      // the space that set the sentence off from the one before it stays
+      const lead = /^\s*/.exec(sentence)?.[0] ?? "";
+      return rest ? `${lead}${rest}${end.trim() || "。"}` : "";
+    })
+    .join("")
+    .trim();
 }
 
 /**
  * Make a plan's words true for the engine that will carry it out: a reply
  * that says the melody stays is corrected whenever it will not (cloud
- * regeneration, engine-1 → engine-2), whichever brain wrote it.
+ * regeneration, engine-1 → engine-2), whoever wrote it. Only the promise is
+ * taken out — the account of what was changed stays — and the truth is said
+ * once. A language model's own note is held to the same.
  */
 export function honestPlan(
   plan: AgentPlan,
   provider: Provider,
   base: Project | null,
 ): AgentPlan {
-  const truth = melodyTruth(provider, base);
+  const truth = truthFor(provider, base);
   if (!truth || plan.unchanged) return plan;
-  const sentences = plan.reply.match(/[^。！？!?]+[。！？!?]?/g) ?? [
-    plan.reply,
-  ];
-  // "不保留原旋律" is the truth, not a promise: only real promises go.
-  const promises = (text: string) =>
-    KEEPS_MELODY.test(text) && !SAYS_NEW.test(text);
-  const kept = sentences.filter((sentence) => !promises(sentence));
-  const stated = kept.some((sentence) => SAYS_NEW.test(sentence));
+  const kept = withoutPromises(plan.reply);
+  const stated = truth.said.test(kept) || kept.includes(truth.text);
   const reasoning = plan.reasoning.filter((line) => !promises(line));
+  const note =
+    plan.modelNote === undefined ? undefined : withoutPromises(plan.modelNote);
+  const reply = `${kept}${stated ? "" : truth.text}`;
   if (
-    stated &&
-    kept.length === sentences.length &&
-    reasoning.length === plan.reasoning.length
+    reply === plan.reply &&
+    reasoning.length === plan.reasoning.length &&
+    note === plan.modelNote
   )
     return plan;
-  // The producer's own wording stands when it already says so; said once.
-  const reply = `${kept.join("").trim()}${stated ? "" : truth}`;
-  return { ...plan, reply, reasoning };
+  const { modelNote: _said, ...rest } = plan;
+  return { ...rest, reply, reasoning, ...(note ? { modelNote: note } : {}) };
 }
 
 /**
@@ -244,11 +331,36 @@ export function applyHint(
   if (project.config.engine === 1)
     return `应用调整会用新版引擎重新编写旋律，生成新版本；${kept}`;
   const next = draft ? configFromDraft(project.config, draft) : null;
-  const tune =
-    next && describeChanges(project.config, next).length
-      ? melodyNote(project.config, next, "local")
-      : "";
+  const changed = !!next && describeChanges(project.config, next).length > 0;
+  // A draft the composer turns into the very same audio makes no version:
+  // the line must not promise one.
+  if (changed && draftInaudible(project, provider, draft))
+    return INAUDIBLE_HINT;
+  const tune = next && changed ? melodyNote(project.config, next, "local") : "";
   return `应用调整会生成一个新版本，${kept}${tune}`;
+}
+
+export const INAUDIBLE_HINT =
+  "这些修改听起来会和现在这一版完全一样，所以不会生成新版本。可以改得再多一点，或者还原。";
+
+/**
+ * The pending inspector edits would give a local version that sounds exactly
+ * like the loaded one — a tempo nudge a loop fits back onto the same bars,
+ * a fader of a part that does not play. 应用调整 then makes nothing (see
+ * `inaudiblePlan`), and the interface says so before it is pressed. False
+ * whenever that cannot be told: a cloud engine, cloud audio, a v0.2 work.
+ */
+export function draftInaudible(
+  project: Project | null,
+  provider: Provider,
+  draft: Draft | undefined,
+): boolean {
+  if (!project || !draft) return false;
+  if (provider !== "local" || project.provider !== "local") return false;
+  const next = configFromDraft(project.config, draft);
+  if (!describeChanges(project.config, next).length) return false;
+  const before = audibleKey(project.config);
+  return before !== null && before === audibleKey(next);
 }
 
 /** Label of the 换一版旋律 button: on a cloud engine it is a paid request. */
@@ -295,21 +407,27 @@ function restate(
   earlier: { from: string; to: string } | null,
 ): string {
   if (QUOTES_A_SETTING.test(text)) return text;
-  let result = text;
-  if (earlier && earlier.from !== earlier.to)
-    result = result.replace(
-      new RegExp(
-        `(^|[^\\d.])${earlier.from}(\\s*→\\s*[\\d.]+\\s*${unit})`,
-        "g",
-      ),
-      `$1${earlier.to}$2`,
-    );
-  if (from !== to)
-    result = result.replace(
-      new RegExp(`(^|[^\\d.前第后每])${from}(\\s*${unit})`, "g"),
-      `$1${to}$2`,
-    );
-  return result;
+  // The user's own words, repeated back in quotes ("没有从「100 BPM，…」里听出
+  // 风格"), are what they asked for — not a statement about the audio.
+  return outsideQuotes(text, (part) => {
+    let result = part;
+    if (earlier && earlier.from !== earlier.to)
+      result = result.replace(
+        new RegExp(
+          `(^|[^\\d.])${earlier.from}(\\s*→\\s*[\\d.]+\\s*${unit})`,
+          "g",
+        ),
+        `$1${earlier.to}$2`,
+      );
+    if (from !== to)
+      result = result.replace(
+        // not part of a longer number, and not a position inside the piece
+        // ("前 30 秒", "第 2 秒" — with or without the space)
+        new RegExp(`(?<![\\d.]|[前第后每]\\s{0,2})${from}(\\s*${unit})`, "g"),
+        `${to}$1`,
+      );
+    return result;
+  });
 }
 
 /**
@@ -447,6 +565,61 @@ export function enforcePins(plan: AgentPlan, request: AgentRequest): AgentPlan {
     ...(request.provider !== "local"
       ? { cloudPrompt: buildCloudPrompt(config) }
       : {}),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* a length the selected service does not offer                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The length a composer message will most likely ask for: what the offline
+ * rules read from it, with the pins in. It is known at once and for free, so
+ * a length the selected service does not take is caught before the user is
+ * asked to confirm a paid request — not after.
+ */
+export function predictedDuration(input: {
+  text: string;
+  project: Project | null;
+  pins: Pins;
+  provider: Provider;
+}): number {
+  const request = buildAgentRequest({
+    ...input,
+    thread: [],
+    nextSeed: input.project?.config.seed ?? 0,
+  });
+  return enforcePins(planWithRules(request), request).config.duration;
+}
+
+/**
+ * `plan` with the length the user agreed to instead of one the service does
+ * not offer. Its words follow: the reply and chips state the new length, one
+ * chip says why, and the prompt for the service is written for it.
+ */
+export function withDuration(
+  plan: AgentPlan,
+  duration: number,
+  provider: Provider,
+  before?: MusicConfig,
+): AgentPlan {
+  const asked = plan.config.duration;
+  if (asked === duration) return plan;
+  const config = clampConfig({ ...plan.config, duration }, plan.config);
+  const fix = (text: string) =>
+    restate(text, "秒", String(asked), String(config.duration), null);
+  const why = joinText(
+    "时长按",
+    providerName(provider),
+    `支持的范围改为 ${config.duration} 秒`,
+  );
+  return {
+    ...plan,
+    config,
+    unchanged: false,
+    reply: fix(plan.reply),
+    reasoning: [...plan.reasoning.map(fix).slice(0, 7), why],
+    ...cloudPromptFor(provider, config, before),
   };
 }
 
@@ -595,7 +768,12 @@ export function planFromDraft(
   };
 }
 
-/** 换一版旋律: the committed settings with a new seed. */
+/**
+ * 换一版旋律: the committed settings with a new seed. The composer writes its
+ * chords from the seed as well, so the answer says what really is rewritten —
+ * the tune, and the harmony under it when that comes out differently — and
+ * what stays: the settings.
+ */
 export function planVariation(
   project: Project,
   nextSeed: number,
@@ -606,6 +784,12 @@ export function planVariation(
   if (seed === base.seed) seed = (seed + 1) >>> 0;
   const config = clampConfig({ ...base, seed }, base);
   const upgraded = project.config.engine !== config.engine;
+  const before =
+    provider === "local" && project.provider === "local" && !upgraded
+      ? scoreFacts(project.config)?.harmony
+      : undefined;
+  const reharmonised =
+    before !== undefined && before !== scoreFacts(config)?.harmony;
   return {
     request: provider === "local" ? "换一版旋律" : "重新生成一版",
     plan: {
@@ -613,7 +797,9 @@ export function planVariation(
       title: project.title,
       reply:
         provider === "local"
-          ? "换了一组新的旋律，其余设置保持不变。"
+          ? reharmonised
+            ? "换了一组新的旋律：旋律与和弦走向都重写了，风格、速度、调性和乐器保持不变。"
+            : "换了一组新的旋律，其余设置保持不变。"
           : joinText(
               "已让",
               providerName(provider),
@@ -621,7 +807,11 @@ export function planVariation(
             ),
       reasoning:
         provider === "local"
-          ? ["换一组新的旋律", ...(upgraded ? ["改用新版引擎"] : [])]
+          ? [
+              "换一组新的旋律",
+              ...(reharmonised ? ["和弦走向随新的旋律重写"] : []),
+              ...(upgraded ? ["改用新版引擎"] : []),
+            ]
           : ["云端重新生成"],
       tags: directTags(project, config),
       unchanged: false,
@@ -740,11 +930,18 @@ export function inaudiblePlan(
       base.config.duration !== plan.config.duration)
   )
     why.push("循环片段的速度和时长按整小节对齐，对齐后和现在一样");
+  // A layer that was asked for and already plays (the style writes it by
+  // itself), or one to take out that was never there: say which.
+  for (const line of describeChanges(base.config, plan.config)) {
+    if (line.startsWith("加入")) why.push(`这一版已经有${line.slice(2)}`);
+    else if (line.startsWith("去掉"))
+      why.push(`这一版本来就没有${line.slice(2)}`);
+  }
   return {
     ...plan,
     unchanged: true,
     reply: "这样改完，听起来会和现在这一版完全一样，所以没有生成新版本。",
-    reasoning: why,
+    reasoning: [...new Set(why)].slice(0, 8),
   };
 }
 
@@ -758,8 +955,15 @@ const chipCache = new Map<string, string[]>();
  * the list follows what the piece really contains (加点沙锤 where there are
  * no drums to remove, 混响大一点 where the pad already plays).
  */
-export function suggestionsFor(project: Project | null): string[] {
+export function suggestionsFor(
+  project: Project | null,
+  provider: Provider = "local",
+): string[] {
   if (!project) return [];
+  // 换一版旋律 is the local engine's: same settings, a new tune. With a cloud
+  // service that would be a whole new paid piece — its button says so
+  // (重新生成一版（计费）), and no chip pretends otherwise.
+  const variation = provider === "local" ? ["换一版旋律"] : [];
   const config = project.config;
   const slots: string[][] = [
     config.bpm <= LIMITS.bpm[0] + 12 ? ["快一点"] : ["慢一点", "快一点"],
@@ -772,13 +976,14 @@ export function suggestionsFor(project: Project | null): string[] {
   ];
   // A cloud mix or a v0.2 work has no score to check against.
   if (project.provider !== "local" || config.engine !== 2)
-    return [...slots.map((slot) => slot[0]), "换一版旋律"];
+    return [...slots.map((slot) => slot[0]), ...variation];
   // The answer depends on the music and on which faders are up, not on
   // where exactly a fader stands: moving one does not work it out again.
   const { prompt: _words, volumes, ...musical } = config;
   const key = JSON.stringify([
     musical,
     TRACKS.map((track) => volumes[track] > 0),
+    variation.length,
   ]);
   const known = chipCache.get(key);
   if (known) return known;
@@ -787,7 +992,7 @@ export function suggestionsFor(project: Project | null): string[] {
       const chip = slot.find((text) => wouldChange(config, text));
       return chip ? [chip] : [];
     }),
-    "换一版旋律",
+    ...variation,
   ];
   if (chipCache.size >= 8) {
     const oldest = chipCache.keys().next().value;

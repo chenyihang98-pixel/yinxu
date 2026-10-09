@@ -34,11 +34,42 @@ export function percentAt(time: number, total: number): number {
 
 export interface ChordLike extends TimeSpan {
   symbol: string;
+  /** index of the bar the chord starts in, when known */
+  bar?: number;
 }
 
-/** Estimated width of a chord symbol set in the strip's 12 px type. */
-export function chordLabelWidth(symbol: string): number {
-  return Math.ceil(symbol.length * 7.4) + 8;
+/** Width of a chord symbol's text; the strip measures the real glyphs. */
+export type MeasureText = (symbol: string) => number;
+
+/**
+ * Width of a chord symbol set in the strip's 12 px type, when nothing can
+ * measure it: capitals are wide, "m" wider still, small letters and digits
+ * narrower, marks narrowest.
+ */
+export function estimateChordText(symbol: string): number {
+  let width = 0;
+  for (const char of symbol)
+    width += /[A-Z#w]/.test(char)
+      ? 7.8
+      : char === "m"
+        ? 10.4
+        : /[a-z0-9♭♯]/.test(char)
+          ? 6.6
+          : /[/()+.\-°ø]/.test(char)
+            ? 4.8
+            : 9;
+  return width;
+}
+
+/** What stands left of a label's text: the tick and its padding. */
+const LABEL_INSET = 6;
+
+/** Width a printed label takes from its chord's tick to the end of its text. */
+export function chordLabelWidth(
+  symbol: string,
+  measure: MeasureText = estimateChordText,
+): number {
+  return Math.ceil(measure(symbol)) + LABEL_INSET;
 }
 
 export interface ChordMark {
@@ -50,30 +81,59 @@ export interface ChordMark {
 
 /**
  * How to draw each chord when the strip is `width` px wide. A chord that
- * repeats the one before it is a continuation: no label, no tick. The rest
- * get a tick, and a label wherever the previous label leaves room; a tick
- * that would cut through a printed label is left out. The returned array is
- * parallel to `chords`.
+ * repeats the one before it is a continuation: no label, no tick. Every
+ * other chord is labelled when its label fits — `gap` px clear of the labels
+ * around it and inside the strip. Where not all of them fit, the chords that
+ * open a bar come first: they are placed before the chords inside a bar, so
+ * a change on the third beat never costs the next bar its name. A chord gets
+ * a tick unless the tick would cut through a printed label. The returned
+ * array is parallel to `chords`.
  */
 export function chordLayout(
   chords: readonly ChordLike[],
   total: number,
   width: number,
-  gap = 8,
+  gap = 3,
+  measure: MeasureText = estimateChordText,
 ): ChordMark[] {
   const marks = chords.map<ChordMark>(() => ({ label: false, tick: false }));
   if (!(total > 0) || !(width > 0)) return marks;
-  /** right edge of the last printed label */
-  let inked = Number.NEGATIVE_INFINITY;
-  for (let index = 0; index < chords.length; index++) {
-    const chord = chords[index];
-    if (index > 0 && chords[index - 1].symbol === chord.symbol) continue;
-    const left = (chord.start / total) * width;
-    const right = left + chordLabelWidth(chord.symbol);
-    if (left >= inked) marks[index].tick = true;
-    if (left + 0.5 < inked + gap || right > width + 1) continue;
+  const left = (index: number) => (chords[index].start / total) * width;
+  const right = (index: number) =>
+    left(index) + chordLabelWidth(chords[index].symbol, measure);
+  /** chords that are drawn at all, in time order */
+  const drawn: number[] = [];
+  for (let index = 0; index < chords.length; index++)
+    if (index === 0 || chords[index - 1].symbol !== chords[index].symbol)
+      drawn.push(index);
+  const opensBar = (index: number) =>
+    chords[index].bar === undefined ||
+    index === 0 ||
+    chords[index - 1].bar !== chords[index].bar;
+  /** printed labels, kept in time order */
+  const printed: number[] = [];
+  const place = (index: number) => {
+    if (right(index) > width + 1) return;
+    // the labels on either side of where this one would go
+    let after = printed.findIndex((other) => other > index);
+    if (after < 0) after = printed.length;
+    const previous = printed[after - 1];
+    const next = printed[after];
+    if (previous !== undefined && left(index) + 0.5 < right(previous) + gap)
+      return;
+    if (next !== undefined && right(index) + gap > left(next) + 0.5) return;
+    printed.splice(after, 0, index);
     marks[index].label = true;
-    inked = right;
+  };
+  for (const index of drawn) if (opensBar(index)) place(index);
+  for (const index of drawn) if (!opensBar(index)) place(index);
+  // ticks: wherever a chord starts, except inside a printed label
+  let covered = Number.NEGATIVE_INFINITY;
+  let cursor = 0;
+  for (const index of drawn) {
+    while (cursor < printed.length && printed[cursor] < index)
+      covered = Math.max(covered, right(printed[cursor++]));
+    marks[index].tick = marks[index].label || left(index) >= covered;
   }
   return marks;
 }
@@ -88,12 +148,13 @@ export function chordPill(
   current: number,
   total: number,
   width: number,
+  measure: MeasureText = estimateChordText,
 ): { edge: boolean; hidden: Set<number> } {
   const hidden = new Set<number>();
   const chord = chords[current];
   if (!chord || !(total > 0) || !(width > 0)) return { edge: false, hidden };
-  // the pill is the symbol plus a little more padding than a plain label
-  const size = chordLabelWidth(chord.symbol) + 4;
+  // the pill is the symbol in bold with padding on both sides
+  const size = Math.ceil(measure(chord.symbol) * 1.08) + 12;
   const start = (chord.start / total) * width;
   const edge = start + size > width;
   const left = edge ? width - size : start;
@@ -101,7 +162,7 @@ export function chordPill(
   for (let index = 0; index < chords.length; index++) {
     if (index === current || !marks[index]?.label) continue;
     const from = (chords[index].start / total) * width;
-    const to = from + chordLabelWidth(chords[index].symbol);
+    const to = from + chordLabelWidth(chords[index].symbol, measure);
     if (from < right + 4 && to > left - 4) hidden.add(index);
   }
   return { edge, hidden };

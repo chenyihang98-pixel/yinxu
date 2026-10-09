@@ -394,8 +394,13 @@ test("answers wrapped the way real models wrap them are unwrapped: fences, <thin
     tricky.reply,
   );
   assert.deepEqual(openai.extractPlanObject("no braces here"), null);
+  // ND-4: of several complete objects the last one is the answer; a brace in a string ends nothing.
   assert.deepEqual(
     openai.extractPlanObject('{"a": {"b": [1, {"c": "}"}]}} trailing {"d": 1}'),
+    { d: 1 },
+  );
+  assert.deepEqual(
+    openai.extractPlanObject('{"d": 1} trailing {"a": {"b": [1, {"c": "}"}]}}'),
     { a: { b: [1, { c: "}" }] } },
   );
   assert.deepEqual(
@@ -1071,7 +1076,7 @@ test("MAIN-03: anything larger than an answer can be is refused without being sc
   assert.deepEqual((await run(fine.fetchImpl)).plan, PLAN);
 });
 
-test("MAIN-03: the single pass reads the same answers as before", () => {
+test("MAIN-03: the single pass reads wrapped answers as before; ND-4: of several objects the last one is taken", () => {
   const json = JSON.stringify(PLAN);
   const same = [
     [`<think>a<think>b</think>c</think>${json}`, PLAN],
@@ -1085,9 +1090,12 @@ test("MAIN-03: the single pass reads the same answers as before", () => {
     [`\`\`\`JSON\n${json}\n\`\`\``, PLAN],
     [`{{"double":"braces"}}`, { double: "braces" }],
     [`{prose {"inner":1} more}`, { inner: 1 }],
-    [`{first} {second {"deep":{"x":1}}} {"later":2}`, { deep: { x: 1 } }],
+    [`{first} {second {"deep":{"x":1}}} {"later":2}`, { later: 2 }],
+    [`{"early":2} {first} {second {"deep":{"x":1}}}`, { early: 2 }],
+    [`{first} {second {"deep":{"x":1}} {"deeper":2}}`, { deeper: 2 }],
     [`{"a":"\\"}{\\""} tail`, { a: '"}{"' }],
-    [`{"a":"\\\\"} {"b":1}`, { a: "\\" }],
+    [`{"a":"\\\\"} {"b":1}`, { b: 1 }],
+    [`{"b":1} {"a":"\\\\"}`, { a: "\\" }],
   ];
   for (const [text, expected] of same)
     assert.deepEqual(
@@ -1121,15 +1129,178 @@ test("MAIN-03: the single pass reads the same answers as before", () => {
     }
     assert.equal(openai.extractPlanObject(none), null, none);
   }
-  // No more than a fixed number of candidates is parsed, however many the text offers.
+});
+
+/* --------------------------------------------------------------------- ND-4 */
+// The scanner used to give up after 8 brace groups: a plan that followed a list of
+// {placeholders} was not found and the user read "大模型没有按约定返回方案".
+
+test("ND-4: a plan is found after any number of brace groups in the prose before it", async () => {
+  const json = JSON.stringify(PLAN);
+  const prose = (count) =>
+    `说明：${Array.from({ length: count }, (_, index) => `{字段${index}}`).join("、")} 方案如下：`;
+  for (const count of [0, 1, 7, 8, 9, 20, 500, 4000]) {
+    assert.deepEqual(
+      openai.extractPlanObject(`${prose(count)}{"reply":"好"}`),
+      { reply: "好" },
+      `${count} groups`,
+    );
+    assert.deepEqual(
+      openai.extractPlanObject(`${prose(count)}${json}`),
+      PLAN,
+      `${count} groups`,
+    );
+  }
+  // Through plan(): the reviewer's text, and placeholders that look like JSON but are not.
+  for (const before of [
+    prose(8),
+    prose(20),
+    `${'{"字段"} '.repeat(30)}`,
+    `${'{"example": …} '.repeat(30)}`,
+    `${"{}\n".repeat(30)}`,
+  ]) {
+    const result = await run(
+      recorder(() => completion(`${before}${json}`)).fetchImpl,
+    );
+    assert.deepEqual(result.plan, PLAN, before.slice(0, 30));
+  }
+});
+
+test("ND-4: the plan is the last complete top-level object that validates", async () => {
+  const json = JSON.stringify(PLAN);
+  const other = JSON.stringify({ ...PLAN, bpm: 140, title: "草稿" });
+  const answer = async (text) =>
+    (await run(recorder(() => completion(text)).fetchImpl)).plan;
+  // An example or a draft first, the answer last (the first object used to win).
   assert.deepEqual(
-    openai.extractPlanObject(`${"{a} ".repeat(7)}{"eighth":1}`),
-    { eighth: 1 },
+    await answer(`先看个例子 {"style":"rock","bpm":140} 最终方案：${json}`),
+    PLAN,
   );
-  assert.equal(
-    openai.extractPlanObject(`${"{a} ".repeat(8)}{"ninth":1}`),
-    null,
-    "eight attempts, then it gives up",
+  assert.deepEqual(await answer(`草稿：${other}\n定稿：${json}`), PLAN);
+  assert.equal((await answer(`草稿：${json}\n定稿：${other}`)).bpm, 140);
+  // Objects after the plan that are not plans are passed over.
+  for (const after of [
+    ' 备注：{"note":"以上是方案"}',
+    " {}",
+    ' {"usage":{"tokens":12}} {"done":true}',
+    " 其中 {字段} 的含义见上。",
+    ' {"style":"polka"}', // looks like a plan, is not valid: the one before it is
+  ])
+    assert.deepEqual(await answer(`${json}${after}`), PLAN, after);
+  // A top-level object is preferred to one buried in prose-in-braces, wherever that stands.
+  assert.deepEqual(
+    await answer(`${json} {说明里的片段 {"style":"rock","bpm":150}}`),
+    PLAN,
+  );
+  // Prose in braces around the only plan is still looked into.
+  assert.deepEqual(await answer(`{${json}}`), PLAN);
+  assert.deepEqual(await answer(`{方案如下：${json} 以上}`), PLAN);
+  // Nothing validates: the message is about the last object, the one meant as the answer.
+  await assert.rejects(
+    answer(
+      `{"note":"x"} ${JSON.stringify({ ...PLAN, instrument: "theremin" })}`,
+    ),
+    (error) => safe(error) && /「instrument」/.test(error.message),
+  );
+  await assert.rejects(
+    answer(`${JSON.stringify({ ...PLAN, style: "polka" })} {"note":"x"}`),
+    (error) => safe(error) && /没有给出可用的音乐方案/.test(error.message),
+  );
+  await assert.rejects(
+    answer("{字段一} {字段二}"),
+    (error) => safe(error) && /没有按约定返回方案/.test(error.message),
+  );
+  // The validator sees each candidate at most once, last first.
+  const seen = [];
+  assert.deepEqual(
+    openai.extractPlanObject('{"n":1} {x} {"n":2} {"n":3}', (value) => {
+      seen.push(value.n);
+      if (value.n !== 2) throw new Error(`refused ${value.n}`);
+      return { taken: value.n };
+    }),
+    { taken: 2 },
+  );
+  assert.deepEqual(seen, [3, 2]);
+  assert.throws(
+    () =>
+      openai.extractPlanObject('{"n":1} {"n":2}', (value) => {
+        throw new Error(`refused ${value.n}`);
+      }),
+    /refused 2/,
+  );
+});
+
+test("ND-4: the search stays linear and bounded - no candidate count, a budget of characters parsed", () => {
+  const size = openai.MAX_ANSWER_CHARS;
+  const fit = (unit) => unit.repeat(Math.floor(size / unit.length));
+  // Worst cases for a validator that refuses everything: every candidate is parsed and offered.
+  let offered = 0;
+  const refuse = () => {
+    offered++;
+    throw new Error("not a plan");
+  };
+  const hostile = {
+    "tiny objects": fit('{"a":1} '),
+    "empty objects": fit("{} "),
+    "keys without values": fit('{"a"} '),
+    "objects nested in prose": `{x ${fit('{"a":1} ').slice(0, size - 8)}}`,
+    "prose nested in prose": `${"{x ".repeat(8000)}${"}".repeat(8000)}`,
+    "valid until the last character, nested": `${'{"a":'.repeat(6000)}!${"}".repeat(6000)}`,
+  };
+  for (const [name, text] of Object.entries(hostile)) {
+    assert.ok(text.length <= size, name);
+    offered = 0;
+    let outcome;
+    const { ms } = timed(() => {
+      try {
+        outcome = openai.extractPlanObject(text, refuse);
+      } catch (error) {
+        outcome = error.message;
+      }
+    });
+    assert.ok(
+      outcome === null || outcome === "not a plan",
+      `${name}: ${outcome}`,
+    );
+    assert.ok(ms < 250, `${name}: ${ms.toFixed(1)} ms`);
+    assert.ok(
+      offered <= (size * 4) / 64,
+      `${name}: ${offered} candidates were validated`,
+    );
+  }
+  // Doubling a text that is re-parsed at every nesting level must not quadruple the time.
+  const nested = (levels) => `${'{"a":'.repeat(levels)}!${"}".repeat(levels)}`;
+  openai.extractPlanObject(nested(1000), refuse); // warm up
+  const best = (levels) =>
+    Math.max(
+      0.05,
+      Math.min(
+        ...[1, 2, 3].map(
+          () =>
+            timed(() => openai.extractPlanObject(nested(levels), refuse)).ms,
+        ),
+      ),
+    );
+  const small = best(2500);
+  const large = best(10000);
+  assert.ok(
+    large < small * 12,
+    `4x the input took ${(large / small).toFixed(1)}x the time (${small.toFixed(2)} ms -> ${large.toFixed(2)} ms)`,
+  );
+  // An honest answer is never short of budget: a long plan after long prose, and many real objects.
+  const long = { ...PLAN, cloudPrompt: "钢琴".repeat(900) };
+  const padded = `${"前言。".repeat(15000)}${JSON.stringify(long)}`;
+  assert.ok(padded.length <= size);
+  assert.deepEqual(openai.extractPlanObject(padded), long);
+  const many = `${JSON.stringify(PLAN)}${` ${JSON.stringify({ note: "说明".repeat(40) })}`.repeat(300)}`;
+  assert.ok(many.length <= size, String(many.length));
+  assert.deepEqual(
+    openai.extractPlanObject(many, (value) => {
+      if (!("style" in value)) throw new Error("a note");
+      return value;
+    }),
+    PLAN,
+    "300 objects after the plan are all passed over",
   );
 });
 

@@ -32,7 +32,9 @@ const MAX_ADAPTATIONS = 3;
  */
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_ANSWER_CHARS = 64 * 1024;
-const MAX_PARSE_ATTEMPTS = 8;
+/** Parsing the candidates of one answer may cost this many times its length (see lastJsonObject). */
+const PARSE_BUDGET_FACTOR = 4;
+const MIN_CANDIDATE_COST = 64;
 
 function wait(milliseconds, signal) {
   return new Promise((resolve, reject) => {
@@ -98,66 +100,130 @@ function messageText(data) {
 }
 
 /**
- * The first balanced {...} in the text that parses as a JSON object, ignoring
- * braces inside JSON strings. A brace that never closes means the answer was cut
- * off: nothing after it is used, so a complete inner object (one form section,
- * say) can never be mistaken for the plan.
- *
- * One pass over the text. Each top-level group is tried as a whole; if that is
- * prose in braces rather than JSON, the groups nested in it are tried next, in
- * the order they open. At most MAX_PARSE_ATTEMPTS candidates are parsed in all.
+ * The balanced {...} groups of the text as a tree: the top-level groups in the
+ * order they appear, each with the groups directly inside it. Braces inside
+ * JSON strings are ignored. A brace that never closes means the answer was cut
+ * off there: that group and everything in it are left out, so a complete inner
+ * object (one form section, say) can never be mistaken for the plan. One pass.
  */
-function firstJsonObject(text) {
-  let attempts = 0;
-  const parsed = (start, end) => {
-    attempts++;
-    try {
-      const value = JSON.parse(text.slice(start, end + 1));
-      if (value && typeof value === "object" && !Array.isArray(value))
-        return value;
-    } catch {
-      /* prose in braces, not JSON */
-    }
-    return null;
-  };
-  for (let start = text.indexOf("{"); start !== -1;) {
-    const open = [start];
-    const nested = [];
-    let inString = false,
-      escaped = false,
-      end = -1;
-    for (let index = start + 1; index < text.length; index++) {
-      const code = text.charCodeAt(index);
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (code === 92)
-          escaped = true; // backslash
-        else if (code === 34) inString = false; // "
-      } else if (code === 34) inString = true;
-      else if (code === 123)
-        open.push(index); // {
-      else if (code === 125) {
-        // }
-        const begin = open.pop();
-        if (open.length === 0) {
-          end = index;
-          break;
-        }
-        nested.push([begin, index]);
+function braceGroups(text) {
+  const top = [];
+  const open = [];
+  let inString = false,
+    escaped = false;
+  let index = text.indexOf("{");
+  while (index !== -1 && index < text.length) {
+    const code = text.charCodeAt(index);
+    if (open.length === 0) {
+      // Always an opening brace here; quotes between groups are prose.
+      open.push({ start: index, end: -1, inner: null });
+    } else if (inString) {
+      if (escaped) escaped = false;
+      else if (code === 92)
+        escaped = true; // backslash
+      else if (code === 34) inString = false; // "
+    } else if (code === 34) inString = true;
+    else if (code === 123) open.push({ start: index, end: -1, inner: null });
+    else if (code === 125) {
+      const group = open.pop();
+      group.end = index;
+      if (open.length) {
+        const parent = open[open.length - 1];
+        if (parent.inner) parent.inner.push(group);
+        else parent.inner = [group];
+      } else {
+        top.push(group);
+        index = text.indexOf("{", index + 1);
+        continue;
       }
     }
-    if (end === -1) return null;
-    const whole = parsed(start, end);
-    if (whole) return whole;
-    nested.sort((a, b) => a[0] - b[0]);
-    for (const [begin, finish] of nested) {
-      if (attempts >= MAX_PARSE_ATTEMPTS) return null;
-      const value = parsed(begin, finish);
-      if (value) return value;
-    }
-    if (attempts >= MAX_PARSE_ATTEMPTS) return null;
-    start = text.indexOf("{", end + 1);
+    index++;
   }
+  return top;
+}
+
+/** A JSON object starts with a key or closes at once; prose in braces is told apart without parsing it. */
+function startsLikeObject(text, group) {
+  for (let index = group.start + 1; ; index++) {
+    const code = text.charCodeAt(index);
+    if (code !== 32 && code !== 9 && code !== 10 && code !== 13)
+      return code === 34 || index === group.end;
+  }
+}
+
+/**
+ * The plan in a model's answer: the LAST complete top-level {...} that parses
+ * as a JSON object and that `accept` takes (it returns the value to use, or
+ * throws). Models that add prose put the answer at the end, after their
+ * placeholders, examples and drafts, so the search runs from the end: however
+ * many brace groups come first, a plan in the last one is found at once. Only
+ * when no top-level group is the plan are the groups inside prose-in-braces
+ * tried ("{{...}}", "{方案：{...}}"), last first as well.
+ *
+ * Returns null when the text holds no JSON object. When it holds some and none
+ * is accepted, the refusal of the last one is thrown: that is the one the model
+ * meant as its answer.
+ *
+ * Linear: one pass finds the groups, prose is rejected by its first character,
+ * and what is handed to JSON.parse and to `accept` is paid for from a budget of
+ * PARSE_BUDGET_FACTOR times the text (at least MIN_CANDIDATE_COST per
+ * candidate). Every top-level object of a normal answer fits in it; a text
+ * built to be parsed over and over runs out, and the search ends there.
+ */
+function lastJsonObject(text, accept) {
+  let budget = Math.max(text.length, MIN_CANDIDATE_COST) * PARSE_BUDGET_FACTOR;
+  let refusal = null;
+  let accepted = null;
+  const ACCEPTED = 1,
+    REFUSED = 2,
+    NOT_JSON = 3,
+    SPENT = 4;
+  const consider = (group) => {
+    if (!startsLikeObject(text, group)) return NOT_JSON;
+    const length = group.end - group.start + 1;
+    const cost = Math.max(length, MIN_CANDIDATE_COST);
+    if (budget < cost) return SPENT;
+    budget -= cost;
+    let value;
+    try {
+      value = JSON.parse(text.slice(group.start, group.end + 1));
+    } catch {
+      return NOT_JSON; // prose in braces
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return NOT_JSON;
+    budget -= Math.min(budget, length);
+    try {
+      accepted = { value: accept(value) };
+      return ACCEPTED;
+    } catch (error) {
+      if (!refusal) refusal = { error };
+      return REFUSED;
+    }
+  };
+  const search = () => {
+    const top = braceGroups(text);
+    const prose = [];
+    for (let at = top.length - 1; at >= 0; at--) {
+      const outcome = consider(top[at]);
+      if (outcome === ACCEPTED || outcome === SPENT) return;
+      if (outcome === NOT_JSON && top[at].inner) prose.push(top[at]);
+    }
+    // Popped from the end: the last group inside the last piece of prose comes first.
+    const waiting = [];
+    for (let at = prose.length - 1; at >= 0; at--)
+      for (const group of prose[at].inner) waiting.push(group);
+    while (waiting.length) {
+      const group = waiting.pop();
+      const outcome = consider(group);
+      if (outcome === ACCEPTED || outcome === SPENT) return;
+      if (outcome === NOT_JSON && group.inner)
+        for (const inner of group.inner) waiting.push(inner);
+    }
+  };
+  search();
+  if (accepted) return accepted.value;
+  if (refusal) throw refusal.error;
   return null;
 }
 
@@ -186,11 +252,15 @@ function stripReasoning(text) {
   return kept + text.slice(cursor);
 }
 
-/** Remove reasoning blocks and code fences that models wrap around the JSON, then find the object. */
-function extractPlanObject(text) {
+/**
+ * Remove reasoning blocks and code fences that models wrap around the JSON, then
+ * find the plan (see lastJsonObject). Without `accept` any JSON object will do.
+ */
+function extractPlanObject(text, accept = (value) => value) {
   if (typeof text !== "string" || text.length > MAX_ANSWER_CHARS) return null;
-  return firstJsonObject(
+  return lastJsonObject(
     stripReasoning(text).replace(/```[a-zA-Z0-9_-]*\s*/g, " "),
+    accept,
   );
 }
 
@@ -383,8 +453,11 @@ async function plan({
       throw new MusicError(
         "大模型返回的内容过长，不是一份编排方案。请重试，或换一个模型。",
       );
-    const raw = extractPlanObject(text);
-    if (!raw) {
+    // Used is the last object that is a valid plan, not merely the last pair of braces.
+    const plan = extractPlanObject(text, (raw) =>
+      validatePlan(completePlan(raw, input)),
+    );
+    if (!plan) {
       if (finishReason === "length")
         throw new MusicError(
           "大模型的回答被截断，没有得到完整方案。请换一个模型，或关闭它的深度思考后重试。",
@@ -393,10 +466,7 @@ async function plan({
         "大模型没有按约定返回方案。请重试，或换一个更擅长结构化输出的模型。",
       );
     }
-    return {
-      plan: validatePlan(completePlan(raw, input)),
-      model: safeModelId(data?.model, settings.model),
-    };
+    return { plan, model: safeModelId(data?.model, settings.model) };
   }
 }
 

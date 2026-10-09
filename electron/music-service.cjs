@@ -1,6 +1,11 @@
 "use strict";
-const { MusicError, cleanSecret } = require("./providers/shared.cjs");
+const {
+  MusicError,
+  cleanSecret,
+  TASK_RUNNING_ADVICE,
+} = require("./providers/shared.cjs");
 const { validateProvider } = require("./credentials.cjs");
+const { wasNotSent } = require("./net-fetch.cjs");
 
 const MUSIC_ENDPOINT =
   "https://api.elevenlabs.io/v1/music?output_format=mp3_44100_128";
@@ -119,12 +124,33 @@ function untilAborted(promise, signal) {
   });
 }
 
+const BUSY = "已有一首 AI 音乐正在生成，请等待完成或取消。";
+/** The billable request never left this computer: the one case in which a failure certainly costs nothing. */
+const NOT_SENT = "这次请求还没有发出，不会计费。";
+/**
+ * A paid generation was asked for while an earlier paid result is still waiting
+ * to be collected. Only the text of an error reaches the renderer, so the
+ * message starts with a fixed phrase; `code` is for callers in this process.
+ */
+const PENDING_RESULT = "PENDING_RESULT";
+const PENDING_RESULT_PREFIX = "还有一首已经付费的音乐没有取回";
+function pendingRefusal(provider) {
+  return Object.assign(
+    new MusicError(
+      `${PENDING_RESULT_PREFIX}，这次没有发出新的生成请求。请先点「重新下载」把它取回；确认不要它之后，才能开始新的生成。`,
+    ),
+    { code: PENDING_RESULT, provider },
+  );
+}
+
 /**
  * `fetchImpl` carries everything that is free and repeatable (status queries,
  * downloads). `submitFetch` carries the one request of a generation that is
  * billed whenever the service receives it; the desktop app gives it a transport
  * that cannot re-send (see createBillingFetch in net-fetch.cjs). Tests inject
- * one function for both.
+ * one function for both. When that transport rejects with an error for which
+ * wasNotSent() holds, the request never left this computer, and the failure is
+ * reported as such instead of as an unconfirmed (possibly billed) one.
  */
 function createMusicService({
   fetchImpl = globalThis.fetch,
@@ -134,9 +160,13 @@ function createMusicService({
 } = {}) {
   let active = null;
   /**
-   * The last finished result whose download did not succeed:
-   * { provider, fetchAgain, reference }. Kept in memory only, replaced by the
-   * next generation, so it can be fetched once more without a new paid request.
+   * The one paid result that has not reached the user:
+   *   { provider, reference, fetchAgain, resume }
+   * `fetchAgain` when the music exists and only its file is missing (download
+   * it again); otherwise `resume`, for a task that was accepted but had not
+   * finished when the wait ended (wait for it again, then download). Neither
+   * submits anything. Kept in memory only. While it exists a new generation is
+   * refused unless the caller says it may be given up (`discardPending`).
    */
   let pending = null;
 
@@ -148,6 +178,10 @@ function createMusicService({
       taskRef: "",
       taskLabel: "任务编号",
       fetchAgain: null,
+      resume: null,
+      // The billable request was handed to the transport / the transport says it never went out.
+      submitted: false,
+      unsent: false,
     };
     active = job;
     job.timer = setTimeout(() => {
@@ -180,14 +214,42 @@ function createMusicService({
       `音乐已生成，但下载失败。重新生成会再次计费：请先检查网络，再到服务控制台找回这首音乐。${reference}`,
     );
   }
+  /** Why the wait for an accepted task ended before the task did. The task is kept: it can be collected later. */
+  function taskStopped(job, error, reference) {
+    if (job.timedOut)
+      return new MusicError(
+        `AI 生成等待超过 5 分钟，已停止等待。${TASK_RUNNING_ADVICE}${reference}`,
+      );
+    if (job.cancelled)
+      return new MusicError(
+        `已取消等待生成。${TASK_RUNNING_ADVICE}${reference}`,
+      );
+    if (error instanceof MusicError) return error;
+    return new MusicError(
+      `无法确认任务的状态。${TASK_RUNNING_ADVICE}${reference}`,
+    );
+  }
 
   return {
     get busy() {
       return active !== null;
     },
-    /** The service whose finished result is waiting for another download attempt, or null. */
+    /** The service whose paid result is waiting to be collected, or null. */
     get pendingDownload() {
       return pending ? pending.provider : null;
+    },
+    /**
+     * The same, with what is waiting: "download" (the music exists, its file
+     * has not arrived) or "task" (accepted by the service, not finished when the
+     * wait ended). retryLastDownload() collects either without a new submission.
+     */
+    get pendingResult() {
+      return pending
+        ? {
+            provider: pending.provider,
+            kind: pending.fetchAgain ? "download" : "task",
+          }
+        : null;
     },
     cancel() {
       if (active) {
@@ -200,11 +262,15 @@ function createMusicService({
      * function returning it. The function form is read only after the lock is
      * taken, so a cancel that arrives while the key store is being read still
      * cancels this job instead of being lost.
+     *
+     * While a paid result is waiting to be collected the call is refused
+     * (code PENDING_RESULT) unless `input.discardPending` is true. The waiting
+     * result is then given up at the moment this job's own paid request goes
+     * out - not earlier, so a job that sends nothing takes nothing away.
      */
     async generate(input, credentials) {
       // Keep the lock until the original request has settled, including cancellation.
-      if (active)
-        throw new MusicError("已有一首 AI 音乐正在生成，请等待完成或取消。");
+      if (active) throw new MusicError(BUSY);
       const provider = validateProvider(input?.provider);
       if (
         !input ||
@@ -217,9 +283,24 @@ function createMusicService({
         input.duration > 600
       )
         throw new MusicError("音乐描述或时长无效，请检查参数。");
+      if (pending && input.discardPending !== true)
+        throw pendingRefusal(pending.provider);
       const job = start();
-      // A new generation replaces whatever was still waiting to be downloaded.
-      pending = null;
+      // Every adapter sends its one billable request through here.
+      const submit = async (url, options) => {
+        const displaced = pending;
+        job.submitted = true;
+        pending = null;
+        try {
+          return await submitFetch(url, options);
+        } catch (error) {
+          if (wasNotSent(error)) {
+            job.unsent = true;
+            pending = displaced;
+          }
+          throw error;
+        }
+      };
       try {
         // Nothing has been sent yet, so a cancel or timeout during the read may answer at once.
         const loaded =
@@ -241,11 +322,16 @@ function createMusicService({
             credentials: config,
             signal: job.controller.signal,
             fetchImpl,
-            submitFetch,
+            submitFetch: submit,
             maxBytes,
             onTask: (taskRef, label) => {
               job.taskRef = String(taskRef);
               if (typeof label === "string" && label) job.taskLabel = label;
+            },
+            // A paid task exists from this point: remember how to wait for it again
+            // (null: it ended without a result, nothing is left to wait for).
+            onRunning: (resume) => {
+              job.resume = typeof resume === "function" ? resume : null;
             },
             // The music exists on the server from this point: remember how to fetch it.
             onResult: (fetchAgain) => {
@@ -256,7 +342,7 @@ function createMusicService({
           return result;
         }
         // Never retry a generation automatically: each request may incur a charge.
-        const response = await submitFetch(MUSIC_ENDPOINT, {
+        const response = await submit(MUSIC_ENDPOINT, {
           method: "POST",
           redirect: "error",
           signal: job.controller.signal,
@@ -275,13 +361,32 @@ function createMusicService({
         if (job.cancelled || job.timedOut) throw new Error("aborted");
         return result;
       } catch (error) {
-        if (job.fetchAgain) {
+        if (job.fetchAgain || job.resume) {
+          const reference = job.reference();
           pending = {
             provider,
+            reference,
             fetchAgain: job.fetchAgain,
-            reference: job.reference(),
+            resume: job.fetchAgain ? null : job.resume,
           };
-          throw downloadStopped(job, error, job.reference());
+          throw job.fetchAgain
+            ? downloadStopped(job, error, reference)
+            : taskStopped(job, error, reference);
+        }
+        if (!job.submitted || job.unsent) {
+          if (job.timedOut)
+            throw new MusicError(
+              `AI 生成等待超过 5 分钟，已停止等待。${NOT_SENT}`,
+            );
+          if (job.cancelled)
+            throw new MusicError(`已取消等待生成。${NOT_SENT}`);
+          // Missing credentials, a refused parameter: the adapter's own words.
+          if (!job.unsent && error instanceof MusicError) throw error;
+          throw new MusicError(
+            job.unsent
+              ? "没有发出请求，不会计费：应用没能为这次付费请求准备好独立的网络连接。请稍后重试；如果反复出现，请重启应用。"
+              : "没有发出请求，不会计费：应用在发送之前出了问题。请稍后重试；如果反复出现，请重启应用。",
+          );
         }
         if (job.timedOut)
           throw new MusicError(
@@ -301,13 +406,16 @@ function createMusicService({
       }
     },
     /**
-     * Download the last finished result of `provider` again: no new submission,
-     * nothing billed. Same result as generate(); the address never leaves the
-     * main process. Shares the lock (and cancel, and the time limit) with generate().
+     * Collect the paid result of `provider` that is waiting: download the
+     * finished file again, or - for a task that had not finished - go on
+     * querying it (as bounded as the first wait) and then download. No new
+     * submission, nothing billed. Same result as generate(); the address never
+     * leaves the main process. Shares the lock (and cancel, and the time limit)
+     * with generate(). The result stays available until it has been delivered,
+     * or until the service reports that the task ended without one.
      */
     async retryLastDownload(provider) {
-      if (active)
-        throw new MusicError("已有一首 AI 音乐正在生成，请等待完成或取消。");
+      if (active) throw new MusicError(BUSY);
       const requested = validateProvider(
         typeof provider === "string" ? provider : null,
       );
@@ -318,19 +426,52 @@ function createMusicService({
         );
       const job = start();
       try {
-        const result = await entry.fetchAgain({
-          signal: job.controller.signal,
-          fetchImpl,
-          maxBytes,
-        });
+        const context = { signal: job.controller.signal, fetchImpl, maxBytes };
+        const result = entry.fetchAgain
+          ? await entry.fetchAgain(context)
+          : await entry.resume({
+              ...context,
+              // The task has finished: from now on only its file is missing.
+              onResult: (fetchAgain) => {
+                if (typeof fetchAgain !== "function") return;
+                entry.fetchAgain = fetchAgain;
+                entry.resume = null;
+              },
+              onRunning: (resume) => {
+                if (typeof resume !== "function") entry.resume = null;
+              },
+            });
         if (job.cancelled || job.timedOut) throw new Error("aborted");
         if (pending === entry) pending = null;
         return result;
       } catch (error) {
-        throw downloadStopped(job, error, entry.reference);
+        if (entry.fetchAgain)
+          throw downloadStopped(job, error, entry.reference);
+        if (entry.resume) throw taskStopped(job, error, entry.reference);
+        // The task ended without a result: there is nothing to keep.
+        if (pending === entry) pending = null;
+        throw error instanceof MusicError
+          ? error
+          : new MusicError(
+              `这个任务没有产生可以取回的音乐，请先检查账户记录。${entry.reference}`,
+            );
       } finally {
         finish(job);
       }
+    },
+    /**
+     * Give up the paid result of `provider` that is waiting to be collected
+     * (the user said so): it can no longer be fetched, and the next generation
+     * is not refused because of it. Returns whether there was one.
+     */
+    discardPending(provider) {
+      if (active) throw new MusicError(BUSY);
+      const requested = validateProvider(
+        typeof provider === "string" ? provider : null,
+      );
+      if (!pending || pending.provider !== requested) return false;
+      pending = null;
+      return true;
     },
   };
 }
@@ -392,4 +533,6 @@ module.exports = {
   isAllowedExternal,
   MusicError,
   MAX_AUDIO_BYTES,
+  PENDING_RESULT,
+  PENDING_RESULT_PREFIX,
 };

@@ -16,11 +16,10 @@ import { styleInfo, type InstrumentId, type SectionType } from "./catalog";
 import type { SectionPlan } from "./form";
 import { FAST_TEMPO, energyAtBar, sectionEnergy } from "./form";
 import {
-  TUNE_ABOVE,
-  TUNE_BELOW,
   leadCentre,
   sweetSpot,
   tierOf,
+  tuneCompass,
   type Ctx,
 } from "./harmony";
 import { hashUnit, type Rng } from "./random";
@@ -30,6 +29,7 @@ import {
   LEAD_TRAITS,
   VOICE_RANGES,
   clamp,
+  foldIntoRange,
   mod,
   nearestIndex,
   nearestPitch,
@@ -327,6 +327,13 @@ interface Motif {
   notes: MotifNote[];
   /** what it grows into, in the order the notes join in */
   added: AddedNote[];
+  /**
+   * How much each written note matters, ascending (the first note, which
+   * always stays, left out): the scale on which the notes of a phrase ending
+   * are thinned too, so that across a whole phrase the ornaments go before
+   * the notes that carry it.
+   */
+  saliences: number[];
 }
 
 interface MotifSettings {
@@ -402,6 +409,15 @@ const metricWeight = (step: number) =>
         : step % 2 === 0
           ? 0.3
           : 0;
+
+/**
+ * How much a written note matters to the tune, before the draw that settles
+ * ties: structural notes above passing ones, the strong beats above the weak,
+ * a long note a little above a short one. Notes leave a thinned tune in this
+ * order, the least important first.
+ */
+const salienceOf = (strong: boolean, step: number, length: number) =>
+  (strong ? 2 : 0) + metricWeight(step) + Math.min(length, 8) / 32;
 
 /**
  * Where a note of `length` sixteenths starting at `step` is split when the
@@ -588,23 +604,24 @@ function makeMotif(rng: Rng, name: string, settings: MotifSettings): Motif {
     const before = written[index - 1];
     return !before.strong && before.length + written[index].length >= long;
   };
-  written
+  const ranked = written
     .map((note, index) => ({
       note,
       salience:
         index === 0
           ? Infinity
-          : (note.strong ? 2 : 0) +
-            metricWeight(note.step) +
-            Math.min(note.length, 8) / 32 +
+          : salienceOf(note.strong, note.step, note.length) +
             (strands(index) ? 0.8 : 0) +
             0.5 * fork(`keep:${index}`).next(),
     }))
-    .sort((a, b) => a.salience - b.salience)
-    .forEach((item, rank) => {
-      // evenly spread, so that the number of notes follows the activity
-      item.note.from = rank === count - 1 ? 0 : 1 - (rank + 0.5) / count;
-    });
+    .sort((a, b) => a.salience - b.salience);
+  ranked.forEach((item, rank) => {
+    // evenly spread, so that the number of notes follows the activity
+    item.note.from = rank === count - 1 ? 0 : 1 - (rank + 0.5) / count;
+  });
+  const saliences = ranked
+    .map((item) => item.salience)
+    .filter((value) => Number.isFinite(value));
 
   // passing notes for a busier tune: the longest note is split first
   const cover = new Array<boolean>(total).fill(false);
@@ -645,7 +662,7 @@ function makeMotif(rng: Rng, name: string, settings: MotifSettings): Motif {
       from: 1 + (added.length + 0.5) / count,
     });
   }
-  return { bars: settings.bars, notes: written, added };
+  return { bars: settings.bars, notes: written, added, saliences };
 }
 
 /**
@@ -707,8 +724,9 @@ function connect(
 /**
  * Everything tempo, energy and density ask of the tune, in the few numbers
  * the lead actually reads. Two configs with the same seed, style, key, lead,
- * complexity, form and harmony give note-for-note the same tune exactly when
- * these traits are equal (compose.ts builds melodyContinuity on that).
+ * complexity, form and harmony give note-for-note the same tune when these
+ * traits are equal (melodyContinuity in compose.ts does not rely on it: it
+ * writes both tunes and compares them).
  */
 export interface LeadTraits {
   /**
@@ -749,6 +767,10 @@ const ACTIVITY_DEAD_ZONE = 1.15;
  * in a sparse tune as in a busy one.
  */
 const COMPLEXITY_ACTIVITY = 0.6;
+/** The density below which a tune that plays alone is not thinned (see composeSection). */
+const SOLO_DENSITY = 0.3;
+/** The longest rest, in beats, a tune that plays alone takes between two notes. */
+const SOLO_BREATH = 1;
 /** A note shorter than this does not speak: sixteenths go above 176 BPM. */
 const MIN_NOTE_SECONDS = 0.085;
 /** Energy this far from the style's own moves the register one step, and twice as far two. */
@@ -849,6 +871,17 @@ interface Draft {
 
 type Cadence = "open" | "closed" | "final";
 
+/**
+ * A note of the tune as it is written: where it starts and its pitch, once,
+ * however many strokes a tremolo then makes of it. composeLead fills a list
+ * of these on request, for comparing the tunes of two settings
+ * (melodyContinuity in compose.ts).
+ */
+export interface TuneNote {
+  beat: number;
+  midi: number;
+}
+
 const MOTIF_FAMILY: Record<SectionType, string> = {
   intro: "a",
   verse: "a",
@@ -876,9 +909,16 @@ const MOTIF_FAMILY: Record<SectionType, string> = {
  *    one at a time and not at all inside a dead zone (LeadTraits.activity);
  *    energy raises the chorus and the answering phrases in coarse steps and
  *    sets the dynamics; complexity adds ornaments one by one; the key
- *    transposes; the lead instrument moves the tune by octaves.
+ *    transposes — exactly: the tune is written on a compass that belongs to
+ *    the instrument and not to the key, and a note the instrument cannot
+ *    reach in some key is played an octave nearer, never redrawn; the lead
+ *    instrument moves the tune by octaves.
+ *
+ * Whatever is taken away or added, the phrase is resolved again afterwards
+ * (no avoid note left holding, no tritone across a gap), and a tune that has
+ * no harmony layer under it carries every bar itself (see `carry`).
  */
-export function composeLead(ctx: Ctx): BeatNote[] {
+export function composeLead(ctx: Ctx, written?: TuneNote[]): BeatNote[] {
   const { config, style, key, timing, sections, harmony, rng } = ctx;
   const instrument: InstrumentId = config.instrument;
   const trait = LEAD_TRAITS[instrument];
@@ -887,11 +927,16 @@ export function composeLead(ctx: Ctx): BeatNote[] {
   const beatsPerBar = timing.beatsPerBar;
   // The tune keeps to a compass measured from its own centre, and the centre
   // is measured from the tonic: in another key the ladder below is the same
-  // ladder transposed, and so is every note chosen on it.
+  // ladder transposed, and so is every note chosen on it. The compass is the
+  // one the instrument has around its own sweet spot; in a key that puts the
+  // tonic elsewhere its ends may lie a few semitones past the instrument's
+  // range, and the notes out there are played an octave nearer (`playable`).
   const baseCentre = leadCentre(ctx);
-  const compassLow = Math.max(trait.low, baseCentre - TUNE_BELOW);
-  const compassHigh = Math.min(trait.high, baseCentre + TUNE_ABOVE);
+  const compass = tuneCompass(instrument, style, hints?.register);
+  const compassLow = baseCentre - compass.below;
+  const compassHigh = baseCentre + compass.above;
   const ladder = scaleLadder(key, compassLow, compassHigh);
+  const playable = (midi: number) => foldIntoRange(midi, trait.low, trait.high);
   if (ladder.length < 5) return [];
   const top = ladder.length - 1;
   const octave = key.pcs.length;
@@ -996,6 +1041,39 @@ export function composeLead(ctx: Ctx): BeatNote[] {
     return best;
   };
 
+  /**
+   * Where a note of `len` beats starting at `beat` has to agree with the
+   * harmony: at its own start, or — tied over a strong beat — from that beat
+   * on (the push before it is an anticipation).
+   */
+  const holdOf = (beat: number, len: number) => {
+    const step = mod(Math.round(beat * 4), 16);
+    const steps = Math.round(len * 4);
+    const tied =
+      step % grid !== 0 &&
+      Math.floor((step + steps - 1) / grid) > Math.floor(step / grid);
+    const chordBeat = tied
+      ? Math.floor(beat / beatsPerBar) * beatsPerBar +
+        ((Math.floor(step / grid) + 1) * grid) / 4
+      : beat;
+    return { tied, chordBeat, held: len - (chordBeat - beat) };
+  };
+  /** whether a note, sounding for `len` beats, rests on the chord it is held over (a chord tone, or its ninth) */
+  const rests = (note: Draft, len: number): boolean => {
+    const hold = holdOf(note.beat, len);
+    return strongPcs(hold.chordBeat, true, hold.held).includes(
+      mod(ladder[note.index], 12),
+    );
+  };
+  /**
+   * The least a tune that plays alone is thinned to: the notes of a tune
+   * written at SOLO_DENSITY, or all of its own if it is sparser than that.
+   */
+  const soloActivity = Math.min(
+    1,
+    (0.6 + 8 * SOLO_DENSITY) / (0.6 + 8 * homeDensity),
+  );
+
   /* ---- motifs per section family ---- */
   const motifs = new Map<string, Motif>();
   const motifFor = (type: SectionType): Motif => {
@@ -1030,15 +1108,27 @@ export function composeLead(ctx: Ctx): BeatNote[] {
     return motif;
   };
 
-  /** a note a semitone above a chord tone that is not itself in the chord (the classic avoid note) */
-  const rubs = (index: number, beat: number): boolean => {
+  /**
+   * How a note grates against the chord sounding at `beat`: -1 when it lies
+   * a semitone above a chord tone without being one itself (the classic avoid
+   * note, which resolves down a step), +1 when it is the minor third over a
+   * chord that has a major one — a false relation with the accompaniment
+   * even where the scale owns the note, like D-sharp over C major in E
+   * harmonic minor (it resolves up into that third) — and 0 when it does not.
+   */
+  const clash = (index: number, beat: number): number => {
     const chord = harmony.at(beat).chord;
     const pitch = mod(ladder[index], 12);
-    return (
-      !chord.pitchClasses.includes(pitch) &&
-      chord.pitchClasses.includes(mod(pitch - 1, 12))
-    );
+    if (chord.pitchClasses.includes(pitch)) return 0;
+    if (chord.pitchClasses.includes(mod(pitch - 1, 12))) return -1;
+    return pitch === mod(chord.root + 3, 12) &&
+      chord.pitchClasses.includes(mod(chord.root + 4, 12))
+      ? 1
+      : 0;
   };
+  /** an avoid note: it may pass, but not be held or accented against the chord */
+  const rubs = (index: number, beat: number): boolean =>
+    clash(index, beat) !== 0;
 
   /**
    * A note that cannot stand against the chord as an accent: an avoid note,
@@ -1056,6 +1146,136 @@ export function composeLead(ctx: Ctx): BeatNote[] {
       !key.inScale[raised] &&
       !(key.pcs.length < 7 && key.parent[raised])
     );
+  };
+
+  /**
+   * Move a structural note to the nearest note of its chord that stands
+   * neither a tritone nor more than an octave from either neighbour, looking
+   * first on the side of `toward`. False where the chord has no such note.
+   */
+  const relocate = (
+    note: Draft,
+    toward: number,
+    neighbours: (Draft | undefined)[],
+  ): boolean => {
+    const tones = strongPcs(note.beat, false, note.len);
+    for (let distance = 1; distance <= octave; distance++)
+      for (const offset of [toward * distance, -toward * distance]) {
+        const moved = note.index + offset;
+        if (
+          moved < 0 ||
+          moved > top ||
+          !tones.includes(mod(ladder[moved], 12)) ||
+          neighbours.some((other) => {
+            if (!other || other.midi !== undefined) return false;
+            // (nor a leap wider than an octave in place of the tritone)
+            const leap = Math.abs(ladder[moved] - ladder[other.index]);
+            return leap === 6 || leap > 12;
+          })
+        )
+          continue;
+        note.index = moved;
+        return true;
+      }
+    return false;
+  };
+
+  /**
+   * No melodic tritones: where `notes[at]` stands an augmented fourth from
+   * the note before it, the weaker of the two gives way by a step, or a
+   * structural note moves to another note of its chord (the later one first;
+   * a cadence note stays where the cadence put it). With `careful` a passing
+   * note only moves where it will not grate against the chord.
+   */
+  const clearTritone = (notes: Draft[], at: number, careful = false) => {
+    const note = notes[at];
+    const before = notes[at - 1];
+    if (!before || note.midi !== undefined || before.midi !== undefined) return;
+    const interval = ladder[note.index] - ladder[before.index];
+    if (Math.abs(interval) !== 6) return;
+    const toward = -Math.sign(interval);
+    const free = (moved: number, beat: number) =>
+      !careful || !rubs(moved, beat);
+    if (!note.strong && free(bound(note.index + toward), note.beat))
+      note.index = bound(note.index + toward);
+    else if (
+      !before.strong &&
+      at > 1 &&
+      free(bound(before.index - toward), before.beat) &&
+      Math.abs(
+        ladder[bound(before.index - toward)] - ladder[notes[at - 2].index],
+      ) !== 6
+    )
+      before.index = bound(before.index - toward);
+    else if (
+      !(note.strong && !note.cadence) ||
+      !relocate(note, toward, [before, notes[at + 1]])
+    ) {
+      if (at > 1 && before.strong && !before.cadence)
+        relocate(before, -toward, [notes[at - 2], note]);
+    }
+  };
+
+  /** held long enough to be heard as a note of its own, at the tempo the tune was written for */
+  const isHeld = (len: number) => len >= 1 || len * homeBeatSeconds >= 0.42;
+
+  /**
+   * Avoid notes: a passing note that grates against the chord (see `clash`)
+   * may pass, but it may not be held or accented — unless it leans by step
+   * into the chord tone it belongs to before it outstays its welcome, the
+   * oldest sigh in music. Otherwise it moves to the neighbouring step that
+   * does not grate. How long "held" is, is judged at the tempo the tune was
+   * written for: playing it a little faster or slower does not rewrite it.
+   */
+  const settleAvoidNotes = (notes: Draft[]) => {
+    for (let i = 1; i < notes.length; i++) {
+      const note = notes[i];
+      const accented = Math.round(note.beat * 4) % 8 === 0;
+      if (
+        note.strong ||
+        note.midi !== undefined ||
+        !(isHeld(note.len) || accented)
+      )
+        continue;
+      const leans = clash(note.index, note.beat);
+      if (!leans) continue;
+      const next = notes[i + 1];
+      // (by a real step: two rungs of a pentatonic ladder can lie a third apart)
+      const resolves =
+        !!next &&
+        next.index === note.index + leans &&
+        Math.abs(ladder[next.index] - ladder[note.index]) <= 2 &&
+        next.beat - (note.beat + note.len) < 0.26 &&
+        harmony
+          .at(next.beat)
+          .chord.pitchClasses.includes(mod(ladder[next.index], 12));
+      // (only the note from above may lean: a minor third held against the
+      // chord's major one is a false relation however it goes on)
+      if (
+        resolves &&
+        leans < 0 &&
+        note.len * homeBeatSeconds <= 0.95 &&
+        note.len <= 1.5
+      )
+        continue;
+      const toward = next
+        ? Math.sign(next.index - note.index) || note.turn
+        : note.turn;
+      const before = notes[i - 1];
+      // rather a new pitch than a repeat of a neighbour, and never a tritone
+      const cost = (index: number) =>
+        (index === before.index || (!!next && index === next.index) ? 1 : 0) +
+        (Math.abs(ladder[index] - ladder[before.index]) === 6 ||
+        (!!next && Math.abs(ladder[index] - ladder[next.index]) === 6)
+          ? 2
+          : 0);
+      const options = [note.index + toward, note.index - toward]
+        .filter(
+          (index) => index >= 0 && index <= top && !rubs(index, note.beat),
+        )
+        .sort((a, b) => cost(a) - cost(b));
+      if (options.length) note.index = options[0];
+    }
   };
 
   const cadenceTarget = (
@@ -1111,6 +1331,17 @@ export function composeLead(ctx: Ctx): BeatNote[] {
   const composeSection = (section: SectionPlan): Draft[] => {
     const motif = motifFor(section.type);
     const family = MOTIF_FAMILY[section.type];
+    // Where no layer holds the harmony under it (see planLayers in
+    // compose.ts) the tune is all there is. It is then never thinned below a
+    // sparse tune's own density, whatever a hint asks for, and it carries
+    // every bar itself (see `carry`).
+    const alone =
+      !ctx.plays.comp[section.index] &&
+      !ctx.plays.pad[section.index] &&
+      !ctx.plays.arp[section.index];
+    const activity = alone
+      ? Math.max(traits.activity, soloActivity)
+      : traits.activity;
     const lift =
       section.type === "chorus" || section.type === "build"
         ? chorusLift
@@ -1265,6 +1496,14 @@ export function composeLead(ctx: Ctx): BeatNote[] {
             ladder[left] + 9 * Math.sign(ladder[anchor] - ladder[left]),
             firstTones,
           );
+        // and not a tritone from the note the phrase before came to rest on
+        const rested = notes.length ? -1 : (leftBy?.index ?? -1);
+        if (rested >= 0 && Math.abs(ladder[anchor] - ladder[rested]) === 6) {
+          const clear = firstTones.filter(
+            (pc) => mod(pc - ladder[rested], 12) !== 6,
+          );
+          if (clear.length) anchor = nearestTone(ladder[anchor], clear);
+        }
         let previous = anchor;
         let previousDegree = picked[0].degree;
         picked.forEach((note, k) => {
@@ -1330,27 +1569,27 @@ export function composeLead(ctx: Ctx): BeatNote[] {
         landing: boolean,
       ) => {
         const count = pattern.length;
-        // a tune asked to be sparser than written keeps the frame of the walk:
-        // where it starts, its strongest beats and where it lands
+        // A tune asked to be sparser than written keeps the frame of the walk:
+        // where it starts, its strongest beats and where it lands. Its notes
+        // are ranked together with those of the motif, on the one scale of
+        // importance, so that the passing notes of the motif go before the
+        // downbeat of the ending does.
         const from = pattern.map(() => 0);
-        pattern
-          .map(([step], k) => ({
-            k,
-            salience:
-              landing && k === count - 1
-                ? Infinity
-                : (k === 0 ? 2 : 0) +
-                  metricWeight(step) +
-                  0.5 *
-                    hashUnit(
-                      rng.seed,
-                      `ending:${family}:${p % 2}:keep:${step}`,
-                    ),
-          }))
-          .sort((a, b) => a.salience - b.salience)
-          .forEach((item, rank) => {
-            from[item.k] = rank === count - 1 ? 0 : 1 - (rank + 0.5) / count;
-          });
+        const own = pattern.map(([step, len], k) =>
+          landing && k === count - 1
+            ? Infinity
+            : salienceOf(k === 0 || step % grid === 0 || len >= 6, step, len) +
+              0.5 *
+                hashUnit(rng.seed, `ending:${family}:${p % 2}:keep:${step}`),
+        );
+        const all = motif.saliences.length + count;
+        own.forEach((salience, k) => {
+          if (!Number.isFinite(salience)) return;
+          const rank =
+            motif.saliences.filter((other) => other < salience).length +
+            own.filter((other) => other < salience).length;
+          from[k] = 1 - (rank + 0.5) / all;
+        });
         pattern.forEach(([step, len], k) => {
           const beat = bar * beatsPerBar + step / 4;
           const distance = landing ? count - 1 - k : count - k;
@@ -1509,19 +1748,7 @@ export function composeLead(ctx: Ctx): BeatNote[] {
       for (let i = 1; i < notes.length; i++) {
         const note = notes[i];
         const before = notes[i - 1];
-        const interval = ladder[note.index] - ladder[before.index];
-        // no melodic tritones
-        if (Math.abs(interval) === 6) {
-          const toward = -Math.sign(interval);
-          if (!note.strong) note.index = bound(note.index + toward);
-          else if (!before.strong && i > 1)
-            before.index = bound(before.index - toward);
-          else if (!note.cadence) {
-            const moved = snap(note.index + toward, note.beat, toward);
-            if (Math.abs(ladder[moved] - ladder[before.index]) !== 6)
-              note.index = moved;
-          }
-        }
+        clearTritone(notes, i);
         // a leap is answered by a step in the other direction
         const next = notes[i + 1];
         const leap = ladder[note.index] - ladder[before.index];
@@ -1562,41 +1789,9 @@ export function composeLead(ctx: Ctx): BeatNote[] {
           moved >= 0 && moved <= top ? moved : bound(note.index - note.turn);
       }
 
-      // avoid notes: a passing note a semitone above a chord tone grates as soon as it is held
-      for (let i = 1; i < notes.length; i++) {
-        const note = notes[i];
-        // (how long "held" is, is judged at the tempo the tune was written for:
-        // playing it a little faster or slower does not rewrite it)
-        const seconds = note.len * homeBeatSeconds;
-        const accented = Math.round(note.beat * 4) % 8 === 0;
-        const held = note.len >= 1 || seconds >= 0.42;
-        if (note.strong || !(held || accented) || !rubs(note.index, note.beat))
-          continue;
-        const next = notes[i + 1];
-        // an appoggiatura that leans down a step into a chord tone is the oldest
-        // sigh in music; it only has to resolve before it outstays its welcome
-        const resolves =
-          !!next &&
-          next.index === note.index - 1 &&
-          next.beat - (note.beat + note.len) < 0.26 &&
-          harmony
-            .at(next.beat)
-            .chord.pitchClasses.includes(mod(ladder[next.index], 12));
-        if (resolves && seconds <= 0.95 && note.len <= 1.5) continue;
-        const toward = next
-          ? Math.sign(next.index - note.index) || note.turn
-          : note.turn;
-        const before = notes[i - 1];
-        // rather a new pitch than a repeat of a neighbour
-        const repeats = (index: number) =>
-          index === before.index || (!!next && index === next.index) ? 1 : 0;
-        const options = [note.index + toward, note.index - toward]
-          .filter(
-            (index) => index >= 0 && index <= top && !rubs(index, note.beat),
-          )
-          .sort((a, b) => repeats(a) - repeats(b));
-        if (options.length) note.index = options[0];
-      }
+      settleAvoidNotes(notes);
+      // (a note that moved out of the chord's way must not have moved into a tritone)
+      for (let i = 1; i < notes.length; i++) clearTritone(notes, i, true);
 
       laid.push({ notes, units });
       leftBy = notes[notes.length - 1] ?? leftBy;
@@ -1631,6 +1826,75 @@ export function composeLead(ctx: Ctx): BeatNote[] {
       }
     }
 
+    // a phrase does not open a tritone away from the note the one before it
+    // (or the section before) closed on, whatever the passes above have moved
+    laid.forEach((phrase, p) => {
+      const first = phrase.notes[0];
+      const closed =
+        p > 0
+          ? laid[p - 1].notes[laid[p - 1].notes.length - 1]
+          : lastOf.get(section.index - 1);
+      if (
+        first &&
+        closed &&
+        Math.abs(ladder[first.index] - ladder[closed.index]) === 6
+      )
+        relocate(first, Math.sign(closed.index - first.index), [
+          closed,
+          phrase.notes[1],
+        ]);
+    });
+
+    /**
+     * A tune that plays alone carries the music by itself. Every bar gets a
+     * note of it — a bar the tune leaves empty is given the nearest note of
+     * its chord on the downbeat — and every note rings on until a breath
+     * before the next one, so that nothing is ever left to silence for long.
+     */
+    const carry = (line: Draft[]): Draft[] => {
+      const first = section.startBar * beatsPerBar;
+      const end = first + bars * beatsPerBar;
+      const out = line.slice().sort((a, b) => a.beat - b.beat);
+      for (let bar = 0; bar < bars; bar++) {
+        const start = first + bar * beatsPerBar;
+        if (
+          out.some(
+            (note) =>
+              note.beat >= start - 1e-6 &&
+              note.beat < start + beatsPerBar - 1e-6,
+          )
+        )
+          continue;
+        let at = out.findIndex((note) => note.beat >= start);
+        if (at < 0) at = out.length;
+        const before = out[at - 1];
+        const phrase = Math.floor(bar / 4);
+        out.splice(at, 0, {
+          beat: start,
+          len: beatsPerBar,
+          index: snap(
+            before ? before.index : nearestIndex(ladder, centre),
+            start,
+            -1,
+            false,
+            beatsPerBar,
+          ),
+          strong: true,
+          turn: 1,
+          position: (bar - phrase * 4) / Math.min(4, bars - phrase * 4),
+          section: section.index,
+          phrase,
+          from: 0,
+        });
+      }
+      out.forEach((note, i) => {
+        const next = out[i + 1]?.beat ?? end;
+        if (next - (note.beat + note.len) > SOLO_BREATH)
+          note.len = next - note.beat - SOLO_BREATH;
+      });
+      return out;
+    };
+
     /**
      * The phrase as it is played: busier or sparser than written. Notes are
      * only ever added to the written phrase or taken away from it; a note
@@ -1643,10 +1907,10 @@ export function composeLead(ctx: Ctx): BeatNote[] {
       const phraseBeat = (section.startBar + notes[0].phrase * 4) * beatsPerBar;
       const phraseBeats = Math.min(4, bars - notes[0].phrase * 4) * beatsPerBar;
       // busier: passing notes split the longest notes, in the motif's own order
-      if (traits.activity > 1)
+      if (activity > 1)
         for (const unit of phrase.units)
           for (const extra of motif.added) {
-            if (extra.from > traits.activity) break;
+            if (extra.from > activity) break;
             if (extra.step < unit.fromStep || extra.step >= unit.toStep)
               continue;
             const beat =
@@ -1682,7 +1946,10 @@ export function composeLead(ctx: Ctx): BeatNote[] {
                   Math.abs(ladder[index] - ladder[next.index]) === 6) ||
                 (rubs(index, beat) &&
                   (Math.round(beat * 4) % 4 === 0 ||
-                    parent.beat + parent.len - beat >= 1));
+                    isHeld(parent.beat + parent.len - beat) ||
+                    // (a note that is only there at this tempo is judged at this tempo)
+                    (parent.beat + parent.len - beat) * timing.beatSeconds >=
+                      0.42));
               if (awkward) index = parent.index;
             }
             const end = parent.beat + parent.len;
@@ -1701,48 +1968,89 @@ export function composeLead(ctx: Ctx): BeatNote[] {
           }
       // sparser: the least important notes go first, and the note before rings
       // on through them. Sixteenths too short to speak go at any activity.
-      const kept: Draft[] = [];
-      for (const note of notes) {
-        const unplayable =
-          traits.coarse &&
+      const goes = (note: Draft) =>
+        note.from > activity ||
+        (traits.coarse &&
           note.from > 0 &&
           !note.cadence &&
-          Math.round(note.beat * 4) % 2 === 1;
-        if (note.from <= traits.activity && !unplayable) {
+          Math.round(note.beat * 4) % 2 === 1);
+      const adjoins = (earlier: Draft, later: Draft) =>
+        !earlier.cadence &&
+        Math.abs(earlier.beat + earlier.len - later.beat) < 1e-6;
+      const grownLength = (earlier: Draft, extra: number) =>
+        Math.min(earlier.len + extra, Math.max(earlier.len, 2));
+      const kept: Draft[] = [];
+      let thinned = false;
+      for (const note of notes) {
+        if (!goes(note)) {
           kept.push(note);
           continue;
         }
+        thinned = true;
         const before = kept[kept.length - 1];
+        if (!before || !adjoins(before, note)) continue;
+        // An ornament goes before the note it leads to. Where the note before
+        // is a passing note that would be left holding a pitch foreign to the
+        // chord, and this one rests on the chord, the passing note is the one
+        // to go and this note stays where it was written.
+        const length = grownLength(before, note.len);
         if (
-          before &&
-          !before.cadence &&
-          Math.abs(before.beat + before.len - note.beat) < 1e-6
+          kept.length > 1 &&
+          !before.strong &&
+          before.midi === undefined &&
+          isHeld(length) &&
+          !rests(before, length) &&
+          rests(note, note.len)
         ) {
-          before.len = Math.min(before.len + note.len, Math.max(before.len, 2));
-          before.grown = true;
+          kept.pop();
+          const earlier = kept[kept.length - 1];
+          if (adjoins(earlier, before)) {
+            earlier.len = grownLength(earlier, before.len);
+            earlier.grown = true;
+          }
+          kept.push(note);
+          continue;
         }
+        before.len = length;
+        before.grown = true;
       }
-      // a passing note left long, or tied over a strong beat, now carries the line there
-      for (const note of kept) {
-        if (!note.grown || note.strong) continue;
-        const step = mod(Math.round(note.beat * 4), 16);
-        const steps = Math.round(note.len * 4);
-        const tied =
-          step % grid !== 0 &&
-          Math.floor((step + steps - 1) / grid) > Math.floor(step / grid);
-        if (steps < long && !tied) continue;
-        const chordBeat = tied
-          ? Math.floor(note.beat / beatsPerBar) * beatsPerBar +
-            ((Math.floor(step / grid) + 1) * grid) / 4
-          : note.beat;
-        const held = note.len - (chordBeat - note.beat);
-        if (
-          !strongPcs(chordBeat, true, held).includes(
-            mod(ladder[note.index], 12),
-          )
-        )
-          note.index = snap(note.index, chordBeat, note.turn, true, held);
-        note.strong = true;
+      if (thinned) {
+        // What remains is resolved again, as the written phrase was. A passing
+        // note that now rings on through the notes after it either still
+        // leans by step into a note of the chord, or settles on the chord
+        // itself; left long, or tied over a strong beat, it carries the line
+        // there and has to be a note of the chord.
+        kept.forEach((note, i) => {
+          if (!note.grown || note.strong || note.midi !== undefined) return;
+          const hold = holdOf(note.beat, note.len);
+          const carries = Math.round(note.len * 4) >= long || hold.tied;
+          if (!carries && !isHeld(note.len)) return;
+          if (!rests(note, note.len)) {
+            const next = kept[i + 1];
+            const leans =
+              !carries &&
+              !!next &&
+              Math.abs(next.index - note.index) === 1 &&
+              Math.abs(ladder[next.index] - ladder[note.index]) <= 2 &&
+              next.beat - (note.beat + note.len) < 0.26 &&
+              rests(next, next.len);
+            if (!leans)
+              note.index = snap(
+                note.index,
+                hold.chordBeat,
+                next
+                  ? Math.sign(next.index - note.index) || note.turn
+                  : note.turn,
+                true,
+                hold.held,
+              );
+          }
+          if (carries) note.strong = true;
+        });
+        // no leap of a tritone across the gaps, no avoid note left holding
+        for (let i = 1; i < kept.length; i++) clearTritone(kept, i);
+        settleAvoidNotes(kept);
+        for (let i = 1; i < kept.length; i++) clearTritone(kept, i, true);
       }
       if (kept.length) kept[0].phraseStart = true;
       return kept;
@@ -1758,9 +2066,11 @@ export function composeLead(ctx: Ctx): BeatNote[] {
         const room = next ? next.beat - note.beat : note.len;
         note.len = Math.max(note.len, Math.min(room, trait.sustain ? 3 : 2));
       });
-      return kept;
+      // (the notes that stood between them are gone: no tritone across the gap)
+      for (let i = 1; i < kept.length; i++) clearTritone(kept, i, true);
+      return alone ? carry(kept) : kept;
     }
-    return played;
+    return alone ? carry(played) : played;
   };
 
   const drafts: Draft[] = [];
@@ -1804,28 +2114,42 @@ export function composeLead(ctx: Ctx): BeatNote[] {
     if (first < 0 && !timing.loop) return;
     // the pickup comes from the side the line is already on
     const drop = previous ? ladder[note.index] - ladder[previous.index] : 0;
-    const fromBelow = drop > 4 ? true : drop < -4 ? false : side < 0.62;
-    for (let k = count; k >= 1; k--) {
-      const beat = mod(note.beat - k * 0.5, totalBeats);
-      let index = note.index + (fromBelow ? -k : k);
-      if (index < 0 || index > top) return;
-      // a phrase that starts off the beat puts its pickup on the beat: there it must be a chord tone
-      const accented = Math.round(beat * 4) % 8 === 0;
-      if (accented) index = snap(index, beat, fromBelow ? -1 : 1, true, 0.5);
-      if (previous && Math.abs(ladder[index] - ladder[previous.index]) > 12)
-        return;
-      pickups.push({
-        beat,
-        len: 0.5,
-        index,
-        strong: accented,
-        turn: 1,
-        position: 0,
-        section: note.section,
-        phrase: note.phrase,
-        from: 0,
-      });
-    }
+    const wantsBelow = drop > 4 ? true : drop < -4 ? false : side < 0.62;
+    /** the pickup notes from one side, or nothing where they would leap awkwardly */
+    const lead = (fromBelow: boolean): Draft[] | undefined => {
+      const line: Draft[] = [];
+      for (let k = count; k >= 1; k--) {
+        const beat = mod(note.beat - k * 0.5, totalBeats);
+        let index = note.index + (fromBelow ? -k : k);
+        if (index < 0 || index > top) return undefined;
+        // a phrase that starts off the beat puts its pickup on the beat: there it must be a chord tone
+        const accented = Math.round(beat * 4) % 8 === 0;
+        if (accented) index = snap(index, beat, fromBelow ? -1 : 1, true, 0.5);
+        // not more than an octave from the note the line has just left, and never a tritone
+        const from = line.length
+          ? line[line.length - 1].index
+          : previous?.index;
+        const leap =
+          from === undefined ? 0 : Math.abs(ladder[index] - ladder[from]);
+        if (leap === 6 || (!line.length && leap > 12)) return undefined;
+        line.push({
+          beat,
+          len: 0.5,
+          index,
+          strong: accented,
+          turn: 1,
+          position: 0,
+          section: note.section,
+          phrase: note.phrase,
+          from: 0,
+        });
+      }
+      const last = line[line.length - 1];
+      return Math.abs(ladder[last.index] - ladder[note.index]) === 6
+        ? undefined
+        : line;
+    };
+    pickups.push(...(lead(wantsBelow) ?? lead(!wantsBelow) ?? []));
   });
   drafts.push(...pickups);
   drafts.sort((a, b) => a.beat - b.beat);
@@ -1878,17 +2202,14 @@ export function composeLead(ctx: Ctx): BeatNote[] {
    * Chord-scale inflection for passing notes: when the chord holds a note
    * foreign to the key (a borrowed bVI, the third of a secondary dominant, the
    * leading tone of V in minor), the scale degree it alters follows the chord,
-   * so the line says A-flat over an A-flat chord and G-sharp over E7. Where
-   * the altered note would stand an augmented second from its neighbour (F to
-   * G-sharp), the unaltered one is no way out either — it would be held
-   * against the chord's own third — so the note gives way to a chord tone.
+   * so the line says A-flat over an A-flat chord and G-sharp over E7.
+   * `alteration` is the pitch a note would take that way (its own when the
+   * chord leaves its degree alone).
    */
-  const inflect = (
-    note: Draft,
-    before: Draft | undefined,
-    after: Draft | undefined,
-  ): number => {
+  const alteration = (note: Draft): number => {
+    if (note.midi !== undefined) return note.midi;
     const natural = ladder[note.index];
+    if (note.strong) return natural;
     const chord = harmony.at(note.beat).chord;
     const pitch = mod(natural, 12);
     if (chord.pitchClasses.includes(pitch)) return natural;
@@ -1911,52 +2232,76 @@ export function composeLead(ctx: Ctx): BeatNote[] {
             tone === 10 ||
             (tone === 9 && diminished);
       const shift = lowers ? -1 : 1;
-      if (pitch !== mod(foreign - shift, 12)) continue;
-      const candidate = natural + shift;
-      // not outside the instrument, and not at the price of an augmented
-      // second against a neighbouring scale step
-      const awkward =
-        candidate < trait.low ||
-        candidate > trait.high ||
-        [before, after].some(
-          (other) =>
-            !!other &&
-            other.midi === undefined &&
-            Math.abs(other.index - note.index) === 1 &&
-            Math.abs(ladder[other.index] - candidate) === 3,
-        );
-      if (!awkward) return candidate;
-      // the nearest note of the scale that belongs to the chord, on the side the line is moving to
-      const toward = after
-        ? Math.sign(after.index - note.index)
-        : before
-          ? Math.sign(note.index - before.index)
-          : 0;
-      const pcs = chord.pitchClasses.filter((pc) => key.inScale[pc]);
-      if (!pcs.length) return natural;
-      let best = note.index;
-      let cost = Infinity;
-      for (
-        let index = Math.max(0, note.index - octave);
-        index <= Math.min(top, note.index + octave);
-        index++
-      ) {
-        if (!pcs.includes(mod(ladder[index], 12))) continue;
-        const repeats =
-          (!!before && before.index === index) ||
-          (!!after && after.index === index);
-        const value =
-          Math.abs(index - note.index) +
-          (Math.sign(index - note.index) === toward ? 0 : 0.5) +
-          (repeats ? 0.75 : 0);
-        if (value < cost) {
-          cost = value;
-          best = index;
-        }
-      }
-      return ladder[best];
+      if (pitch === mod(foreign - shift, 12)) return natural + shift;
     }
     return natural;
+  };
+  /**
+   * The pitch a passing note sounds at. Where the altered note would stand an
+   * augmented second from its neighbour (F to G-sharp) or a tritone from the
+   * note before or after it, the unaltered one is no way out either — it
+   * would be held against the chord's own third — so the note gives way to a
+   * chord tone. `sounded` is the pitch the note before it was given.
+   */
+  const inflect = (
+    note: Draft,
+    before: Draft | undefined,
+    after: Draft | undefined,
+    sounded: number | undefined,
+  ): number => {
+    const natural = ladder[note.index];
+    const candidate = alteration(note);
+    if (candidate === natural) return natural;
+    const chord = harmony.at(note.beat).chord;
+    const around = [sounded, after ? alteration(after) : undefined];
+    const tritone = (midi: number) =>
+      around.some(
+        (other) => other !== undefined && Math.abs(other - midi) === 6,
+      );
+    // not outside the tune's compass (the same test in every key), and
+    // not at the price of an augmented second against a neighbouring step
+    const awkward =
+      candidate < compassLow ||
+      candidate > compassHigh ||
+      tritone(candidate) ||
+      [before, after].some(
+        (other) =>
+          !!other &&
+          other.midi === undefined &&
+          Math.abs(other.index - note.index) === 1 &&
+          Math.abs(ladder[other.index] - candidate) === 3,
+      );
+    if (!awkward) return candidate;
+    // the nearest note of the scale that belongs to the chord, on the side the line is moving to
+    const toward = after
+      ? Math.sign(after.index - note.index)
+      : before
+        ? Math.sign(note.index - before.index)
+        : 0;
+    const pcs = chord.pitchClasses.filter((pc) => key.inScale[pc]);
+    if (!pcs.length) return natural;
+    let best = note.index;
+    let cost = Infinity;
+    for (
+      let index = Math.max(0, note.index - octave);
+      index <= Math.min(top, note.index + octave);
+      index++
+    ) {
+      if (!pcs.includes(mod(ladder[index], 12))) continue;
+      const repeats =
+        (!!before && before.index === index) ||
+        (!!after && after.index === index);
+      const value =
+        Math.abs(index - note.index) +
+        (Math.sign(index - note.index) === toward ? 0 : 0.5) +
+        (repeats ? 0.75 : 0) +
+        (tritone(ladder[index]) ? 2 : 0);
+      if (value < cost) {
+        cost = value;
+        best = index;
+      }
+    }
+    return ladder[best];
   };
 
   /* ---- chromatic lower-neighbour grace notes before accented notes ---- */
@@ -1980,8 +2325,14 @@ export function composeLead(ctx: Ctx): BeatNote[] {
       const room = gap >= graceLength - 1e-6 || before.len >= graceLength * 2;
       if (!room || before.beat >= note.beat - graceLength + 1e-6) continue;
       if (ladder[note.index] - 1 < compassLow) continue;
-      // a grace note belongs to a line that is already close by, not to a leap
-      if (Math.abs(ladder[note.index] - ladder[before.index]) > 7) continue;
+      // a grace note belongs to a line that is already close by, not to a
+      // leap — least of all to the tritone it would itself make with the note before
+      const leap = Math.abs(ladder[note.index] - ladder[before.index]);
+      if (
+        leap > 7 ||
+        Math.abs(ladder[note.index] - 1 - ladder[before.index]) === 6
+      )
+        continue;
       const dice = rng.fork(
         `grace:${sections[note.section].type}:${note.phrase}:${placeOf(note)}`,
       );
@@ -2009,6 +2360,8 @@ export function composeLead(ctx: Ctx): BeatNote[] {
     ? 0
     : (def.tremolo ?? 0) * (0.55 + 0.45 * complexity);
   const notes: BeatNote[] = [];
+  /** the pitch the note before was given */
+  let sounded: number | undefined;
   ornamented.forEach((note, i) => {
     const section = sections[note.section];
     const energy = energyAtBar(section, Math.floor(note.beat / beatsPerBar));
@@ -2024,7 +2377,8 @@ export function composeLead(ctx: Ctx): BeatNote[] {
       note.midi ??
       (note.strong
         ? ladder[note.index]
-        : inflect(note, ornamented[i - 1], next));
+        : inflect(note, ornamented[i - 1], next, sounded));
+    sounded = midi;
     const onBeat = note.beat % 1 === 0;
     const accent = note.strong ? 0.07 : onBeat ? 0.03 : 0;
     const arc = 0.05 * Math.sin(Math.PI * clamp(note.position, 0, 1));
@@ -2034,7 +2388,8 @@ export function composeLead(ctx: Ctx): BeatNote[] {
       0.18,
       1,
     );
-    const out: BeatNote = { beat: note.beat, len, midi, vel };
+    const out: BeatNote = { beat: note.beat, len, midi: playable(midi), vel };
+    written?.push({ beat: note.beat, midi: out.midi });
     // decorations are keyed by the note's place in its phrase, like everything else
     const place = `${section.type}:${note.phrase}:${placeOf(note)}`;
     if (trait.bend > 0 && len >= 0.5 && (note.strong || note.cadence)) {
@@ -2069,7 +2424,7 @@ export function composeLead(ctx: Ctx): BeatNote[] {
         const struck: BeatNote = {
           beat: note.beat + k * stroke,
           len: last ? len - k * stroke : stroke,
-          midi,
+          midi: out.midi,
           vel: clamp(k === 0 ? vel : vel * swell, 0.12, 1),
         };
         if (k === 0 && out.bend !== undefined) struck.bend = out.bend;

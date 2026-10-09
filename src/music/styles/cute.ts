@@ -7,7 +7,7 @@ import type { StyleDef } from "./types";
  */
 export const cute: StyleDef = {
   id: "cute",
-  summary: "跳音马林巴配弦乐拨奏的“嘣嚓”伴奏，八音盒点缀，半音装饰音和木鱼带来俏皮感",
+  summary: "跳音马林巴配弦乐拨奏的「嘣嚓」伴奏，八音盒点缀，半音装饰音和木鱼带来俏皮感",
   harmony: {
     modes: {
       major: [

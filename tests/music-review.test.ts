@@ -223,6 +223,46 @@ test("no setting leaves a section empty: every style × energy × every switched
   );
 });
 
+test("everything switched off and the sparsest tune asked for: still no hole in the music", () => {
+  // the one hint set that used to leave a lone tune resting for a bar and a
+  // half at a time (3 s at 140 BPM): compose() returned what scoreProblems() rejects
+  const arrangement: ArrangementHints = {
+    drums: "none",
+    bass: "none",
+    layers: { pad: false, arp: false, counter: false, perc: false },
+    melody: { density: 0, register: "low" },
+  };
+  let alone = 0;
+  for (const style of STYLE_IDS)
+    for (const energy of [0, 0.1, 0.3, 0.6])
+      for (const [loop, duration] of [
+        [true, 30],
+        [false, 60],
+        [false, 120],
+      ] as [boolean, number][])
+        for (const seed of [11, 4057, 90210]) {
+          const cfg = config(style, {
+            loop,
+            duration,
+            seed,
+            energy,
+            arrangement,
+          });
+          const score = compose(cfg);
+          const what = `${style} loop=${loop} ${duration} s energy ${energy} seed ${seed}`;
+          assert.deepEqual(scoreProblems(score, cfg), [], what);
+          const bar = 240 / score.bpm;
+          for (const [from, to] of silences(score))
+            assert.ok(
+              to - from <= bar,
+              `${what}: nothing sounds from ${from.toFixed(1)} to ${to.toFixed(1)} s`,
+            );
+          if (score.parts.length === 1) alone++;
+        }
+  // (the tune is alone only where a style has neither chords nor a pad of its own)
+  assert.ok(alone >= 36, `${alone} pieces were a tune alone`);
+});
+
 test("“quieter, and no pad” on a dreamy piece that ends starts with music, not with 13 s of silence", () => {
   for (const duration of [30, 60, 90, 120])
     for (const energy of [0, 0.05, 0.08, 0.12, 0.15]) {
@@ -268,9 +308,39 @@ test("“quieter, and no pad” on a dreamy piece that ends starts with music, n
 
 /* ---------------- MUS-04: no false relation between the tune and the chord's third ---------------- */
 
+/**
+ * Lead notes of 0.4 s or more that sound a minor third over the root while
+ * the accompaniment sounds the chord's major third for 0.3 s of them.
+ */
+function heldFalseRelations(score: Score): number {
+  const others = noteParts(score).filter((part) => part.role !== "lead");
+  let clashes = 0;
+  for (const note of notesOf(score, "lead")) {
+    if (note.d < 0.4) continue;
+    const middle = note.t + Math.min(note.d / 2, 0.25);
+    const chord = score.chords.find(
+      (item) => middle >= item.start && middle < item.end,
+    );
+    if (!chord || chord.pitchClasses.includes(pc(note.midi))) continue;
+    const third = pc(chord.root + 4);
+    if (pc(note.midi - chord.root) !== 3 || !chord.pitchClasses.includes(third))
+      continue;
+    const against = others.some((part) =>
+      part.notes.some(
+        (other) =>
+          pc(other.midi) === third &&
+          Math.min(other.t + other.d, note.t + note.d) -
+            Math.max(other.t, note.t) >=
+            0.3,
+      ),
+    );
+    if (against) clashes++;
+  }
+  return clashes;
+}
+
 test("the tune never holds the natural form of a note the chord has raised", () => {
-  // a lead note of 0.4 s or more a minor third over the root while the
-  // accompaniment sounds the chord's major third (G over E7 in A minor)
+  // G over E7 in A minor: the chord's third is foreign to the key
   for (const style of [
     "sad",
     "romantic",
@@ -292,36 +362,12 @@ test("the tune never holds the natural form of a note the chord has raised", () 
             duration: s % 2 ? 60 : 30,
           }),
         );
-        const others = noteParts(score).filter((part) => part.role !== "lead");
         for (const chord of score.chords)
           if (
             chord.pitchClasses.some((value) => !score.key.scale.includes(value))
           )
             applied++;
-        for (const note of notesOf(score, "lead")) {
-          if (note.d < 0.4) continue;
-          const middle = note.t + Math.min(note.d / 2, 0.25);
-          const chord = score.chords.find(
-            (item) => middle >= item.start && middle < item.end,
-          );
-          if (!chord || chord.pitchClasses.includes(pc(note.midi))) continue;
-          const third = pc(chord.root + 4);
-          if (
-            pc(note.midi - chord.root) !== 3 ||
-            !chord.pitchClasses.includes(third)
-          )
-            continue;
-          const against = others.some((part) =>
-            part.notes.some(
-              (other) =>
-                pc(other.midi) === third &&
-                Math.min(other.t + other.d, note.t + note.d) -
-                  Math.max(other.t, note.t) >=
-                  0.3,
-            ),
-          );
-          if (against) clashes++;
-        }
+        clashes += heldFalseRelations(score);
       }
     assert.equal(clashes, 0, `${style}: ${clashes} held false relations`);
     if (style === "sad" || style === "jazz" || style === "romantic")
@@ -330,6 +376,46 @@ test("the tune never holds the natural form of a note the chord has raised", () 
         `${style}: only ${applied} chromatic chords to test against`,
       );
   }
+});
+
+test("nor a minor third that belongs to the scale against a chord's major third, in any style or mode", () => {
+  // The same clash where the scale itself owns the note: the leading tone of
+  // a harmonic minor over the major chord on the sixth degree (D-sharp over C
+  // in E minor), the seventh of a major key over a borrowed bVI (B over
+  // A-flat in C major). It is an avoid note like any other: it may pass, not
+  // be held. Every style in its own key, in a major and in a minor one.
+  let exposed = 0;
+  for (const style of STYLE_IDS) {
+    const own = config(style).key;
+    for (const key of new Set([own, "C major", "E minor"])) {
+      let clashes = 0;
+      for (let s = 0; s < 20; s++)
+        for (const loop of [true, false]) {
+          const score = compose(
+            config(style, {
+              key,
+              loop,
+              seed: 247000 + s * 1777,
+              duration: s % 2 ? 60 : 30,
+            }),
+          );
+          clashes += heldFalseRelations(score);
+          // a chord with a major third whose minor third is a note of the scale
+          for (const chord of score.chords)
+            if (
+              chord.pitchClasses.includes(pc(chord.root + 4)) &&
+              score.key.scale.includes(pc(chord.root + 3))
+            )
+              exposed++;
+        }
+      assert.equal(
+        clashes,
+        0,
+        `${style} in ${key}: ${clashes} held false relations`,
+      );
+    }
+  }
+  assert.ok(exposed > 2000, `only ${exposed} chords to test against`);
 });
 
 /* ---------------- MUS-05: endings keep to the mode ---------------- */

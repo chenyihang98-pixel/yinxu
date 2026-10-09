@@ -244,6 +244,14 @@ function downloadFailure(detail) {
   );
 }
 
+/**
+ * A task was submitted (and may be billed) but had not finished when the app
+ * stopped waiting. The music service keeps such a task, so the same button that
+ * fetches a finished result again also resumes the wait - without a new submission.
+ */
+const TASK_RUNNING_ADVICE =
+  "任务已经提交，可能仍在服务商那边运行并计费：点「重新下载」可以继续查询并取回这首音乐，不会再次提交，也不会再次计费。";
+
 /** Resolves after `milliseconds`; rejects with the signal's reason as soon as it aborts. */
 function pause(milliseconds, signal) {
   return new Promise((resolve, reject) => {
@@ -394,4 +402,5 @@ module.exports = {
   assertDownloadUrl,
   downloadAudio,
   DOWNLOAD_ATTEMPTS,
+  TASK_RUNNING_ADVICE,
 };

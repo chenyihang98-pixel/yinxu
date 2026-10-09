@@ -1,11 +1,13 @@
 /**
  * Tempo / length planning and song form.
  *
- * LOOP     bars are a multiple of 4 and the tempo is fitted so the audio is
- *          exactly the requested length (within ±6 %); otherwise the tempo is
- *          kept and the length snaps to an even number of bars. No intro or
- *          outro: A-B / AABA shapes whose last bar turns around into bar 1.
- *          Styles with `form.build` prepare every arrival of B with a build.
+ * LOOP     the tempo is the one asked for. Only where a multiple of four
+ *          bars already lies within ±3 % of it is the tempo bent that little,
+ *          so the audio is exactly the requested length; otherwise the tempo
+ *          is kept to the digit and the length snaps to whole bars (see
+ *          loopBars). No intro or outro: A-B / AABA shapes whose last bar
+ *          turns around into bar 1. Styles with `form.build` prepare every
+ *          arrival of B with a build.
  * NON-LOOP the requested tempo and length are kept exactly; the form is scaled
  *          to the bars that fit and ends on a held final chord with room for
  *          the natural tail.
@@ -35,7 +37,12 @@ export interface Timing {
   endTime: number;
 }
 
-const TEMPO_FIT_TOLERANCE = 0.06;
+/**
+ * How far a loop may bend the tempo to land on the requested length. Small
+ * enough that nobody hears it and that a tempo the user names (or a step of
+ * a few BPM) is what they get: beyond it the length gives way, never the tempo.
+ */
+export const TEMPO_FIT_TOLERANCE = 0.03;
 /** From this tempo up a bar is so short that chords last two bars and phrases eight. */
 export const FAST_TEMPO = 152;
 /** How far a tempo has to move past FAST_TEMPO, away from the style's own side of it, to change sides. */
@@ -54,9 +61,23 @@ export function isFastTempo(bpm: number, style: Pick<StyleDef, "id">): boolean {
   return bpm >= FAST_TEMPO * (home ? 1 - FAST_HYSTERESIS : 1 + FAST_HYSTERESIS);
 }
 
+/**
+ * Bars of a loop that keeps its tempo: the whole bars nearest to the requested
+ * length, an even count at least, and a multiple of four (whole four-bar
+ * phrases) wherever that is no more than one bar from the request. The loop
+ * is therefore never more than one bar longer or shorter than asked for.
+ */
+export function loopBars(duration: number, bpm: number): number {
+  const wanted = (duration * bpm) / 240;
+  const fours = 4 * Math.round(wanted / 4);
+  if (fours >= 4 && Math.abs(fours - wanted) <= 1 + 1e-9) return fours;
+  return Math.max(2, 2 * Math.round(wanted / 2));
+}
+
 export function planTiming(config: MusicConfig, style: StyleDef): Timing {
   const beatsPerBar = 4;
   if (config.loop) {
+    // the multiple of four bars whose tempo comes closest to the one asked for
     let bars = 4;
     let fitted = (240 * bars) / config.duration;
     for (let candidate = 4; candidate <= 512; candidate += 4) {
@@ -77,8 +98,7 @@ export function planTiming(config: MusicConfig, style: StyleDef): Timing {
       bpm = fitted;
       if (Math.abs(fitted - config.bpm) > 0.005) adjusted = "tempo";
     } else {
-      const barSeconds = 240 / config.bpm;
-      bars = Math.max(2, 2 * Math.round(config.duration / barSeconds / 2));
+      bars = loopBars(config.duration, bpm);
       duration = (bars * 240) / bpm;
       if (Math.abs(duration - config.duration) > 0.005) adjusted = "duration";
     }

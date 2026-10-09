@@ -10,13 +10,14 @@ import type {
   TrackName,
 } from "../types";
 import {
+  INSTRUMENT_LIST,
   LIMITS,
+  STYLES,
   instrumentLabel,
   isInstrumentId,
   isKey,
   isStyleId,
   styleInfo,
-  styleLabel,
 } from "../music/catalog";
 import {
   clamp,
@@ -31,14 +32,28 @@ import type {
   RawAgentPlan,
 } from "./types";
 import {
+  BASS_FEEL_LABELS,
+  CHIP_SLOTS,
   CLOUD_PROMPT_MAX,
+  DRUM_FEEL_LABELS,
   INSTRUMENTAL_ONLY,
   buildCloudPrompt,
   describeChanges,
-  melodyNote,
+  describeChoices,
+  keyLabel,
+  packChips,
+  tellChanges,
 } from "./cloudPrompt";
 import { describePins, pinNote, readPins, withPins } from "./pins";
-import { catalogBlurb, keptTitle, planWithRules, readMentions } from "./rules";
+import {
+  catalogBlurb,
+  fieldsNamed,
+  hardReads,
+  keptTitle,
+  planWithRules,
+  readMentions,
+  type HardReads,
+} from "./rules";
 
 export { describeChanges };
 
@@ -48,6 +63,8 @@ const REPLY_CHARS = 400;
 const TITLE_CHARS = 40;
 const REASON_CHARS = 100;
 const MAX_REASONS = 8;
+/** how many of the model's own reasoning lines may follow the app's change list */
+const MODEL_REASONS = 2;
 const TRACKS: TrackName[] = ["melody", "chords", "bass", "drums"];
 const LAYERS = ["pad", "arp", "counter", "perc"] as const;
 /**
@@ -68,13 +85,6 @@ const PRESET_FIELDS = [
  */
 const DRIFT_BPM = 3;
 const DRIFT_UNIT = 0.06;
-/**
- * A reply that says something was changed ("已经把速度提到 140", "换成了古筝").
- * When the validated settings are exactly what they were, such a reply is
- * not shown: it would announce a version that does not exist.
- */
-const CLAIMS_A_CHANGE =
-  /已经?(?:把|将|为你|帮你|给你)|(?:换|改|调|提|降|加|减|延长|缩短|去掉|关闭|恢复|升|放慢|加快)(?:成|到|为|了|高|低|快|慢|长|短|回)|\b(?:changed|switched|raised|lowered|increased|decreased|added|removed|set)\b/i;
 /** A section plan is kept while its bars are within these factors of what the duration holds. */
 const FORM_FIT: [number, number] = [0.6, 1.5];
 
@@ -466,6 +476,22 @@ export function agentPlanFromRaw(
       volumes[track] = value;
     }
 
+  // What the user said in so many words holds against the model's answer:
+  // an exact number, a part that is removed or brought back, a new melody.
+  const hard = hardReads(request);
+  // A new melody is made when the text asks for one, or when the model wants
+  // one and the text leaves room for it: a message that was read in full and
+  // asks for something else ("加长 15 秒") keeps the tune it has.
+  const literal =
+    mode === "refine" &&
+    hard.complete &&
+    !hard.plan.unchanged &&
+    hard.plan.config.mood === current.mood;
+  const reseed =
+    mode === "new" ||
+    hard.newMelody ||
+    (newMelody === true && !literal && !hard.locked.has("seed"));
+
   let config = clampConfig(
     {
       prompt: mode === "new" && text ? text : current.prompt,
@@ -473,12 +499,18 @@ export function agentPlanFromRaw(
       ...told,
       ...pins,
       volumes: volumes as MusicConfig["volumes"],
-      seed:
-        mode === "new" || newMelody === true ? request.nextSeed : current.seed,
+      seed: reseed ? request.nextSeed : current.seed,
       arrangement,
     },
     base,
   );
+  const planned = config;
+  config = holdToRequest(config, current, hard, mode);
+  // the user's own choices in the interface stand above both
+  if (config !== planned) config = clampConfig(withPins(config, pins), config);
+  const corrected =
+    config !== planned ||
+    (mode === "refine" && (newMelody === true) !== reseed);
 
   // A section plan is checked whenever this answer wrote it, or changed the
   // tempo or the length it has to fit.
@@ -499,14 +531,18 @@ export function agentPlanFromRaw(
     formNote = "段落安排和时长对不上，改由引擎按时长编排";
   }
 
-  const changes = describeChanges(current, config);
-  const unchanged = mode === "refine" && changes.length === 0;
   const info = styleInfo(config.mood);
-  // the model reports a change, the settings are what they were: its words are not shown
-  const hollow = unchanged && CLAIMS_A_CHANGE.test(rawReply);
-  const reply = overruled || hollow ? "" : rawReply;
   const pinNotes = describePins(pins);
-  const rawReasons = overruled || hollow ? [] : own(raw, "reasoning");
+  // the reply and the chips are written from what actually changes, never from the model's words
+  const preset: MusicConfig = clampConfig(
+    { ...current, ...stylePreset(config.mood), arrangement: undefined },
+    current,
+  );
+  const shown = tellChanges(current, config, {
+    baseline: mode === "refine" && restyled ? preset : undefined,
+    provider: request.provider,
+  });
+  const unchanged = mode === "refine" && shown.changes.length === 0;
   // a value beyond what the engine can do was asked for (by the user or the model)
   const beyond = (value: number | undefined, [low, high]: readonly number[]) =>
     value !== undefined && (value < low || value > high);
@@ -525,23 +561,59 @@ export function agentPlanFromRaw(
         ]
       : []),
   ];
-  const theirs = (Array.isArray(rawReasons) ? rawReasons.slice(0, 32) : [])
-    .map((item) => line(item, REASON_CHARS))
-    .filter(Boolean);
-  const ours = theirs.length
-    ? theirs
-    : mode === "refine"
-      ? // the pins are named once, not again as changes
-        describeChanges(withPins(current, pins), config)
-      : pins.mood
-        ? []
-        : [`风格定为「${styleLabel(config.mood)}」`];
   const closing = [...rangeNotes, ...(formNote ? [formNote] : [])];
+
+  /*
+   * The model's own words are a secondary note. They are kept only when they
+   * can be trusted not to mislead: the plan was neither overruled by a pin nor
+   * corrected by the user's explicit words, something does change, and — in a
+   * refinement — every parameter or part the words name is one that changed.
+   */
+  const trusted = (line: string) => {
+    if (!line || overruled || corrected) return false;
+    if (mode === "new") return true;
+    if (unchanged) return false;
+    for (const field of fieldsNamed(line))
+      if (!shown.fields.has(field)) return false;
+    return true;
+  };
+  const modelNote = trusted(rawReply) ? rawReply : "";
+  const lines =
+    mode === "new"
+      ? [
+          ...(pins.mood ? [] : [`风格定为「${info.label}」`]),
+          ...describeChoices(
+            clampConfig(
+              withPins(
+                { ...preset, volumes: current.volumes, seed: config.seed },
+                pins,
+              ),
+              current,
+            ),
+            config,
+          ),
+        ]
+      : pinNotes.length
+        ? tellChanges(withPins(current, pins), config, {
+            baseline: restyled && !pins.mood ? preset : undefined,
+            provider: request.provider,
+          }).chips
+        : shown.chips;
+  const rawReasons = own(raw, "reasoning");
+  const theirs = (Array.isArray(rawReasons) ? rawReasons.slice(0, 32) : [])
+    .map((item) => inWords(line(item, REASON_CHARS)))
+    .filter((item) => trusted(item) && !lines.includes(item))
+    .slice(0, MODEL_REASONS);
+  const room = Math.max(
+    Math.min(lines.length, 3),
+    CHIP_SLOTS - pinNotes.length - theirs.length - closing.length,
+  );
   const reasoning = [
     ...pinNotes,
-    ...ours.slice(0, MAX_REASONS - pinNotes.length - closing.length),
+    ...packChips(lines, room),
+    ...theirs,
     ...closing,
-  ];
+  ].slice(0, MAX_REASONS);
   const title =
     (mode === "refine" ? keptTitle(request) : "") ||
     (offStyle ? "" : line(own(raw, "title"), TITLE_CHARS)) ||
@@ -549,9 +621,11 @@ export function agentPlanFromRaw(
 
   let cloudPrompt: string | undefined;
   if (request.provider !== "local") {
-    const written = overruled
-      ? ""
-      : line(own(raw, "cloudPrompt"), CLOUD_PROMPT_MAX);
+    // a description written for another plan than the one that is made is not sent
+    const written =
+      overruled || corrected
+        ? ""
+        : line(own(raw, "cloudPrompt"), CLOUD_PROMPT_MAX);
     if ([...written].length < 12)
       cloudPrompt = buildCloudPrompt(
         config,
@@ -570,21 +644,15 @@ export function agentPlanFromRaw(
   const modelName = line(model, 80);
 
   const said =
-    reply ||
-    (mode === "new"
-      ? `好的，做一段「${info.label}」风格的音乐。`
-      : changes.length
-        ? `好的：${changes.slice(0, 3).join("，")}${changes.length > 3 ? " 等" : ""}。` +
-          melodyNote(current, config, request.provider)
-        : "这次没有需要改动的地方，作品保持不变。");
-  const ranged = rangeNotes.filter(() => !/范围/.test(said));
+    mode === "new"
+      ? `好的，做一段「${info.label}」风格的音乐：${config.bpm} BPM、${keyLabel(config.key)}、${instrumentLabel(config.instrument)}主奏，${config.duration} 秒，${config.loop ? "循环片段" : "完整结尾"}。`
+      : shown.reply || "这次没有需要改动的地方，作品保持不变。";
 
   return {
     config,
     title,
-    reply: ranged.length
-      ? `${said}${/[。.!！?？]$/.test(said) ? "" : "。"}${ranged.join("。")}。`
-      : said,
+    reply: closing.length ? `${said}${closing.join("。")}。` : said,
+    ...(modelNote ? { modelNote } : {}),
     reasoning,
     tags: [info.label, `${config.bpm} BPM`, instrumentLabel(config.instrument)],
     unchanged,
@@ -592,6 +660,173 @@ export function agentPlanFromRaw(
     ...(cloudPrompt ? { cloudPrompt } : {}),
     ...(modelName ? { model: modelName } : {}),
   };
+}
+
+/**
+ * Hold a model's plan to the user's own words, as far as the rules brain
+ * reads them with confidence:
+ *  - an exact number or bound ("90 bpm", "加长 15 秒", "最多 20 秒") is taken literally;
+ *  - a part the text removes is off, a part it brings back is on;
+ *  - a refinement never moves a parameter the opposite way to what was asked,
+ *    and what the message says must stay ("别换乐器", "速度不变") stays.
+ * Parameters the text does not speak of are the model's to decide (small
+ * drifts on them are already ignored above).
+ * Returns `config` itself when nothing had to be corrected.
+ */
+function holdToRequest(
+  config: MusicConfig,
+  current: MusicConfig,
+  hard: HardReads,
+  mode: "new" | "refine",
+): MusicConfig {
+  const next: MusicConfig = { ...config, volumes: { ...config.volumes } };
+  const ours = hard.plan.config;
+  const refine = mode === "refine";
+  const within = (
+    value: number,
+    limit: { set?: number; cap?: number; floor?: number } | undefined,
+    [low, high]: readonly number[],
+  ) => {
+    let out = value;
+    if (limit?.set !== undefined && limit.set >= low / 5) out = limit.set;
+    if (limit?.cap !== undefined) out = Math.min(out, limit.cap);
+    if (limit?.floor !== undefined) out = Math.max(out, limit.floor);
+    return clamp(out, low, high);
+  };
+  for (const field of hard.exact) {
+    if (field === "bpm")
+      next.bpm = refine
+        ? ours.bpm
+        : Math.round(within(next.bpm, hard.limits.bpm, LIMITS.bpm));
+    else if (field === "duration")
+      next.duration = refine
+        ? ours.duration
+        : Math.round(
+            within(next.duration, hard.limits.duration, LIMITS.duration),
+          );
+    else if (field === "energy" || field === "complexity" || field === "reverb")
+      next[field] = refine
+        ? ours[field]
+        : within(next[field], hard.limits[field], [0, 1]);
+    else if (field.startsWith("vol:")) {
+      const track = field.slice(4) as TrackName;
+      next.volumes[track] = ours.volumes[track];
+    }
+  }
+  const hints = (): ArrangementHints => ({ ...next.arrangement });
+  // a part the arrangement removes is silent already: its fader stays, ready for the part to return
+  const silent = (track: TrackName) =>
+    (track === "drums" || track === "bass") &&
+    next.arrangement?.[track] === "none";
+  for (const track of hard.muted) if (!silent(track)) next.volumes[track] = 0;
+  for (const track of hard.restored) {
+    if (next.volumes[track] === 0) next.volumes[track] = ours.volumes[track];
+    if (
+      (track === "drums" || track === "bass") &&
+      next.arrangement?.[track] === "none"
+    ) {
+      const rest = hints();
+      delete rest[track];
+      next.arrangement = rest;
+    }
+  }
+  if (refine) {
+    // never the opposite of what was asked
+    const against = (was: number, theirs: number, wanted: number) =>
+      wanted !== was && Math.sign(theirs - was) === -Math.sign(wanted - was);
+    for (const field of [
+      "bpm",
+      "duration",
+      "energy",
+      "complexity",
+      "reverb",
+    ] as const)
+      if (
+        hard.directed.has(field) &&
+        against(current[field], next[field], ours[field])
+      )
+        next[field] = ours[field];
+    for (const track of TRACKS)
+      if (
+        hard.directed.has(`vol:${track}`) &&
+        against(
+          current.volumes[track],
+          next.volumes[track],
+          ours.volumes[track],
+        )
+      )
+        next.volumes[track] = ours.volumes[track];
+    // what the message forbids ("别换乐器", "速度不变") stays
+    for (const lock of hard.locked) {
+      if (lock === "tempo") next.bpm = current.bpm;
+      else if (lock === "duration") next.duration = current.duration;
+      else if (lock === "key") next.key = current.key;
+      else if (lock === "instrument") next.instrument = current.instrument;
+      else if (lock === "loop") next.loop = current.loop;
+      else if (lock === "energy" || lock === "complexity" || lock === "reverb")
+        next[lock] = current[lock];
+      else if (lock.startsWith("vol:")) {
+        const track = lock.slice(4) as TrackName;
+        next.volumes[track] = current.volumes[track];
+      }
+    }
+  }
+  const fixed = clampConfig(next, next);
+  return describeChanges(config, fixed).length ? fixed : config;
+}
+
+/** How the engine's own names read on screen: ids never reach the user. */
+const WORDS: Record<string, string> = {
+  energy: "情绪能量",
+  complexity: "旋律丰富度",
+  reverb: "空间混响",
+  duration: "时长",
+  instrument: "主奏乐器",
+  style: "风格",
+  key: "调性",
+  loop: "循环",
+  tempo: "速度",
+  volume: "音量",
+  volumes: "音量",
+  melody: "旋律",
+  chords: "和声",
+  bass: "贝斯",
+  drums: "鼓组",
+  newmelody: "新旋律",
+  swing: "摇摆感",
+  density: "旋律密度",
+  register: "音区",
+  motion: "旋律走向",
+  progression: "和弦进行",
+  form: "段落结构",
+  pad: "铺底长音",
+  arp: "琶音",
+  counter: "副旋律",
+  perc: "打击乐点缀",
+  arrangement: "编曲",
+  ...Object.fromEntries(
+    Object.entries(DRUM_FEEL_LABELS).filter(([id]) => id !== "auto"),
+  ),
+  ...Object.fromEntries(
+    Object.entries(BASS_FEEL_LABELS).filter(
+      ([id]) => id !== "auto" && id !== "none",
+    ),
+  ),
+  ...Object.fromEntries(STYLES.map((style) => [style.id, style.label])),
+  ...Object.fromEntries(INSTRUMENT_LIST.map((item) => [item.id, item.label])),
+};
+/** A model's line with every internal name replaced by the name the interface shows. */
+export function inWords(text: string): string {
+  return text
+    .replace(
+      /volumes?\.(melody|chords|bass|drums)/gi,
+      (_m, track: string) => `${WORDS[track.toLowerCase()]}音量`,
+    )
+    .replace(/(?<![A-Za-z])[A-Za-z]+(?![A-Za-z])/g, (word) =>
+      Object.prototype.hasOwnProperty.call(WORDS, word.toLowerCase())
+        ? WORDS[word.toLowerCase()]
+        : word,
+    );
 }
 
 /** Ask the configured model (through the desktop bridge) and validate its answer. */

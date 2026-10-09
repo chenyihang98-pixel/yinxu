@@ -8,15 +8,25 @@ import {
   HISTORY_TURNS,
   agentPlanFromRaw,
   describeChanges,
+  inWords,
   planWithLlm,
   producePlan,
   rawArrangement,
   toAgentPlanInput,
 } from "../src/agent/brain";
-import { buildCloudPrompt, CLOUD_PROMPT_MAX } from "../src/agent/cloudPrompt";
+import {
+  buildCloudPrompt,
+  CLOUD_PROMPT_MAX,
+  melodyNote,
+} from "../src/agent/cloudPrompt";
 import { LLM_PRESETS } from "../src/agent/llm-presets";
 import { PIN_MARK, describePins, pinNote, readPins } from "../src/agent/pins";
-import { planWithRules, readMentions } from "../src/agent/rules";
+import {
+  fieldsNamed,
+  hardReads,
+  planWithRules,
+  readMentions,
+} from "../src/agent/rules";
 import type {
   AgentPlan,
   AgentPlanInput,
@@ -107,8 +117,38 @@ test("a well-formed model plan becomes a clamped engine-2 plan with brain llm", 
     melody: { motion: "stepwise" },
   });
   assert.equal(plan.title, "深夜特调");
-  assert.match(plan.reply, /爵士/);
-  assert.deepEqual(plan.reasoning, ["风格改为爵士", "鼓组音量降到 30%"]);
+  // the reply is the app's own account of the difference …
+  assert.match(
+    plan.reply,
+    /^好的：风格改为「爵士小馆」，速度 74 → 104 BPM，时长 30 → 45 秒，/,
+  );
+  assert.match(plan.reply, /这是一段新的旋律。$/);
+  for (const change of describeChanges(current(), plan.config))
+    assert.ok(
+      plan.reply.includes(change) ||
+        /调性|主奏乐器|空间混响/.test(change.slice(0, 4)),
+      change,
+    );
+  assert.match(plan.reply, /；调性、主奏乐器、空间混响随风格调整。/);
+  // … the model's own sentence is a secondary note, kept because all it names did change
+  assert.equal(plan.modelNote, rawPlan().reply);
+  // chips: the app's change list first, then at most two of the model's own lines
+  assert.ok(plan.reasoning.length <= 8, plan.reasoning.join("｜"));
+  assert.equal(
+    plan.reasoning[0],
+    "风格改为「爵士小馆」（调性、主奏乐器、空间混响随风格）",
+  );
+  assert.equal(plan.reasoning[1], "速度 74 → 104 BPM");
+  assert.deepEqual(plan.reasoning.slice(-2), [
+    "风格改为爵士",
+    "鼓组音量降到 30%",
+  ]);
+  assert.ok(
+    plan.reasoning.some((chip) =>
+      /^风格改为「爵士小馆」（调性、主奏乐器、空间混响随风格）$/.test(chip),
+    ),
+    plan.reasoning.join("｜"),
+  );
   assert.deepEqual(plan.tags, ["爵士小馆", "104 BPM", "颤音琴"]);
   assert.equal(
     plan.cloudPrompt,
@@ -350,15 +390,22 @@ test("strings are trimmed, flattened to one line and length-limited", () => {
     request({ provider: "tencent" }),
     huge,
   );
-  assert.equal(plan.reply.length, 400);
+  // the model's words are capped; the reply itself is the app's and says what changed
+  assert.equal(plan.modelNote?.length, 400);
+  assert.match(plan.reply, /^好的：风格改为「爵士小馆」/);
   assert.ok(
     plan.title.length <= 40 && !/[\n\u0000]/.test(plan.title),
     plan.title,
   );
   assert.ok(plan.title.startsWith("第一行 第二行"));
   assert.equal(plan.reasoning.length, 8);
+  // no chip is longer than the thread keeps, and at most two are the model's
   assert.ok(
-    plan.reasoning.every((item) => item.length > 0 && item.length <= 100),
+    plan.reasoning.every((item) => item.length > 0 && item.length <= 160),
+  );
+  assert.equal(
+    plan.reasoning.filter((item) => /^理由 \d+$|^啊+$/.test(item)).length,
+    2,
   );
   assert.ok((plan.cloudPrompt ?? "").length <= CLOUD_PROMPT_MAX);
   assert.ok(plan.cloudPrompt?.endsWith("纯音乐，无人声，无歌词"));
@@ -418,7 +465,9 @@ test("a reply that changes nothing is reported as unchanged", () => {
   );
   assert.equal(plan.unchanged, true);
   assert.deepEqual(plan.config, clampConfig(current(), current()));
-  assert.match(plan.reply, /保持现状/);
+  // nothing changes: the app says so itself and the model's words are not shown at all
+  assert.equal(plan.reply, "这次没有需要改动的地方，作品保持不变。");
+  assert.equal(plan.modelNote, undefined);
   const same = agentPlanFromRaw(
     { style: "dreamy", bpm: 74, key: "D major", instrument: "bell" },
     request(),
@@ -455,7 +504,7 @@ test("a reply that announces a change the settings do not show is not passed on 
     assert.deepEqual(hollow.reasoning, [], claim);
     assert.deepEqual(hollow.config, clampConfig(current(), current()));
   }
-  // an explanation of why nothing changes is still the model's to give
+  // whatever the model says about a plan that changes nothing, the app's own sentence stands
   const honest = agentPlanFromRaw(
     {
       ...settings,
@@ -464,15 +513,30 @@ test("a reply that announces a change the settings do not show is not passed on 
     },
     request(),
   );
-  assert.equal(honest.reply, "这首已经很安静了，我建议保持现状。");
-  assert.deepEqual(honest.reasoning, ["情绪能量本来就低"]);
-  // … and a claim that is true is kept
+  assert.equal(honest.reply, "这次没有需要改动的地方，作品保持不变。");
+  assert.equal(honest.modelNote, undefined);
+  assert.deepEqual(honest.reasoning, []);
+  // … and a claim that is true is kept as the model's note under the app's reply
   const real = agentPlanFromRaw(
     { ...settings, bpm: 140, reply: "已经把速度提到 140 BPM。" },
     request({ text: "速度 140" }),
   );
   assert.equal(real.unchanged, false);
-  assert.equal(real.reply, "已经把速度提到 140 BPM。");
+  assert.equal(
+    real.reply,
+    `好的：速度 74 → 140 BPM。${melodyNote(current(), real.config)}`,
+  );
+  assert.equal(real.modelNote, "已经把速度提到 140 BPM。");
+  // a claim that is only half true is not shown: the piano was kept
+  const half = agentPlanFromRaw(
+    { ...settings, bpm: 100, reply: "已放慢到 100 BPM，并换成了古筝。" },
+    request({ text: "调整一下" }),
+  );
+  assert.equal(half.modelNote, undefined);
+  assert.equal(
+    half.reply,
+    "好的：速度 74 → 100 BPM。旋律动机不变，会按新的设置重新演绎。",
+  );
 });
 
 test("values beyond the engine's range are named, whoever asked for them (AGENT-11)", () => {
@@ -482,9 +546,10 @@ test("values beyond the engine's range are named, whoever asked for them (AGENT-
     request({ text: "延长到三分钟" }),
   );
   assert.equal(long.config.duration, 120);
-  assert.equal(
+  assert.match(long.reply, /^好的：.*时长 30 → 120 秒/);
+  assert.ok(
+    long.reply.endsWith("时长范围是 15–120 秒，已取 120 秒。"),
     long.reply,
-    "已延长到三分钟。时长范围是 15–120 秒，已取 120 秒。",
   );
   assert.ok(
     long.reasoning.includes("时长范围是 15–120 秒，已取 120 秒"),
@@ -495,9 +560,9 @@ test("values beyond the engine's range are named, whoever asked for them (AGENT-
     rawPlan({ duration: 120, reply: "已延长到三分钟" }),
     request({ text: "延长到 3 分钟" }),
   );
-  assert.equal(
+  assert.ok(
+    clamped.reply.endsWith("时长范围是 15–120 秒，已取 120 秒。"),
     clamped.reply,
-    "已延长到三分钟。时长范围是 15–120 秒，已取 120 秒。",
   );
   const fast = agentPlanFromRaw(
     rawPlan({ bpm: 260, reply: "速度拉到 260。" }),
@@ -505,17 +570,17 @@ test("values beyond the engine's range are named, whoever asked for them (AGENT-
   );
   assert.equal(fast.config.bpm, 200);
   assert.match(fast.reply, /速度范围是 50–200 BPM，已取 200。$/);
-  // a reply that already explains the range is not repeated; nothing is added inside the range
+  // the limit is said once, by the app; nothing is added inside the range
   const told = agentPlanFromRaw(
     rawPlan({ duration: 500, reply: "时长范围最多 120 秒，我取了 120 秒。" }),
     request(),
   );
-  assert.equal(told.reply, "时长范围最多 120 秒，我取了 120 秒。");
+  assert.equal(told.reply.split("时长范围是").length, 2, told.reply);
   const fine = agentPlanFromRaw(
     rawPlan({ duration: 120, reply: "两分钟的版本。" }),
     request({ text: "两分钟" }),
   );
-  assert.equal(fine.reply, "两分钟的版本。");
+  assert.ok(!/范围/.test(fine.reply), fine.reply);
   assert.ok(!fine.reasoning.some((line) => line.includes("范围")));
   // a pinned length is the user's own choice: no note
   const pinned = agentPlanFromRaw(
@@ -552,7 +617,16 @@ test("the generated reply of a refinement says what happens to the melody (AGENT
     silent({ style: "rock" }).reply,
     /^好的：风格改为「摇滚能量」.*这是一段新的旋律。$/,
   );
-  assert.equal(silent({ newMelody: true }).reply, "好的：换一组新的旋律。");
+  // another take rewrites the chord progression too, and says so (FQ-08)
+  assert.equal(
+    silent({ newMelody: true }).reply,
+    "好的：换一组新的旋律。旋律与和弦走向都会重写，速度、调性和乐器保持不变。",
+  );
+  // the same rhythm on other pitches is not called "the same motifs"
+  assert.equal(
+    silent({ key: "D minor" }).reply,
+    "好的：调性 D 大调 → D 小调。节奏型保持，音高会按新的调式重写。",
+  );
   assert.match(
     silent({ bpm: 90 }, { provider: "tencent" }).reply,
     /云端服务会按新的设置重新生成/,
@@ -862,7 +936,7 @@ test("what the renderer sends is exactly what the main process accepts", () => {
   assert.equal(plan.config.mood, valid.style);
   assert.deepEqual(plan.config.volumes, valid.volumes);
   assert.equal(plan.title, valid.title);
-  assert.equal(plan.reply, valid.reply);
+  assert.equal(plan.modelNote, valid.reply);
 });
 
 test("the model input tolerates broken history and broken configurations", () => {
@@ -1432,26 +1506,36 @@ test("pins: a plan that follows them keeps the model's words, with the pins name
   );
   assert.equal(plan.config.mood, "jazz");
   assert.equal(plan.config.duration, 45);
-  assert.equal(plan.reply, rawPlan().reply);
+  assert.equal(
+    plan.reply,
+    "好的，做一段「爵士小馆」风格的音乐：104 BPM、F 大调、颤音琴主奏，45 秒，循环片段。",
+  );
+  assert.equal(plan.modelNote, rawPlan().reply);
   assert.equal(plan.title, "深夜特调");
   assert.ok(plan.cloudPrompt?.startsWith("深夜小酒馆的爵士三重奏"));
-  assert.deepEqual(plan.reasoning, [
+  assert.deepEqual(plan.reasoning.slice(0, 2), [
     "按你选的「爵士小馆」风格来编",
     "按你的设定：45 秒、循环片段",
+  ]);
+  assert.deepEqual(plan.reasoning.slice(-2), [
     "风格改为爵士",
     "鼓组音量降到 30%",
   ]);
+  assert.ok(plan.reasoning.includes("速度 104 BPM"), plan.reasoning.join("｜"));
   // even a talkative model leaves room for them
   const chatty = agentPlanFromRaw(
     rawPlan({ reasoning: Array.from({ length: 20 }, (_, i) => `理由 ${i}`) }),
     request({ mode: "new", pins: { mood: "jazz", loop: true } }),
   );
   assert.equal(chatty.reasoning.length, 8);
-  assert.deepEqual(chatty.reasoning.slice(0, 3), [
+  assert.deepEqual(chatty.reasoning.slice(0, 2), [
     "按你选的「爵士小馆」风格来编",
     "按你的设定：循环片段",
-    "理由 0",
   ]);
+  assert.deepEqual(
+    chatty.reasoning.filter((item) => item.startsWith("理由")),
+    ["理由 0", "理由 1"],
+  );
 });
 
 test("pins: a pinned duration, loop, lead, key or tempo replaces whatever the model answered", () => {
@@ -1483,16 +1567,18 @@ test("pins: a pinned duration, loop, lead, key or tempo replaces whatever the mo
     "按你的设定：古筝主奏、A 小调、90 BPM、60 秒、完整结尾",
   );
   assert.ok(
-    plan.reasoning.includes("风格改为「爵士小馆」") &&
+    plan.reasoning.some((item) => item.startsWith("风格改为「爵士小馆」")) &&
       !plan.reasoning.includes("风格改为爵士"),
+    plan.reasoning.join("｜"),
   );
+  assert.equal(plan.modelNote, undefined);
   assert.ok(
     !plan.reasoning
       .slice(1)
       .some((item) => /主奏换成|调性|速度|时长|完整版本/.test(item)),
     "the pins are named once, not again as changes",
   );
-  assert.equal(plan.reasoning.length, 8);
+  assert.ok(plan.reasoning.length <= 8);
   assert.match(plan.cloudPrompt ?? "", /古筝/);
   assert.match(plan.cloudPrompt ?? "", /90 BPM/);
   assert.ok(!/颤音琴/.test(plan.cloudPrompt ?? ""));
@@ -1554,8 +1640,16 @@ test("pins: a pinned style replaces the model's style and re-bases what the mode
     melody: { motion: "stepwise" },
   });
   // nor do the sentences and the title written for the other style
-  assert.equal(plan.reply, "好的，做一段「国风古韵」风格的音乐。");
-  assert.deepEqual(plan.reasoning, ["按你选的「国风古韵」风格来编"]);
+  assert.equal(
+    plan.reply,
+    "好的，做一段「国风古韵」风格的音乐：104 BPM、D 大调、古筝主奏，45 秒，循环片段。",
+  );
+  assert.equal(plan.modelNote, undefined);
+  assert.equal(plan.reasoning[0], "按你选的「国风古韵」风格来编");
+  assert.ok(
+    !plan.reasoning.some((item) => /爵士|鼓组音量降到/.test(item)),
+    plan.reasoning.join("｜"),
+  );
   assert.ok(styleInfo("guofeng").titles.includes(plan.title));
   assert.match(plan.cloudPrompt ?? "", /国风古韵/);
   assert.ok(!/爵士/.test(plan.cloudPrompt ?? ""));
@@ -1631,7 +1725,7 @@ test("pins: a pinned style replaces the model's style and re-bases what the mode
     [followed.config.instrument, followed.config.key, followed.config.bpm],
     ["dizi", "E minor", 70],
   );
-  assert.equal(followed.reply, rawPlan().reply);
+  assert.equal(followed.modelNote, rawPlan().reply);
 });
 
 test("pins travel with the request and hold on both paths of producePlan", async () => {
@@ -1687,9 +1781,10 @@ test("new piece: the model's faders count only for tracks the text is about", ()
   const draft = current().volumes;
   assert.deepEqual(volumesFor("雨天咖啡馆里的慵懒爵士，一分钟"), draft);
   assert.deepEqual(volumesFor("epic orchestral trailer, 60 seconds"), draft);
+  // "不要鼓" is the user's own word: the part is off, whatever fader the model proposed
   assert.deepEqual(volumesFor("雨天咖啡馆里的慵懒爵士，一分钟，不要鼓"), {
     ...draft,
-    drums: 0.4,
+    drums: 0,
   });
   assert.deepEqual(volumesFor("鼓点突出一些的摇滚，贝斯轻一点"), {
     ...draft,
@@ -1705,14 +1800,19 @@ test("new piece: the model's faders count only for tracks the text is about", ()
     ...draft,
     melody: 0.75,
   });
-  // a solo, "only …" and whole-mix words concern every fader
+  // a solo and whole-mix words concern every fader
   for (const text of [
     "只要钢琴独奏",
-    "只留鼓和贝斯",
     "整体音量小一点的爵士",
     "a quieter mix, please",
   ])
     assert.deepEqual(volumesFor(text), proposed, text);
+  // "只留 …" says in so many words which parts go: those are off, the rest is the model's
+  assert.deepEqual(volumesFor("只留鼓和贝斯"), {
+    ...proposed,
+    melody: 0,
+    chords: 0,
+  });
   // sleep and meditation music may lose its drums without the word being said
   assert.deepEqual(volumesFor("睡前冥想"), { ...draft, drums: 0.4 });
   // the draft's own faders are what is kept, whatever they are
@@ -1790,7 +1890,8 @@ test("refinement: a fader the model echoes in rounded form is not a change", () 
   );
   assert.equal(echoed.unchanged, true);
   assert.deepEqual(echoed.config, fine);
-  assert.equal(echoed.reply, "不客气。");
+  assert.equal(echoed.reply, "这次没有需要改动的地方，作品保持不变。");
+  assert.equal(echoed.modelNote, undefined);
   // a real move of one fader is taken, the other three stay exactly where the user left them
   const moved = agentPlanFromRaw(
     { ...shown, volumes: { ...shown.volumes, drums: 0.41 }, reply: "鼓轻了。" },
@@ -1924,6 +2025,7 @@ test("a section plan that does not fit the duration is left to the composer", ()
       bars: count,
       energy: 0.5,
     }));
+  // the length the user names is the length that is made, so each case asks for the one it plans
   const fresh = (
     sections: ReturnType<typeof form>,
     overrides: Partial<RawAgentPlan> = {},
@@ -1935,7 +2037,10 @@ test("a section plan that does not fit the duration is left to the composer", ()
         ...overrides,
         arrangement: { ...rawPlan().arrangement, form: sections },
       }),
-      request({ mode: "new", text: "雨天咖啡馆里的慵懒爵士，一分钟" }),
+      request({
+        mode: "new",
+        text: `雨天咖啡馆里的慵懒爵士，${overrides.duration ?? 60} 秒`,
+      }),
     );
   const real = fresh(form(32, 16));
   assert.equal(real.config.arrangement?.form, undefined);
@@ -1957,7 +2062,7 @@ test("a section plan that does not fit the duration is left to the composer", ()
   // a plan of about the right size is used as written
   const fitting = fresh(form(4, 8, 8, 4));
   assert.deepEqual(fitting.config.arrangement?.form, form(4, 8, 8, 4));
-  assert.ok(!fitting.reasoning.some((item) => item.includes("段落")));
+  assert.ok(!fitting.reasoning.some((item) => item.includes("段落安排")));
   // 27 bars fit: from 0.6× (16.2) to 1.5× (40.5) is accepted
   for (const [bars, kept] of [
     [[4], false],
@@ -2071,6 +2176,297 @@ test("a section plan that does not fit the duration is left to the composer", ()
 });
 
 /* ---------- describeChanges ---------- */
+
+/* ---------- the model is held to the truth and to the user's own words (FQ-02, NEW-11) ---------- */
+
+/** A piece like the one of the final QA run: lazy jazz without drums, electric piano. */
+const rainyJazz = (): MusicConfig => ({
+  ...structuredClone(DEFAULT_CONFIG),
+  ...stylePreset("jazz"),
+  bpm: 80,
+  instrument: "epiano",
+  prompt: "雨天咖啡馆里的慵懒爵士，30 秒，不要鼓",
+  seed: 77,
+  arrangement: { drums: "none" },
+});
+
+test("the reply of a model plan is written by the app from the real difference (FQ-02)", () => {
+  // the real answer of the local model: a drum change is claimed that the plan does not contain
+  const plan = agentPlanFromRaw(
+    {
+      style: "jazz",
+      bpm: 74,
+      instrument: "piano",
+      key: "F major",
+      reply:
+        "已将速度放慢并换成钢琴主奏，同时适当降低了鼓的音量以匹配钢琴的质感。",
+      reasoning: ["主奏乐器更换为 piano", "鼓的音量降低一些", "速度降到 74"],
+    },
+    request({ text: "再慢一点，换成钢琴主奏", current: rainyJazz() }),
+    "qwen3.5:9b",
+  );
+  assert.deepEqual(describeChanges(rainyJazz(), plan.config), [
+    "速度 80 → 74 BPM",
+    "主奏乐器换成柔和钢琴",
+  ]);
+  assert.equal(
+    plan.reply,
+    `好的：速度 80 → 74 BPM，主奏乐器换成柔和钢琴。${melodyNote(rainyJazz(), plan.config)}`,
+  );
+  // the model's sentence names the drums, which did not change: it is not shown at all
+  assert.equal(plan.modelNote, undefined);
+  // chips: the app's change list, then the model's lines that are true, in the interface's words
+  assert.deepEqual(plan.reasoning, [
+    "速度 80 → 74 BPM",
+    "主奏乐器换成柔和钢琴",
+    "主奏乐器更换为 柔和钢琴",
+    "速度降到 74",
+  ]);
+  assert.ok(!/piano|鼓/.test(plan.reasoning.join("")));
+
+  // a true sentence is kept as the note, at most 400 characters of it
+  const truthful = agentPlanFromRaw(
+    {
+      bpm: 74,
+      instrument: "piano",
+      reply: `已放慢到 74 BPM，换成钢琴主奏。${"好".repeat(600)}`,
+    },
+    request({ text: "再慢一点，换成钢琴主奏", current: rainyJazz() }),
+  );
+  assert.equal(truthful.modelNote?.length, 400);
+  // a sentence that describes the result without naming another control is kept as it is
+  const described = agentPlanFromRaw(
+    {
+      volumes: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.41 },
+      reply: "已把鼓声调小了一些，让整体听起来清爽一点。",
+    },
+    request({ text: "鼓大了点" }),
+  );
+  assert.equal(
+    described.modelNote,
+    "已把鼓声调小了一些，让整体听起来清爽一点。",
+  );
+  assert.equal(described.reply, "好的：鼓组音量 56% → 41%。旋律保持不变。");
+  assert.ok(truthful.modelNote?.startsWith("已放慢到 74 BPM，换成钢琴主奏。"));
+  assert.match(
+    truthful.reply,
+    /^好的：速度 80 → 74 BPM，主奏乐器换成柔和钢琴。/,
+  );
+});
+
+test("a model's own lines never show internal names, and at most two of them follow the change list", () => {
+  assert.equal(
+    inWords("将 complexity 从 0.5 下调至 0.35"),
+    "将 旋律丰富度 从 0.5 下调至 0.35",
+  );
+  assert.equal(inWords("Drums 的推子至0.75"), "鼓组 的推子至0.75");
+  assert.equal(inWords("volumes.bass 调到 0.4"), "贝斯音量 调到 0.4");
+  assert.equal(inWords("主奏乐器更换为 guzheng"), "主奏乐器更换为 古筝");
+  assert.equal(inWords("风格 lofi → chill"), "风格 lofi → 慵懒松弛");
+  assert.equal(
+    inWords("鼓组律动 halftime，贝斯 walking"),
+    "鼓组律动 半速，贝斯 行走低音",
+  );
+  // words that only look like an id inside another word are left alone
+  assert.equal(inWords("keyboard and drumsticks"), "keyboard and drumsticks");
+  const plan = agentPlanFromRaw(
+    {
+      complexity: 0.35,
+      reply: "降低了旋律丰富度。",
+      reasoning: [
+        "将 complexity 从 0.42 下调至 0.35",
+        "旋律丰富度降低",
+        "complexity 更低",
+        "顺手把 reverb 也收了一点",
+      ],
+    },
+    request({ text: "旋律丰富度低一点" }),
+  );
+  assert.deepEqual(plan.reasoning, [
+    "旋律丰富度 42% → 35%",
+    "将 旋律丰富度 从 0.42 下调至 0.35",
+    "旋律丰富度降低",
+  ]);
+  assert.equal(plan.modelNote, "降低了旋律丰富度。");
+});
+
+test("what the user said in so many words holds against the model's plan (NEW-11)", () => {
+  // the real new piece: "不要鼓" answered with a light drum part
+  const fresh = agentPlanFromRaw(
+    rawPlan({
+      style: "chill",
+      instrument: "epiano",
+      key: "F major",
+      bpm: 78,
+      duration: 60,
+      loop: false,
+      volumes: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.56 },
+      arrangement: { ...rawPlan().arrangement, drums: "light" },
+      reply: "给深夜写代码的直播准备了一段 lofi，保留了很轻的鼓。",
+      reasoning: ["律动改为 light 轻打击而非无鼓以保持节奏"],
+    }),
+    request({
+      mode: "new",
+      text: "给深夜写代码的直播做一段一分钟的 lofi，不要鼓，带完整结尾",
+      current: { ...structuredClone(DEFAULT_CONFIG), prompt: "" },
+    }),
+  );
+  assert.equal(fresh.config.volumes.drums, 0, "不要鼓 is the user's own word");
+  assert.equal(fresh.config.duration, 60);
+  assert.equal(fresh.config.loop, false);
+  // its words describe a piece with drums: neither the sentence nor the line is shown
+  assert.equal(fresh.modelNote, undefined);
+  assert.ok(!fresh.reasoning.some((line) => /轻打击|light/.test(line)));
+  assert.ok(fresh.reasoning.includes("不用鼓组"), fresh.reasoning.join("｜"));
+  // a model that removes the part through the arrangement has done what was asked
+  const silent = agentPlanFromRaw(
+    rawPlan({
+      style: "chill",
+      arrangement: { ...rawPlan().arrangement, drums: "none" },
+    }),
+    request({ mode: "new", text: "一分钟的 lofi，不要鼓" }),
+  );
+  assert.equal(silent.config.arrangement?.drums, "none");
+  assert.equal(silent.config.volumes.drums, current().volumes.drums);
+
+  const refine = (text: string, raw: Partial<RawAgentPlan>, from = current()) =>
+    agentPlanFromRaw(
+      {
+        style: from.mood,
+        bpm: from.bpm,
+        key: from.key,
+        instrument: from.instrument,
+        duration: from.duration,
+        loop: from.loop,
+        ...raw,
+      },
+      request({ text, current: from }),
+    );
+  // "鼓大了点" is a complaint: the model raised the drums, the piece lowers them
+  const complaint = refine("鼓大了点", {
+    volumes: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.75 },
+    reply: "把鼓推大了一些。",
+  });
+  assert.equal(complaint.config.volumes.drums, 0.36);
+  assert.equal(complaint.modelNote, undefined);
+  assert.match(complaint.reply, /^好的：鼓组音量 56% → 36%。/);
+  // an exact amount is taken literally
+  assert.equal(refine("快 10 bpm", { bpm: 96 }).config.bpm, 84);
+  assert.equal(refine("加长 15 秒", { duration: 60 }).config.duration, 45);
+  assert.equal(refine("速度 100", { bpm: 104 }).config.bpm, 100);
+  assert.equal(
+    refine("鼓 40%", {
+      volumes: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.5 },
+    }).config.volumes.drums,
+    0.4,
+  );
+  // a bound moves nothing that already satisfies it, whatever the model answered
+  assert.equal(refine("最多 100 bpm", { bpm: 100 }).config.bpm, 74);
+  assert.equal(refine("不要低于 90 bpm", { bpm: 60 }).config.bpm, 90);
+  // an explicit mute, and an explicit return
+  assert.equal(
+    refine("不要鼓", {
+      volumes: { melody: 0.8, chords: 0.64, bass: 0.68, drums: 0.3 },
+    }).config.volumes.drums,
+    0,
+  );
+  const muted = {
+    ...current(),
+    volumes: { ...current().volumes, drums: 0 },
+  };
+  assert.equal(
+    refine("把鼓加回来", { volumes: { ...muted.volumes } }, muted).config
+      .volumes.drums,
+    current().volumes.drums,
+  );
+  // what the message forbids stays, and a new melody is made only when it is not forbidden
+  const locked = refine("别换乐器，慢一点", { bpm: 66, instrument: "guzheng" });
+  assert.equal(locked.config.instrument, "bell");
+  assert.equal(locked.config.bpm, 66);
+  assert.equal(
+    refine("别换旋律，加长 15 秒", { duration: 45, newMelody: true }).config
+      .seed,
+    4242,
+  );
+  assert.equal(
+    refine("换个旋律", { newMelody: false }).config.seed,
+    NEXT_SEED,
+    "asked for in so many words",
+  );
+  // a message that was read in full and asks for something else keeps its tune (AGENT-12)
+  assert.equal(
+    refine("加长 15 秒", { duration: 45, newMelody: true }).config.seed,
+    4242,
+  );
+  assert.equal(
+    refine("慢一点", { bpm: 66, newMelody: true }).config.seed,
+    4242,
+  );
+  // … while words the rules cannot read in full leave the decision to the model
+  assert.equal(
+    refine("给我完全不一样的曲调走向", { newMelody: true }).config.seed,
+    NEXT_SEED,
+  );
+  // parameters nobody mentioned remain the model's to decide (small drifts aside)
+  const free = refine("让它更适合睡前听", { bpm: 62, energy: 0.15 });
+  assert.equal(free.config.bpm, 62);
+  assert.equal(free.config.energy, 0.15);
+  // pins still stand above everything
+  assert.equal(
+    agentPlanFromRaw(
+      { bpm: 96 },
+      request({ text: "快 10 bpm", pins: { bpm: 120 } }),
+    ).config.bpm,
+    120,
+  );
+});
+
+test("hardReads: exactly what the rules brain is sure enough of to hold another brain to", () => {
+  const read = (text: string, mode: "new" | "refine" = "refine") =>
+    hardReads(request({ text, mode }));
+  const sorted = (set: ReadonlySet<string>) => [...set].sort();
+  assert.deepEqual(sorted(read("快 10 bpm，鼓 40%").exact), [
+    "bpm",
+    "vol:drums",
+  ]);
+  assert.deepEqual(sorted(read("慢一点").exact), []);
+  assert.deepEqual(sorted(read("慢一点").directed), ["bpm"]);
+  assert.deepEqual(sorted(read("鼓大了点").directed), ["vol:drums"]);
+  assert.deepEqual(sorted(read("不要鼓，只留钢琴").muted), [
+    "bass",
+    "chords",
+    "drums",
+  ]);
+  assert.deepEqual(sorted(read("睡前冥想", "new").muted), []);
+  assert.equal(read("换个旋律").newMelody, true);
+  assert.equal(read("别换旋律").newMelody, false);
+  assert.deepEqual(sorted(read("别换乐器，速度不变").locked), [
+    "instrument",
+    "tempo",
+  ]);
+  assert.equal(read("慢一点").complete, true);
+  assert.equal(read("让它更适合睡前听").complete, false);
+  assert.deepEqual(read("最多 100 bpm").limits.bpm, {
+    set: undefined,
+    cap: 100,
+    floor: undefined,
+  });
+  // the vocabulary check behind the model's note
+  assert.deepEqual(sorted(fieldsNamed("降低了鼓的音量，速度也慢了一点")), [
+    "bpm",
+    "vol:drums",
+  ]);
+  assert.deepEqual(sorted(fieldsNamed("换成钢琴主奏，D 小调")), [
+    "instrument",
+    "key",
+  ]);
+  assert.deepEqual(sorted(fieldsNamed("旋律保持不变，贝斯轻一点")), [
+    "vol:bass",
+    "vol:melody",
+  ]);
+  assert.deepEqual(sorted(fieldsNamed("好的，已经调整。")), []);
+  assert.deepEqual(sorted(fieldsNamed("")), []);
+});
 
 test("describeChanges speaks in short Chinese phrases", () => {
   const before = { ...structuredClone(DEFAULT_CONFIG) };

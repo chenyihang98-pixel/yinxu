@@ -773,6 +773,58 @@ test("chat is limited to the 40 most recent turns with bounded text and reasonin
     );
 });
 
+test("FQ-02: a turn may carry the model's own words as a note — optional, one bounded line of text", () => {
+  const said = "把速度放慢了一些，听起来会更从容。";
+  const noted = normalizeProject({
+    ...legacyRecord(),
+    chat: [
+      turn(0, { role: "user" }),
+      turn(1, { brain: "llm", revision: 2, note: `  ${said}  ` }),
+      turn(2, { brain: "llm", note: "长".repeat(1000) }),
+      turn(3, { brain: "llm", note: "   " }),
+      turn(4, { brain: "rules" }),
+    ],
+  });
+  assert.equal(noted.chat?.[1].note, said, "trimmed, otherwise as written");
+  assert.equal(noted.chat?.[2].note?.length, 400, "at most 400 characters");
+  assert.equal(
+    "note" in (noted.chat?.[3] ?? {}),
+    false,
+    "an empty note is no note",
+  );
+  assert.equal("note" in (noted.chat?.[4] ?? {}), false);
+  assert.equal(
+    noted.chat?.[1].text,
+    turn(1).text,
+    "the answer itself is untouched",
+  );
+  // it survives the exported file and comes back on import
+  const imported = importProject(
+    exportProject({ ...noted, config: { ...noted.config, engine: 2 } }),
+  );
+  assert.equal(imported.chat?.[1].note, said);
+  assert.equal(imported.chat?.[2].note?.length, 400);
+  // control characters go, like everywhere else
+  const control = String.fromCharCode(0, 7, 27);
+  assert.equal(
+    normalizeProject({
+      ...legacyRecord(),
+      chat: [turn(1, { note: `慢${control}一点` })],
+    }).chat?.[0].note,
+    "慢一点",
+  );
+  for (const value of [7, null, ["a"], { text: "a" }, true])
+    assert.throws(
+      () =>
+        normalizeProject({
+          ...legacyRecord(),
+          chat: [{ ...turn(1), note: value }],
+        }),
+      /工程文件格式不正确/,
+      `note=${JSON.stringify(value)}`,
+    );
+});
+
 test("cloud info is bounded and an empty model is omitted", () => {
   const project = normalizeProject({
     ...legacyRecord(),

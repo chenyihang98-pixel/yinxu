@@ -196,8 +196,9 @@ test("F03: status values never contain secrets or non-status fields", async (t) 
   );
 });
 
-test("F03: an unreadable credential file fails no status call, and writes stay refused", async (t) => {
+test("F03: a credential file that cannot be used fails no status call, and reading it changes nothing", async (t) => {
   for (const content of [
+    "",
     "{ not json",
     "[]",
     "null",
@@ -205,7 +206,7 @@ test("F03: an unreadable credential file fails no status call, and writes stay r
     JSON.stringify({ version: 2, providers: [] }),
     JSON.stringify({ version: 1, encryptedApiKey: "***" }),
   ]) {
-    const { filename, store } = await fixture(t);
+    const { directory, filename, store } = await fixture(t);
     await fs.writeFile(filename, content);
     const overview = await store.getOverview();
     for (const provider of PROVIDERS)
@@ -216,21 +217,403 @@ test("F03: an unreadable credential file fails no status call, and writes stay r
     assert.deepEqual(overview.llm, { configured: false, damaged: true });
     assert.deepEqual(await store.getStatuses(), overview.providers);
     assert.deepEqual(await store.getLlmStatus(), overview.llm);
-    await assert.rejects(
-      store.saveCredentials("tencent", KEYS.tencent),
-      /无法读取服务凭据/,
-    );
-    await assert.rejects(
-      store.saveLlmSettings(LLM.anthropic),
-      /无法读取服务凭据/,
-    );
     await assert.rejects(store.getLlmSettings(), /无法读取服务凭据/);
+    await assert.rejects(store.getCredentials("tencent"), /无法读取服务凭据/);
+    await assert.rejects(store.hasKey("tencent"), /无法读取服务凭据/);
     assert.equal(
       await fs.readFile(filename, "utf8"),
       content,
       "the file is left exactly as it was",
     );
+    assert.deepEqual(await fs.readdir(directory), ["music-credentials.json"]);
   }
+});
+
+test("F03: a file written by a later format version is never taken for damage - every write stays refused", async (t) => {
+  for (const content of [
+    JSON.stringify({ version: 3, providers: {} }),
+    JSON.stringify({ version: 12, stores: [{ anything: true }] }),
+  ]) {
+    const notices = [];
+    const { directory, filename, safeStorage } = await fixture(t);
+    const store = createKeyStore(directory, safeStorage, {
+      onQuarantine: (notice) => notices.push(notice),
+    });
+    await fs.writeFile(filename, content);
+    for (const write of [
+      () => store.saveCredentials("tencent", KEYS.tencent),
+      () => store.saveKey(KEYS.elevenlabs.apiKey),
+      () => store.saveLlmSettings(LLM.anthropic),
+      () => store.deleteCredentials("tencent"),
+      () => store.deleteLlmSettings(),
+    ])
+      await assert.rejects(
+        write(),
+        (error) =>
+          error.name === "MusicError" &&
+          error.message ===
+            "无法读取服务凭据，请保留原数据目录并检查文件权限。",
+      );
+    assert.equal(await fs.readFile(filename, "utf8"), content);
+    assert.deepEqual(await fs.readdir(directory), ["music-credentials.json"]);
+    assert.deepEqual(notices, []);
+  }
+});
+
+/* ------------------------------------------- a damaged credential file */
+// A zero-byte or unparseable file used to refuse every save and every removal for ever:
+// the app could not be given a key again without deleting the file by hand.
+
+const DAMAGED_CONTENTS = {
+  "zero bytes": Buffer.alloc(0),
+  "only white space": Buffer.from("  \r\n"),
+  "not JSON": Buffer.from("{ not json"),
+  "cut off in the middle": Buffer.from(
+    '{"version":2,"providers":{"tencent":{"encryptedCred',
+  ),
+  "bytes that are no text": Buffer.from([0xff, 0xfe, 0x00, 0x80, 0xc3, 0x28]),
+  "an array": Buffer.from("[]"),
+  null: Buffer.from("null"),
+  "a number": Buffer.from("42"),
+  "an object without a version": Buffer.from('{"providers":{}}'),
+  "version 2 without its providers": Buffer.from(
+    JSON.stringify({ version: 2, providers: [] }),
+  ),
+  "version 1 without a usable key": Buffer.from(
+    JSON.stringify({ version: 1, encryptedApiKey: "***" }),
+  ),
+  "more than the size limit": Buffer.alloc(1024 * 1024 + 64, "x"),
+};
+const damagedBackupsIn = async (directory) =>
+  (await fs.readdir(directory)).filter((name) => /damaged/.test(name)).sort();
+const CLOCK = () => new Date("2026-10-09T12:34:56.789Z");
+const STAMPED = "music-credentials.damaged-20261009T123456Z.bak";
+
+/** A store over `directory` with a fixed clock that records what it tells the user. */
+function noticing(directory, safeStorage = fakeSafeStorage(), now = CLOCK) {
+  const notices = [];
+  return {
+    notices,
+    store: createKeyStore(directory, safeStorage, {
+      now,
+      onQuarantine: (notice) => notices.push(notice),
+    }),
+  };
+}
+
+test("a damaged credential file no longer refuses saving or removing: it is set aside, the store starts empty, and the user is told once", async (t) => {
+  const operations = {
+    "save a music service": {
+      run: (store) => store.saveCredentials("tencent", KEYS.tencent),
+      after: async (store, value) => {
+        assert.deepEqual(Object.keys(value.providers), ["tencent"]);
+        assert.deepEqual(await store.getCredentials("tencent"), KEYS.tencent);
+      },
+    },
+    "save the ElevenLabs key": {
+      run: (store) => store.saveKey(KEYS.elevenlabs.apiKey),
+      after: async (store) =>
+        assert.equal(await store.getKey(), KEYS.elevenlabs.apiKey),
+    },
+    "save the language model": {
+      run: (store) => store.saveLlmSettings(LLM.anthropic),
+      after: async (store, value) => {
+        assert.deepEqual(value.providers, {});
+        assert.equal((await store.getLlmSettings()).model, LLM.anthropic.model);
+      },
+    },
+    "remove a music service": {
+      run: (store) => store.deleteCredentials("tencent"),
+      after: async (_store, value) =>
+        assert.deepEqual(value, { version: 2, providers: {} }),
+    },
+    "remove the language model": {
+      run: (store) => store.deleteLlmSettings(),
+      after: async (_store, value) =>
+        assert.deepEqual(value, { version: 2, providers: {} }),
+    },
+  };
+  for (const [kind, bytes] of Object.entries(DAMAGED_CONTENTS)) {
+    for (const [name, operation] of Object.entries(operations)) {
+      const label = `${kind} / ${name}`;
+      const { directory, filename, readFile } = await fixture(t);
+      await fs.writeFile(filename, bytes);
+      const { store, notices } = noticing(directory);
+      assert.deepEqual((await store.getOverview()).llm, {
+        configured: false,
+        damaged: true,
+      });
+      assert.deepEqual(await damagedBackupsIn(directory), [], label);
+
+      await operation.run(store);
+
+      assert.deepEqual(await damagedBackupsIn(directory), [STAMPED], label);
+      assert.ok(
+        (await fs.readFile(path.join(directory, STAMPED))).equals(bytes),
+        `${label}: the damaged file is kept byte for byte`,
+      );
+      const value = await readFile();
+      assert.equal(value.version, 2, label);
+      await operation.after(store, value);
+      assert.deepEqual(
+        notices,
+        [{ backupName: STAMPED }],
+        `${label}: the user is told, once, where the old file went`,
+      );
+      // From here on it is an ordinary store: nothing is reported as damaged, copied or announced again.
+      const overview = await store.getOverview();
+      assert.equal(JSON.stringify(overview).includes("damaged"), false, label);
+      await store.saveCredentials("aliyun", KEYS.aliyun);
+      await store.saveLlmSettings(LLM.ollama);
+      await store.deleteCredentials("aliyun");
+      assert.deepEqual(await damagedBackupsIn(directory), [STAMPED], label);
+      assert.equal(notices.length, 1, label);
+      assert.deepEqual(
+        (await fs.readdir(directory)).sort(),
+        [STAMPED, "music-credentials.json"],
+        `${label}: no temporary file is left`,
+      );
+    }
+  }
+});
+
+test("a damaged credential file: reading sets nothing aside and says that the file is damaged", async (t) => {
+  for (const [kind, bytes] of Object.entries(DAMAGED_CONTENTS)) {
+    const { directory, filename } = await fixture(t);
+    await fs.writeFile(filename, bytes);
+    const { store, notices } = noticing(directory);
+    await store.getOverview();
+    await store.getStatuses();
+    await store.getLlmStatus();
+    for (const read of [
+      () => store.getCredentials("tencent"),
+      () => store.getKey(),
+      () => store.hasKey("aliyun"),
+      () => store.getLlmSettings(),
+    ])
+      await assert.rejects(
+        read(),
+        (error) =>
+          error.name === "MusicError" &&
+          error.message ===
+            "无法读取服务凭据：凭据文件已损坏。请在设置中重新填写并保存密钥。",
+        kind,
+      );
+    assert.deepEqual(await fs.readdir(directory), ["music-credentials.json"]);
+    assert.ok((await fs.readFile(filename)).equals(bytes), kind);
+    assert.deepEqual(notices, []);
+  }
+});
+
+test("a damaged credential file: an existing .bak is never written over, and the same damage is not copied twice", async (t) => {
+  const { directory, filename } = await fixture(t);
+  const damaged = Buffer.from("{ first damage");
+  await fs.writeFile(filename, damaged);
+  // Files that already carry the names this copy would get, with other content.
+  await fs.writeFile(path.join(directory, STAMPED), "an earlier copy");
+  await fs.writeFile(
+    path.join(directory, STAMPED.replace(".bak", "-2.bak")),
+    "another earlier copy",
+  );
+  const { store, notices } = noticing(directory);
+  await store.saveCredentials("tencent", KEYS.tencent);
+  const third = STAMPED.replace(".bak", "-3.bak");
+  assert.deepEqual(await damagedBackupsIn(directory), [
+    STAMPED.replace(".bak", "-2.bak"),
+    third,
+    STAMPED,
+  ]);
+  assert.equal(
+    await fs.readFile(path.join(directory, STAMPED), "utf8"),
+    "an earlier copy",
+  );
+  assert.equal(
+    await fs.readFile(
+      path.join(directory, STAMPED.replace(".bak", "-2.bak")),
+      "utf8",
+    ),
+    "another earlier copy",
+  );
+  assert.ok((await fs.readFile(path.join(directory, third))).equals(damaged));
+  assert.deepEqual(notices, [{ backupName: third }]);
+
+  // The same damaged file turns up again (restored from a backup, say): its copy is already there.
+  await fs.writeFile(filename, damaged);
+  const later = noticing(
+    directory,
+    fakeSafeStorage(),
+    () => new Date("2027-01-02T03:04:05Z"),
+  );
+  await later.store.saveCredentials("tencent", KEYS.tencent);
+  assert.equal((await damagedBackupsIn(directory)).length, 3, "no pile");
+  assert.deepEqual(later.notices, [{ backupName: third }]);
+  // Different damage is a different copy, under the time it was found.
+  await fs.writeFile(filename, "{ second damage");
+  await later.store.deleteCredentials("tencent");
+  const fourth = "music-credentials.damaged-20270102T030405Z.bak";
+  assert.equal(
+    await fs.readFile(path.join(directory, fourth), "utf8"),
+    "{ second damage",
+  );
+  assert.deepEqual(later.notices.at(-1), { backupName: fourth });
+  assert.equal((await damagedBackupsIn(directory)).length, 4);
+});
+
+test("a damaged credential file: if no copy can be made nothing is written; if the new file cannot be written the user is not told it was", async (t) => {
+  const { directory, filename } = await fixture(t);
+  const damaged = Buffer.from("");
+  await fs.writeFile(filename, damaged);
+  const { store, notices } = noticing(directory);
+  const realWrite = fs.writeFile;
+  let refuse = ".bak";
+  t.mock.method(fs, "writeFile", async (file, ...rest) => {
+    if (String(file).endsWith(refuse))
+      throw Object.assign(new Error("EACCES: permission denied"), {
+        code: "EACCES",
+      });
+    return realWrite(file, ...rest);
+  });
+  for (const write of [
+    () => store.saveCredentials("tencent", KEYS.tencent),
+    () => store.saveLlmSettings(LLM.anthropic),
+    () => store.deleteCredentials("tencent"),
+    () => store.deleteLlmSettings(),
+  ])
+    await assert.rejects(write(), (error) => {
+      assert.equal(error.name, "MusicError");
+      assert.equal(
+        error.message,
+        "凭据文件已损坏，而且无法在数据目录中为它留下备份，所以这次没有保存。请检查数据目录是否可写后重试。",
+      );
+      return true;
+    });
+  assert.deepEqual(await fs.readdir(directory), ["music-credentials.json"]);
+  assert.ok((await fs.readFile(filename)).equals(damaged));
+  assert.deepEqual(notices, []);
+
+  // The copy succeeds, the new file does not: the save fails as any save would, and says nothing about a copy.
+  refuse = ".tmp";
+  await assert.rejects(
+    store.saveCredentials("tencent", KEYS.tencent),
+    /无法保存加密凭据/,
+  );
+  assert.deepEqual(await damagedBackupsIn(directory), [STAMPED]);
+  assert.ok(
+    (await fs.readFile(filename)).equals(damaged),
+    "still the damaged file",
+  );
+  assert.deepEqual(notices, []);
+  // The next attempt goes through, reuses that copy and tells the user then.
+  t.mock.restoreAll();
+  await store.saveCredentials("tencent", KEYS.tencent);
+  assert.deepEqual(await damagedBackupsIn(directory), [STAMPED]);
+  assert.deepEqual(notices, [{ backupName: STAMPED }]);
+  assert.deepEqual(await store.getCredentials("tencent"), KEYS.tencent);
+});
+
+test("a damaged credential file: a save that would be refused anyway copies nothing; racing saves make one copy and one notice", async (t) => {
+  const { directory, filename } = await fixture(t);
+  await fs.writeFile(filename, "{ damaged");
+  const { store, notices } = noticing(directory);
+  await assert.rejects(
+    store.saveCredentials("tencent", { apiKey: "short" }),
+    /格式不正确/,
+  );
+  await assert.rejects(
+    store.saveCredentials("../main", KEYS.tencent),
+    /不支持/,
+  );
+  await assert.rejects(store.deleteCredentials("../main"), /不支持/);
+  await assert.rejects(store.saveLlmSettings({ kind: "nope" }), /不支持/);
+  await assert.rejects(
+    noticing(directory, fakeSafeStorage(false)).store.saveCredentials(
+      "tencent",
+      KEYS.tencent,
+    ),
+    /系统密钥保护不可用/,
+  );
+  assert.deepEqual(await fs.readdir(directory), ["music-credentials.json"]);
+  assert.equal(await fs.readFile(filename, "utf8"), "{ damaged");
+  assert.deepEqual(notices, []);
+
+  await Promise.all([
+    store.saveCredentials("tencent", KEYS.tencent),
+    store.saveKey(KEYS.elevenlabs.apiKey),
+    store.saveLlmSettings(LLM.ollama),
+    store.saveCredentials("volcengine", KEYS.volcengine),
+  ]);
+  assert.deepEqual(await damagedBackupsIn(directory), [STAMPED]);
+  assert.deepEqual(notices, [{ backupName: STAMPED }]);
+  const overview = await store.getOverview();
+  assert.deepEqual(
+    PROVIDERS.filter((provider) => overview.providers[provider].configured),
+    ["elevenlabs", "tencent", "volcengine"],
+  );
+  assert.equal(overview.llm.kind, "ollama");
+});
+
+test("a damaged credential file: telling the user can fail without failing the save; a file that cannot be read at all is left alone", async (t) => {
+  const { directory, filename, safeStorage } = await fixture(t);
+  await fs.writeFile(filename, "");
+  const store = createKeyStore(directory, safeStorage, {
+    now: CLOCK,
+    onQuarantine: () => {
+      throw new Error("the dialog could not be shown");
+    },
+  });
+  await store.saveCredentials("tencent", KEYS.tencent);
+  assert.deepEqual(await store.getCredentials("tencent"), KEYS.tencent);
+  // No listener at all (the unit-test default) is fine too.
+  const silent = await fixture(t);
+  await fs.writeFile(silent.filename, "");
+  await silent.store.saveCredentials("tencent", KEYS.tencent);
+  assert.equal((await damagedBackupsIn(silent.directory)).length, 1);
+
+  // Something that is not a file sits where the store should be: nothing can be read, nothing is replaced.
+  const blocked = await fixture(t);
+  await fs.mkdir(blocked.filename);
+  const { store: unreadable, notices } = noticing(blocked.directory);
+  for (const write of [
+    () => unreadable.saveCredentials("tencent", KEYS.tencent),
+    () => unreadable.deleteCredentials("tencent"),
+    () => unreadable.saveLlmSettings(LLM.anthropic),
+  ])
+    await assert.rejects(
+      write(),
+      (error) =>
+        error.message === "无法读取服务凭据，请保留原数据目录并检查文件权限。",
+    );
+  assert.deepEqual(await fs.readdir(blocked.directory), [
+    "music-credentials.json",
+  ]);
+  assert.deepEqual(notices, []);
+});
+
+test("main.cjs tells the user about the set-aside file in a dialog of its own, naming the copy", () => {
+  const { wires } = require("./helpers/source-shape.cjs");
+  const source = require("node:fs").readFileSync(
+    path.join(__dirname, "..", "electron", "main.cjs"),
+    "utf8",
+  );
+  assert.ok(
+    wires(
+      source,
+      `keyStore = createKeyStore(app.getPath("userData"), safeStorage, { onQuarantine: reportQuarantine })`,
+    ),
+  );
+  assert.ok(wires(source, `function reportQuarantine({ backupName }) {`));
+  const body = source.slice(
+    source.indexOf("function reportQuarantine"),
+    source.indexOf("function cancelJobs"),
+  );
+  assert.match(body, /dialog\.showMessageBox/);
+  assert.match(body, /之前保存的密钥需要重新填写/);
+  assert.match(body, /\$\{backupName\}/);
+  assert.match(
+    body,
+    /\.catch\(/,
+    "a dialog that fails is not an unhandled rejection",
+  );
 });
 
 test("F07: ids and top-level keys from a newer build are tolerated and survive every write", async (t) => {

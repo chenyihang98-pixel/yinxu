@@ -19,14 +19,19 @@ import {
   type Timing,
 } from "./form";
 import {
-  barsPerChord,
   chordSpans,
   composeComp,
   composePad,
   planHarmony,
   type Ctx,
+  type HarmonyPlan,
 } from "./harmony";
-import { composeArp, composeCounter, composeLead, leadTraits } from "./melody";
+import {
+  composeArp,
+  composeCounter,
+  composeLead,
+  type TuneNote,
+} from "./melody";
 import { seededRandom, type Rng } from "./random";
 import {
   SWUNG_FEELS,
@@ -72,6 +77,7 @@ import {
   lowIntervalClash,
   makeKey,
   type BeatNote,
+  type KeyContext,
 } from "./theory";
 
 /**
@@ -407,6 +413,16 @@ function pickMode(cfg: MusicConfig, style: StyleDef, rng: Rng): ModeDef {
   );
 }
 
+/**
+ * Whether the tune has no harmony layer under it in a section: it is then
+ * the stand-in itself and carries the music alone (see composeLead).
+ */
+const leadAlone = (plays: Record<PartRole, boolean[]>, index: number) =>
+  plays.lead[index] &&
+  !plays.comp[index] &&
+  !plays.pad[index] &&
+  !plays.arp[index];
+
 interface LayerPlan {
   /** which sections each layer plays in (indexed by section) */
   plays: Record<PartRole, boolean[]>;
@@ -483,7 +499,9 @@ function planLayers(
   // be holes in the music) is not a section. Where the energy and the hints
   // leave none of the harmony layers, the one the style brings in earliest
   // steps in — never one a hint has switched off — and where a style has no
-  // such layer left at all, the tune at least plays.
+  // such layer left at all, the tune at least plays — and then holds the
+  // piece together by itself: composeLead gives it a note in every bar and
+  // no long rests there, whatever density a hint asks for.
   const standIns = (
     [
       ["comp", style.comp],
@@ -500,7 +518,24 @@ function planLayers(
   return { plays, drumSetup, bassFeel, padDef, arpDef, counterDef, percDef };
 }
 
-export function compose(config: MusicConfig): Score {
+/** Everything that is settled before a note is written: key, time, form, harmony, layers. */
+interface Draft {
+  cfg: MusicConfig;
+  style: StyleDef;
+  hints: ArrangementHints;
+  rng: Rng;
+  key: KeyContext;
+  timing: Timing;
+  sections: SectionPlan[];
+  formNote: string | undefined;
+  harmony: HarmonyPlan;
+  layers: LayerPlan;
+  swing: number;
+  swingGrid: 8 | 16;
+  ctx: Ctx;
+}
+
+function draft(config: MusicConfig): Draft {
   const cfg = clampConfig((config ?? {}) as Partial<MusicConfig>);
   const style = getStyle(cfg.mood);
   const hints: ArrangementHints = cfg.arrangement ?? {};
@@ -521,9 +556,7 @@ export function compose(config: MusicConfig): Score {
   });
 
   /* ---- which layers play where ---- */
-  const lead: VoiceId = cfg.instrument;
-  const { plays, drumSetup, bassFeel, padDef, arpDef, counterDef, percDef } =
-    planLayers(cfg, style, sections);
+  const layers = planLayers(cfg, style, sections);
 
   /* ---- time feel: one swing value for everything ---- */
   const feelSwing = hints.drums ? SWUNG_FEELS[hints.drums] : undefined;
@@ -534,6 +567,52 @@ export function compose(config: MusicConfig): Score {
     0.66,
   );
   const swingGrid = feelSwing !== undefined ? 8 : (style.swingGrid ?? 8);
+  const ctx: Ctx = {
+    config: cfg,
+    style,
+    key,
+    timing,
+    sections,
+    harmony,
+    rng,
+    plays: layers.plays,
+    feel: { swing, grid: swingGrid },
+  };
+  return {
+    cfg,
+    style,
+    hints,
+    rng,
+    key,
+    timing,
+    sections,
+    formNote,
+    harmony,
+    layers,
+    swing,
+    swingGrid,
+    ctx,
+  };
+}
+
+export function compose(config: MusicConfig): Score {
+  const {
+    cfg,
+    style,
+    rng,
+    key,
+    timing,
+    sections,
+    formNote,
+    harmony,
+    layers,
+    swing,
+    swingGrid,
+    ctx,
+  } = draft(config);
+  const lead: VoiceId = cfg.instrument;
+  const { plays, drumSetup, bassFeel, padDef, arpDef, counterDef, percDef } =
+    layers;
   const time = makeTimeMap(
     timing,
     swing,
@@ -545,17 +624,6 @@ export function compose(config: MusicConfig): Score {
       bars: section.playBars,
     })),
   );
-  const ctx: Ctx = {
-    config: cfg,
-    style,
-    key,
-    timing,
-    sections,
-    harmony,
-    rng,
-    plays,
-    feel: { swing, grid: swingGrid },
-  };
   const human: Humanize = {
     timing: clamp(style.humanize.timing, 0, 30) / 1000,
     velocity: clamp(style.humanize.velocity, 0, 0.3),
@@ -703,14 +771,23 @@ export function compose(config: MusicConfig): Score {
     energy: round(section.energy, 3),
   }));
   publicSections[publicSections.length - 1].end = timing.duration;
-  const bpmText = String(Math.round(timing.bpm));
+  // the tempo as it is played: a fitted loop may sit a fraction off a whole number
+  const bpmText =
+    Math.abs(timing.bpm - Math.round(timing.bpm)) < 0.05
+      ? String(Math.round(timing.bpm))
+      : timing.bpm.toFixed(1);
   const notes: string[] = [
     `${styleLabel(cfg.mood)}：${style.summary}。${key.label}（${SCALE_LABELS[key.scaleName]}），${bpmText} BPM，4/4 拍。`,
     // a hinted form that had to change says so on the same line (never cut by the six-line limit)
     `${timing.loop ? "循环曲式" : "曲式"}：${describeForm(publicSections)}。${
       formNote ? `${formNote}。` : ""
     }`,
-    `配器：${instrumentNames(parts, cfg).join("、")}。`,
+    // a tune left on its own says so: it does not thin out or fall silent then
+    `配器：${instrumentNames(parts, cfg).join("、")}。${
+      sections.some((_, index) => leadAlone(plays, index))
+        ? "和声声部都已关闭，主旋律独自演奏，会保持连贯、不留长空拍。"
+        : ""
+    }`,
   ];
   const outline = harmony.outline;
   const body = outline.verse ?? outline.chorus ?? outline.bridge;
@@ -747,13 +824,15 @@ export function compose(config: MusicConfig): Score {
       }。${unusedNote}`,
     );
   } else if (unusedNote) notes.push(unusedNote);
+  // a loop is whole bars: the tempo gives way only by a hair (see planTiming),
+  // otherwise it is kept and the length moves to the nearest bars
   if (timing.adjusted === "tempo")
     notes.push(
-      `为了无缝循环，速度微调为 ${bpmText} BPM（${timing.bars} 小节正好 ${cfg.duration} 秒）。`,
+      `为了无缝循环，速度微调为 ${bpmText} BPM（设定 ${cfg.bpm}），${timing.bars} 小节正好 ${cfg.duration} 秒。`,
     );
   else if (timing.adjusted === "duration")
     notes.push(
-      `为了无缝循环，时长取整为 ${timing.bars} 小节，共 ${round(timing.duration, 1)} 秒。`,
+      `为了无缝循环，速度保持 ${cfg.bpm} BPM，时长取整为 ${timing.bars} 小节，共 ${round(timing.duration, 1)} 秒（设定 ${cfg.duration} 秒）。`,
     );
   if (timing.loop) {
     // only what was really written: a turnaround chord, a drum fill, both or neither
@@ -823,67 +902,267 @@ function instrumentNames(
   return names;
 }
 
+/** What a change of settings does to the tune (see melodyContinuity). */
+export type MelodyContinuity = "identical" | "adapted" | "rhythm" | "new";
+
+/** Steps per bar of the grid two tunes are compared on (thirty-seconds: a grace note has a place of its own). */
+const TUNE_GRID = 32;
+
+/** The tune of one section on that grid: the scale degrees written at each step. */
+interface TuneSection {
+  /** "verse#0", "chorus#1" …: the same section in another form of the piece */
+  name: string;
+  type: Section["type"];
+  bars: number;
+  /** step from the start of the section → semitones above the tonic of the notes struck there */
+  notes: Map<number, number[]>;
+}
+interface Tune {
+  sections: TuneSection[];
+  /** notes of the tune as written (a tremolo is one note) */
+  total: number;
+  /** every note as it is struck, the strokes of a tremolo included: equal for two leads that play the same thing */
+  struck: string;
+}
+
+const tuneCache = new Map<string, Tune>();
+
+/** The lead of a piece as the composer writes it, section by section (cached: the agent asks about the same piece again and again). */
+function tuneOf(cfg: MusicConfig): Tune {
+  // (the faders, the reverb and the description never reach a note)
+  const id = JSON.stringify({
+    ...cfg,
+    prompt: undefined,
+    volumes: undefined,
+    reverb: undefined,
+  });
+  const cached = tuneCache.get(id);
+  if (cached) {
+    // (most recently used last)
+    tuneCache.delete(id);
+    tuneCache.set(id, cached);
+    return cached;
+  }
+  const { ctx, key, timing, sections } = draft(cfg);
+  const line: TuneNote[] = [];
+  const played = composeLead(ctx, line);
+  const seen = new Map<string, number>();
+  const tune: Tune = {
+    sections: sections.map((section) => {
+      const occurrence = seen.get(section.type) ?? 0;
+      seen.set(section.type, occurrence + 1);
+      return {
+        name: `${section.type}#${occurrence}`,
+        type: section.type,
+        bars: section.bars,
+        notes: new Map<number, number[]>(),
+      };
+    }),
+    total: line.length,
+    struck: "",
+  };
+  const last = sections.length - 1;
+  /** a note's section, its step on the grid from the start of that section, and its scale degree */
+  const place = (note: TuneNote) => {
+    const bar = Math.floor(note.beat / timing.beatsPerBar + 1e-6);
+    let index = sections.findIndex(
+      (section) =>
+        bar >= section.startBar && bar < section.startBar + section.bars,
+    );
+    if (index < 0) index = last;
+    const step = Math.round(
+      ((note.beat - sections[index].startBar * timing.beatsPerBar) *
+        TUNE_GRID) /
+        timing.beatsPerBar,
+    );
+    return { index, step, degree: (((note.midi - key.tonic) % 12) + 12) % 12 };
+  };
+  for (const note of line) {
+    const { index, step, degree } = place(note);
+    const at = tune.sections[index].notes;
+    at.set(step, [...(at.get(step) ?? []), degree]);
+  }
+  tune.struck = played
+    .map((note) => {
+      const { index, step, degree } = place(note);
+      return `${tune.sections[index].name}@${step}:${degree}`;
+    })
+    .sort()
+    .join(" ");
+  if (tuneCache.size >= 32)
+    tuneCache.delete(tuneCache.keys().next().value as string);
+  tuneCache.set(id, tune);
+  return tune;
+}
+
+/** Notes of `a` that `b` has too, in the bars both sections have: by place alone, and by place and scale degree. */
+function sharedNotes(a: TuneSection, b: TuneSection, maxBars = Infinity) {
+  const steps = Math.min(a.bars, b.bars, maxBars) * TUNE_GRID;
+  const inside = (section: TuneSection) => {
+    let count = 0;
+    for (const [step, degrees] of section.notes)
+      if (step >= 0 && step < steps) count += degrees.length;
+    return count;
+  };
+  let onsets = 0;
+  let notes = 0;
+  for (const [step, degrees] of a.notes) {
+    if (step < 0 || step >= steps) continue;
+    const other = b.notes.get(step);
+    if (!other) continue;
+    const left = other.slice();
+    for (const degree of degrees) {
+      if (!left.length) break;
+      onsets++;
+      const match = left.indexOf(degree);
+      if (match >= 0) {
+        notes++;
+        left.splice(match, 1);
+      } else left.pop();
+    }
+  }
+  const counts = [inside(a), inside(b)];
+  return {
+    onsets,
+    notes,
+    most: Math.max(...counts),
+    least: Math.min(...counts),
+  };
+}
+
+/** The section two versions of a piece are compared on first: the verse where both have one. */
+const FIRST_SECTION: Section["type"][] = [
+  "verse",
+  "chorus",
+  "bridge",
+  "build",
+  "breakdown",
+  "outro",
+  "intro",
+];
+
+/** Shares of the tune that two versions of a piece have in common (see melodyRetention). */
+export interface MelodyRetention {
+  /** of all notes of the lead, those that keep their place in their section and their scale degree */
+  whole: number;
+  /** every note is struck at the same place on the same degree, the strokes of a tremolo included */
+  same: boolean;
+  /** the same inside the bars both versions have (sections matched by kind and order) */
+  common: number;
+  /** the same inside the first verse (at most eight bars; the first kind of section both have) */
+  verse: number;
+  /** of the first verse's notes, those that keep their place, whatever their pitch */
+  rhythm: number;
+  /**
+   * Of the notes of the SPARSER first verse, those the busier one has too
+   * (place and scale degree): near 1 when a tune was only thinned or filled,
+   * however many notes that took away or added.
+   */
+  contained: number;
+}
+
 /**
- * What a change of settings does to the tune, worked out from the two configs
- * by the composer's own rules (see composeLead: the tune is a function of the
- * seed, the style and the section family; everything else adapts it).
- *   "identical" every lead note keeps its pitch and its place on the beat
- *               grid. Dynamics, the tempo itself and the swing of the clock
- *               may follow the change: reverb, faders, drum and bass feel,
- *               layers, and any tempo or energy change that stays inside the
- *               tune's dead zone and keeps the form.
- *   "adapted"   the same motifs, fitted to the new settings: transposed,
- *               thinned or ornamented, moved by octaves for another lead,
- *               settled on other chords or laid over another form.
- *   "new"       another tune: a new seed, another style, another kind of
- *               motion, or the frozen v0.2 engine on either side.
+ * How much of the tune a change of settings keeps, measured on the two leads
+ * as the composer writes them (a note re-struck as a tremolo is one note). A
+ * share is counted against the busier of the two versions, so notes that
+ * were taken away or added count as changed.
+ * Scale degrees are counted from the tonic and by pitch class: a tune that
+ * is transposed, or played in another octave, keeps every one of them.
+ */
+export function melodyRetention(
+  before: MusicConfig,
+  after: MusicConfig,
+): MelodyRetention {
+  const a = tuneOf(clampConfig((before ?? {}) as Partial<MusicConfig>));
+  const b = tuneOf(clampConfig((after ?? {}) as Partial<MusicConfig>));
+  let notes = 0;
+  let most = 0;
+  for (const section of a.sections) {
+    const other = b.sections.find((item) => item.name === section.name);
+    if (!other) continue;
+    const shared = sharedNotes(section, other);
+    notes += shared.notes;
+    most += shared.most;
+  }
+  const total = Math.max(a.total, b.total);
+  const whole = total ? notes / total : 1;
+  const common = most ? notes / most : 1;
+  const first = (tune: Tune, type: Section["type"]) =>
+    tune.sections.find((section) => section.type === type);
+  const type =
+    FIRST_SECTION.find((item) => first(a, item) && first(b, item)) ?? "verse";
+  const left = first(a, type);
+  const right = first(b, type);
+  const same = a.struck === b.struck;
+  if (!left || !right)
+    return { whole, same, common, verse: 0, rhythm: 0, contained: 0 };
+  const shared = sharedNotes(left, right, 8);
+  return shared.most
+    ? {
+        whole,
+        same,
+        common,
+        verse: shared.notes / shared.most,
+        rhythm: shared.onsets / shared.most,
+        contained: shared.least ? shared.notes / shared.least : 0,
+      }
+    : { whole, same, common, verse: 1, rhythm: 1, contained: 1 };
+}
+
+/**
+ * What each answer of melodyContinuity promises about the two composed
+ * pieces, as shares of notes: "identical" of the whole lead (place and scale
+ * degree), "adapted" of the first verse (place and scale degree), "rhythm"
+ * of the first verse (place alone). The composer answers from stricter
+ * thresholds than these, so that a measurement on the finished scores —
+ * humanised, swung, a tremolo counted as one note or as many — still finds
+ * the promise kept.
+ */
+export const MELODY_PROMISE = { identical: 0.99, adapted: 0.6, rhythm: 0.85 };
+
+/**
+ * What a change of settings does to the tune. The answer is not predicted
+ * from the settings: both leads are written and compared (melodyRetention),
+ * so it is true of the two pieces whatever combination of controls and hints
+ * lies between them.
+ *   "identical" every note keeps its place and its scale degree: the same
+ *               tune, possibly in another key or octave (a note the
+ *               instrument cannot reach is played an octave nearer), at
+ *               another tempo or with other dynamics. Reverb, faders, drum
+ *               and bass feel, layers, a nudge of tempo or energy, another
+ *               key of the same mode.
+ *   "adapted"   the same motifs, fitted to the new settings: at least two
+ *               thirds of the first verse's notes keep both place and scale
+ *               degree. Thinned or filled a little, ornamented, laid over
+ *               another form, settled on a chord that changed, a chorus
+ *               lifted more or less for another lead.
+ *   "rhythm"    the rhythm of the tune survives and the pitches are written
+ *               again: nine tenths of the first verse's notes keep their
+ *               place, but not their degree. Major to minor, a register or
+ *               progression hint, a lead for which the style keeps another
+ *               scale.
+ *   "new"       another tune: a new seed, another style, or settings so far
+ *               apart that neither the notes nor the rhythm are kept to that
+ *               measure; also the frozen v0.2 engine on either side. (A tune
+ *               thinned to half its notes by a density hint counts here too,
+ *               by the letter of the measure: MelodyRetention.contained
+ *               tells that case from a tune that was drawn again.)
  * tests/music-continuity.test.ts holds every answer against composed scores.
  */
 export function melodyContinuity(
   before: MusicConfig,
   after: MusicConfig,
-): "identical" | "adapted" | "new" {
+): MelodyContinuity {
   if ((before?.engine ?? 2) !== 2 || (after?.engine ?? 2) !== 2) return "new";
   const a = clampConfig((before ?? {}) as Partial<MusicConfig>);
   const b = clampConfig((after ?? {}) as Partial<MusicConfig>);
+  // another seed or style draws other motifs, however alike two sparse tunes may come out
   if (a.seed !== b.seed || a.mood !== b.mood) return "new";
-  if (a.arrangement?.melody?.motion !== b.arrangement?.melody?.motion)
-    return "new";
-  const style = getStyle(a.mood);
-  /** everything the lead's pitches and beat positions are computed from */
-  const basis = (cfg: MusicConfig) => {
-    const timing = planTiming(cfg, style);
-    const sections = planFormWithNote(cfg, style, timing).sections;
-    const { plays } = planLayers(cfg, style, sections);
-    const traits = leadTraits(cfg, style, timing.bpm);
-    const def = style.melody;
-    return JSON.stringify({
-      key: cfg.key,
-      instrument: cfg.instrument,
-      // ornaments, pickups and the variation of the harmony all hang on it
-      complexity: cfg.complexity,
-      loop: timing.loop,
-      bars: timing.bars,
-      finalBar: timing.finalBar,
-      sections: sections.map((section) => [
-        section.type,
-        section.bars,
-        section.playBars,
-        barsPerChord(style, timing.bpm, section.type),
-        plays.lead[section.index],
-      ]),
-      progression: cfg.arrangement?.progression ?? null,
-      register: cfg.arrangement?.melody?.register ?? null,
-      activity: traits.activity,
-      lift: traits.lift,
-      coarse: traits.coarse,
-      // the tempo steps of the decorations count only where the style uses them
-      turn: def.ornaments > 0 ? traits.turnUnit : 0,
-      grace: (def.chromatic ?? 0) > 0 ? traits.graceLength : 0,
-      stroke: (def.tremolo ?? 0) > 0 ? traits.stroke : 0,
-    });
-  };
-  return basis(a) === basis(b) ? "identical" : "adapted";
+  const kept = melodyRetention(a, b);
+  if (kept.whole >= 0.999 && kept.same) return "identical";
+  if (kept.verse >= 2 / 3) return "adapted";
+  if (kept.rhythm >= 0.9) return "rhythm";
+  return "new";
 }
 
 /** The light summary the UI keeps next to the audio. */

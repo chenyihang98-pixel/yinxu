@@ -6,12 +6,14 @@
  *
  * A tip never appears on its own: not when code moves the focus (a finished
  * job focuses the play button), and not again on the control that was just
- * clicked. `data-tip-side="bottom"` puts it under its anchor — for controls
- * that have something worth reading right above them.
+ * clicked. `data-tip-side="bottom"` puts it under its anchor and
+ * `data-tip-side="left"` beside it — for controls that have something worth
+ * reading right above them.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { tipFocusAllowed, tipPlacement } from "../logic/tooltip";
+import { tipFocusAllowed, tipPlacement, tipSide } from "../logic/tooltip";
+import type { TipSide } from "../logic/tooltip";
 
 const HOVER_DELAY_MS = 450;
 /** A tip shown for keyboard focus goes away by itself; a hovered one stays. */
@@ -20,7 +22,7 @@ const FOCUS_SHOWN_MS = 2600;
 interface Shown {
   text: string;
   anchor: DOMRect;
-  side: "top" | "bottom";
+  side: TipSide;
 }
 
 function tipTarget(node: EventTarget | null): HTMLElement | null {
@@ -64,7 +66,7 @@ export function TooltipLayer() {
         setShown({
           text: now,
           anchor: target.getBoundingClientRect(),
-          side: target.dataset.tipSide === "bottom" ? "bottom" : "top",
+          side: tipSide(target.dataset.tipSide),
         });
         if (lasts) expiry = setTimeout(hide, lasts);
       }, delay);

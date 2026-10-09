@@ -89,14 +89,15 @@ export const rock: StyleDef = {
     cells: ["x..x..x.", "x.x.x...", "x...x.x.", "__x.x.x.", "x.x.x.x.", "x.xx....", "x.....x."],
   },
   // every lead goes through the same amp (mix.lead.drive); quiet, fast-decaying ones are turned up against the guitars
+  // (all set against mix.lead.gain: they came down with it, by the same half decibel)
   lead: {
-    piano: { gain: 0.7 },
-    epiano: { gain: 0.75 },
-    pluck: { gain: 0.7 },
-    marimba: { gain: 0.85 },
-    vibes: { gain: 0.72 },
-    guzheng: { gain: 0.64, highCut: 5500 },
-    dizi: { gain: 0.58, highCut: 5500 },
+    piano: { gain: 0.66 },
+    epiano: { gain: 0.7 },
+    pluck: { gain: 0.66 },
+    marimba: { gain: 0.8 },
+    vibes: { gain: 0.68 },
+    guzheng: { gain: 0.6, highCut: 5500 },
+    dizi: { gain: 0.54, highCut: 5500 },
   },
   comp: {
     voice: "overdrive",
@@ -185,7 +186,12 @@ export const rock: StyleDef = {
   // section by a clear margin — at 0.74 one of the review seeds had them 0.2 LU apart)
   form: { loop: "AB", intro: 0.8, outro: 0.8, tail: 2.5, energy: { verse: [0.66, 0.02] } },
   mix: {
-    lead: { gain: 0.64, reverb: 0.22, delay: 0.12, drive: 0.25 },
+    // (0.6, down from 0.64: with the verses pulled back to 0.66 the guitars, bass and kit play
+    // softer for half the piece, and over five seeds the lead stood half a LU further in front
+    // of them than in the mix that was reviewed. At 0.6 every stem's five-seed mean is within
+    // 0.1 LU of that mix again; a single seed still moves by ±0.75 LU with the tune it draws.
+    // Not lower: at 0.59 the kit is more than 0.5 LU over a flute lead.)
+    lead: { gain: 0.6, reverb: 0.22, delay: 0.12, drive: 0.25 },
     // one guitar part: an ensemble chorus spreads it left and right the way a double-tracked take would sit
     comp: { gain: 0.39, pan: 0, width: 1.5, reverb: 0.15, chorus: 0.5, lowCut: 80, drive: 0.5 },
     pad: { gain: 0.2 },

@@ -32,6 +32,7 @@ import {
 import type { InstrumentId, StyleId } from "../../music/catalog";
 import { FIELD_LABELS } from "../../state/content";
 import { percent } from "../../state/format";
+import { houseQuotes } from "../../state/logic";
 import { DURATION_CHOICES } from "../../state/plan";
 import type {
   AppActions,
@@ -173,6 +174,12 @@ export interface InspectorProps {
   variationLabel: string;
   /** the tempo / length the draft will really get from the local engine */
   fit: { bpm?: string; duration?: string };
+  /** the pending edits would sound exactly like this version: nothing to apply */
+  inaudible: boolean;
+  /** lengths (seconds) the selected engine accepts, when it enforces a range */
+  durationRange: readonly [number, number] | null;
+  /** a question from the app is open: nothing here starts another one */
+  asking: boolean;
   notes: readonly string[];
   /** the panel is a collapsible card (below 1100 px) */
   collapsible: boolean;
@@ -197,6 +204,10 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
   const durations = [
     ...new Set<number>([...DURATION_CHOICES, draft.duration]),
   ].sort((a, b) => a - b);
+  const range = props.durationRange;
+  const offered = (seconds: number) =>
+    !range || (seconds >= range[0] && seconds <= range[1]);
+  const locked = busy || props.asking;
 
   const amount = (
     field: "energy" | "complexity" | "reverb",
@@ -379,8 +390,14 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
           }
         >
           {durations.map((seconds) => (
-            <option key={seconds} value={seconds}>
-              {seconds} 秒
+            <option
+              key={seconds}
+              value={seconds}
+              disabled={!offered(seconds) && seconds !== draft.duration}
+            >
+              {offered(seconds)
+                ? `${seconds} 秒`
+                : `${seconds} 秒 · 该引擎不支持`}
             </option>
           ))}
         </Select>
@@ -412,7 +429,8 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
           </h3>
           <ul data-testid="arrangement-notes">
             {props.notes.map((note, index) => (
-              <li key={index}>{note}</li>
+              // the engine's notes, quoted the way the rest of the interface quotes
+              <li key={index}>{houseQuotes(note)}</li>
             ))}
           </ul>
         </section>
@@ -444,7 +462,8 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
             block
             data-testid="apply-draft"
             icon={<WandSparkles size={15} aria-hidden />}
-            disabled={!props.canApply || busy}
+            disabled={!props.canApply || locked || props.inaudible}
+            aria-describedby={id("apply-hint")}
             onClick={() => void actions.applyDraft()}
           >
             {count === 0 && props.canApply
@@ -462,7 +481,12 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
           </Button>
         </div>
         {(count > 0 || props.canApply) && (
-          <p className="insp-hint" data-testid="apply-hint">
+          <p
+            className="insp-hint"
+            id={id("apply-hint")}
+            data-testid="apply-hint"
+            data-inaudible={props.inaudible || undefined}
+          >
             {props.applyHint}
           </p>
         )}
@@ -472,6 +496,9 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
         className="insp-variation"
         data-testid="new-melody"
         icon={<Dices size={15} aria-hidden />}
+        // beside the button where there is room: the line about 应用调整
+        // right above it stays readable
+        data-tip-side="left"
         data-tip={
           props.paid
             ? "按当前作品的设置让云端重新生成一首，按服务商计费"
@@ -479,7 +506,7 @@ export const Inspector = memo(function Inspector(props: InspectorProps) {
               ? `保持当前作品的设置，换一组新的旋律；这 ${count} 项修改不会用上，会留在新版本上等待应用`
               : "保持当前作品的设置，换一组新的旋律"
         }
-        disabled={busy}
+        disabled={locked}
         onClick={() => void actions.variation()}
       >
         {props.variationLabel}

@@ -27,6 +27,7 @@ import {
   SCENARIO_GROUPS,
   STYLE_CARDS,
   THREAD_EXAMPLES,
+  keyShapeWarning,
   modelNameHint,
   scenarioInspiration,
   styleInspiration,
@@ -54,6 +55,7 @@ import {
   isUnsure,
   planFromDraft,
   planPreview,
+  planVariation,
   suggestionsFor,
   truthfulTiming,
   withAskedDrums,
@@ -76,9 +78,15 @@ import {
   stemInstruments,
 } from "../src/ui/logic/instruments";
 import {
+  DIALOG_HOLD_MS,
+  keyHeld,
+  pointerHeld,
+} from "../src/ui/logic/dialogGuard";
+import {
   NAVIGATION_WINDOW_MS,
   tipFocusAllowed,
   tipPlacement,
+  tipSide,
 } from "../src/ui/logic/tooltip";
 import type { MusicConfig, Project } from "../src/types";
 import { defer, harness, localProject, settle } from "./helpers/app-fakes";
@@ -87,6 +95,7 @@ import {
   chordLabelWidth,
   chordLayout,
   chordPill,
+  estimateChordText,
   percentAt,
   resamplePeaks,
   sliderRatio,
@@ -505,6 +514,40 @@ const fresh = (text: string, pins = {}) => {
   return enforcePins(planWithRules(request), request);
 };
 
+/**
+ * Which loops the composer bends, and by how much, is the composer's own
+ * business (src/music/form.ts) and has changed more than once. The examples
+ * below are therefore found, not written down: a loop whose tempo the
+ * composer moves to close on the asked length, one whose length it moves,
+ * and tempo nudges that come out as the very same audio. What is asserted
+ * is what the interface says about them.
+ */
+const loopExamples = (() => {
+  const all = STYLES.flatMap((style) =>
+    [30, 60, 15, 90, 120].map((duration) => styled(style.id, { duration })),
+  );
+  const tempo = all.find(
+    (config) => formatBpm(fittedTiming(config).bpm) !== String(config.bpm),
+  );
+  const length = all.find(
+    (config) =>
+      formatSeconds(fittedTiming(config).duration) !== String(config.duration),
+  );
+  if (!tempo || !length)
+    throw new Error("no loop is fitted any more: the UX-04 tests need a look");
+  return { tempo, length };
+})();
+/** Tempos next to `config`'s that the composer fits back onto the same audio. */
+const sameSounding = (config: MusicConfig): number[] => {
+  const at = fittedTiming(config);
+  return [-3, -2, -1, 1, 2, 3]
+    .map((step) => config.bpm + step)
+    .filter((bpm) => {
+      const next = fittedTiming({ ...config, bpm });
+      return next.bpm === at.bpm && next.duration === at.duration;
+    });
+};
+
 /* ---------------- UX-04: tempo and length are the audio's ---------------- */
 
 test("UX-04: fittedTiming is the composer's own tempo and length, for every style, length and structure", () => {
@@ -562,20 +605,28 @@ test("UX-04: header, library card and footnote state what the audio is; the sett
     askedBpm: 140,
   });
 
+  // a snapped length: 15 s at 80 BPM is not a whole number of bars (v0.3.0: "15 秒" under a 0:18 player)
   const chill = work(styled("chill", { duration: 15, energy: 0.12 }));
+  const snapped = fittedTiming(chill.config);
+  assert.equal(snapped.bpm, 80, "this loop keeps its tempo");
+  assert.notEqual(snapped.duration, 15, "and gives way on the length");
+  assert.equal((snapped.duration * 80) % 240, 0, "whole bars");
   assert.equal(
     metaLine(chill),
     "慵懒松弛 · 80 BPM · F 大调 · 电钢琴 · 循环片段",
   );
   assert.equal(
     fitNotice(chill),
-    "设定 15 秒；循环片段按整小节对齐，实际是 18 秒",
+    `设定 15 秒；循环片段按整小节对齐，实际是 ${formatSeconds(snapped.duration)} 秒`,
   );
   // not rendered yet (a fresh import): the card already shows the length it will have
-  assert.equal(cardLine(chill), "慵懒松弛 · 80 BPM · 0:18 · 本地作曲");
+  assert.equal(
+    cardLine(chill),
+    `慵懒松弛 · 80 BPM · 0:${String(Math.floor(snapped.duration)).padStart(2, "0")} · 本地作曲`,
+  );
   assert.deepEqual(workTiming(chill), {
     bpm: 80,
-    duration: 18,
+    duration: snapped.duration,
     askedDuration: 15,
   });
 
@@ -627,8 +678,10 @@ test("UX-04: the inspector says what a loop draft will really get", () => {
   assert.deepEqual(draftFit(styled("chiptune", { duration: 60 })), {
     bpm: "循环片段按整小节对齐：实际 144 BPM",
   });
+  const short = fittedTiming(styled("chill", { duration: 15 }));
+  assert.notEqual(short.duration, 15);
   assert.deepEqual(draftFit(styled("chill", { duration: 15 })), {
-    duration: "循环片段按整小节对齐：实际 18 秒（6 小节）",
+    duration: `循环片段按整小节对齐：实际 ${formatSeconds(short.duration)} 秒（${short.bars} 小节）`,
   });
   assert.deepEqual(
     draftFit(styled("chiptune", { duration: 60, loop: false })),
@@ -645,10 +698,18 @@ test("UX-04: the preview promises the fitted tempo and length, with the setting 
     planPreview("", { mood: "chiptune", duration: 60 })?.line,
     "将创作：像素 8-bit · 144 BPM（设定 140） · C 大调 · 8-bit 方波 · 60 秒 · 循环片段",
   );
-  assert.match(
-    planPreview("雨夜咖啡馆，慵懒的钢琴和轻轻的鼓点", { duration: 15 })?.line ??
-      "",
-    /^将创作：慵懒松弛 · 80 BPM · .* · 18 秒（设定 15 秒） · 循环片段$/,
+  const rainy = planPreview("雨夜咖啡馆，慵懒的钢琴和轻轻的鼓点", {
+    duration: 15,
+  });
+  assert.ok(rainy);
+  const rainyFit = fittedTiming(rainy.config);
+  assert.notEqual(rainyFit.duration, 15);
+  assert.ok(
+    rainy.line.startsWith("将创作：慵懒松弛 · 80 BPM · ") &&
+      rainy.line.endsWith(
+        ` · ${formatSeconds(rainyFit.duration)} 秒（设定 15 秒） · 循环片段`,
+      ),
+    rainy.line,
   );
   // a cloud service only gets the description: there the settings are a target
   assert.match(
@@ -733,18 +794,34 @@ test("UX-04: the producer's reply, chips and tags state the fitted tempo and len
 });
 
 test("UX-04: a refinement's arrow runs from the fitted tempo to the fitted tempo", () => {
-  // 慵懒松弛 at 30 s plays at 80; "慢一点" sets 68, which the loop fits to 64
+  // 慵懒松弛 at 30 s plays at 80; "慢一点" sets 68 — and the loop is fitted again
   const base = work(styled("chill"));
   const raw = refine(base.config, "慢一点");
   assert.equal(raw.config.bpm, 68);
   assert.match(raw.reply, /速度 80 → 68 BPM/);
+  const slow = fittedTiming(raw.config);
+  const to = formatBpm(slow.bpm);
+  const seconds = formatSeconds(slow.duration);
   const plan = truthfulTiming(raw, "local", base);
-  assert.match(plan.reply, /^好的：速度 80 → 64 BPM。/);
-  assert.ok(
-    plan.reasoning.includes("循环片段按整小节对齐：实际 64 BPM（设定 68）"),
-    plan.reasoning.join(" / "),
-  );
-  assert.ok(plan.tags.includes("64 BPM") && !plan.tags.includes("68 BPM"));
+  assert.ok(plan.reply.startsWith(`好的：速度 80 → ${to} BPM。`), plan.reply);
+  // whichever of the two gave way, one chip says so, and the tag is the audio's tempo
+  assert.ok(to !== "68" || seconds !== "30", "this loop is fitted");
+  if (to !== "68")
+    assert.ok(
+      plan.reasoning.includes(
+        `循环片段按整小节对齐：实际 ${to} BPM（设定 68）`,
+      ),
+      plan.reasoning.join(" / "),
+    );
+  if (seconds !== "30")
+    assert.ok(
+      plan.reasoning.includes(
+        `循环片段按整小节对齐：实际 ${seconds} 秒（设定 30 秒）`,
+      ),
+      plan.reasoning.join(" / "),
+    );
+  assert.ok(plan.tags.includes(`${to} BPM`), plan.tags.join());
+  assert.ok(to === "68" || !plan.tags.includes("68 BPM"));
 
   // every style: both ends of every arrow are what was and what will be heard
   for (const style of STYLES) {
@@ -766,7 +843,9 @@ test("UX-04: a refinement's arrow runs from the fitted tempo to the fitted tempo
 
   // 应用调整 goes through the same wording
   const direct = planFromDraft(base, { ...base.config, bpm: 68 }, "local").plan;
-  assert.match(truthfulTiming(direct, "local", base).reply, /速度 80 → 64 BPM/);
+  assert.ok(
+    truthfulTiming(direct, "local", base).reply.includes(`速度 80 → ${to} BPM`),
+  );
 
   // a language model's free wording: the piece's values are restated, other numbers are not
   const model: AgentPlan = {
@@ -780,7 +859,8 @@ test("UX-04: a refinement's arrow runs from the fitted tempo to the fitted tempo
   const said = truthfulTiming(model, "local", base);
   assert.equal(
     said.reply,
-    "我把速度降到 64 BPM，比原来慢了 12 BPM；前 30 秒只留钢琴，整首 30 秒。",
+    // the tempo and the length of the piece; not the difference, not a position inside it
+    `我把速度降到 ${to} BPM，比原来慢了 12 BPM；前 30 秒只留钢琴，整首 ${seconds} 秒。`,
   );
   assert.equal(said.reasoning[0], "速度放慢 12 BPM");
   assert.equal(
@@ -796,10 +876,27 @@ test("UX-04: a refinement's arrow runs from the fitted tempo to the fitted tempo
     answered.reasoning.slice(0, idle.reasoning.length),
     idle.reasoning,
   );
-  assert.deepEqual(answered.reasoning.slice(idle.reasoning.length), [
-    "循环片段按整小节对齐：实际 64 BPM（设定 68）",
-  ]);
+  assert.deepEqual(
+    answered.reasoning.slice(idle.reasoning.length),
+    // the answer names the tempo (not the length): only a fitted tempo is explained
+    to === "68" ? [] : [`循环片段按整小节对齐：实际 ${to} BPM（设定 68）`],
+  );
   assert.deepEqual(answered.tags, idle.tags);
+
+  // The same with a loop whose TEMPO the composer bends (found, see loopExamples).
+  const bent = work(loopExamples.tempo);
+  const heard = formatBpm(fittedTiming(bent.config).bpm);
+  const faster = truthfulTiming(refine(bent.config, "快一点"), "local", bent);
+  const next = formatBpm(fittedTiming(faster.config).bpm);
+  assert.ok(
+    faster.reply.includes(`速度 ${heard} → ${next} BPM`),
+    `${bent.config.mood} ${bent.config.duration}s: ${faster.reply}`,
+  );
+  assert.doesNotMatch(
+    faster.reply,
+    new RegExp(`速度 ${bent.config.bpm} →`),
+    "the arrow starts from what was heard, not from the setting",
+  );
 });
 
 /* ---------------- UX-05 / LEFT-05: the app's own words keep their promise ---------------- */
@@ -1693,9 +1790,14 @@ test("UX-11: no stray names, leftover English or developer words in the interfac
 /* ---------------- truthfulness: no version without an audible change ---------------- */
 
 test("a change nobody could hear is answered, not saved as a new version", async () => {
-  // a 60 s loop at 80 BPM is 20 bars; 81, 82, 83 BPM are fitted back onto the same 20 bars
+  // a 60 s loop at 80 BPM is 20 bars; a tempo a little to either side is fitted back onto them
   const loop = work(styled("chill", { duration: 60 }));
-  for (const bpm of [78, 81, 83]) {
+  const nudges = sameSounding(loop.config);
+  assert.ok(
+    nudges.length >= 2,
+    `tempos that sound like 80 BPM: ${nudges.join(", ")}`,
+  );
+  for (const bpm of nudges) {
     const direct = planFromDraft(loop, { ...loop.config, bpm }, "local").plan;
     assert.equal(direct.unchanged, false);
     assert.equal(
@@ -1761,14 +1863,16 @@ test("a change nobody could hear is answered, not saved as a new version", async
   assert.ok(first);
   assert.equal(first.config.bpm, 80);
   const renders = h.renders.length;
-  actions.setDraft("bpm", 82);
+  const nudge = sameSounding(first.config).at(-1);
+  assert.ok(nudge !== undefined);
+  actions.setDraft("bpm", nudge);
   assert.equal(await actions.applyDraft(), false);
   assert.equal(studioOf(h).project?.id, first.id, "still the same work");
   assert.equal(h.renders.length, renders, "nothing was rendered");
   assert.equal(h.storage.records.size, 1, "nothing was stored");
   assert.equal(
     studioOf(h).draft.bpm,
-    82,
+    nudge,
     "the edit is still there to change further",
   );
   const said = studioOf(h).thread.at(-1);
@@ -1779,7 +1883,7 @@ test("a change nobody could hear is answered, not saved as a new version", async
   assert.equal(said?.revision, undefined);
   // …and the same request typed to the producer
   actions.resetDraft();
-  assert.equal(await actions.send("速度 82"), false);
+  assert.equal(await actions.send(`速度 ${nudge}`), false);
   assert.equal(h.storage.records.size, 1);
   assert.match(
     studioOf(h).thread.at(-1)?.text ?? "",
@@ -1974,20 +2078,24 @@ test("加上鼓 on a piece whose arrangement has no kit really adds one", async 
 });
 
 test("an answer that quotes a loop's tempo setting also says what the loop is fitted to", () => {
-  // sad, 30 s loop: the setting is 68 BPM, eight bars fit at 64
-  const loop = styled("sad", { duration: 30, loop: true });
-  assert.equal(loop.bpm, 68);
-  assert.equal(formatBpm(fittedTiming(loop).bpm), "64");
-  const asked = refine(loop, "速度 68");
+  // a loop whose tempo the composer bends: the setting is one number, the audio another
+  const loop = loopExamples.tempo;
+  const set = loop.bpm;
+  const real = formatBpm(fittedTiming(loop).bpm);
+  assert.notEqual(real, String(set));
+  const asked = refine(loop, `速度 ${set}`);
   assert.equal(asked.unchanged, true);
-  assert.deepEqual(asked.reasoning, ["速度已经是 68 BPM"]);
+  assert.deepEqual(asked.reasoning, [`速度已经是 ${set} BPM`]);
   const honest = truthfulTiming(asked, "local", work(loop));
   assert.equal(honest.unchanged, true);
   assert.equal(honest.reply, asked.reply, "the setting is quoted as it is");
   assert.deepEqual(
     honest.reasoning,
-    ["速度已经是 68 BPM", "循环片段按整小节对齐：实际 64 BPM（设定 68）"],
-    "v0.3.0 said 68 under a header that reads 64",
+    [
+      `速度已经是 ${set} BPM`,
+      `循环片段按整小节对齐：实际 ${real} BPM（设定 ${set}）`,
+    ],
+    "v0.3.0 named the setting under a header that reads the fitted tempo",
   );
   assert.equal(
     truthfulTiming(honest, "local", work(loop)),
@@ -1999,9 +2107,354 @@ test("an answer that quotes a loop's tempo setting also says what the loop is fi
   assert.equal(chat.unchanged, true);
   assert.equal(truthfulTiming(chat, "local", work(loop)), chat);
   // where setting and audio agree there is nothing to add
-  const ending = styled("sad", { duration: 30, loop: false });
-  const plain = refine(ending, "速度 68");
+  const ending = { ...loop, loop: false };
+  const plain = refine(ending, `速度 ${set}`);
   assert.equal(truthfulTiming(plain, "local", work(ending)), plain);
   // a cloud service gets the setting as a target: nothing is fitted
   assert.equal(truthfulTiming(asked, "tencent", work(loop)), asked);
+});
+
+/* ---------------- wave 4: chord labels, tooltip side, question hold ---------------- */
+
+test("FQ-07: a chord is labelled wherever its label really fits", () => {
+  // The piece from the report: 16 bars in a strip about 880 px wide, 55 px a bar.
+  const symbols = [
+    "Gadd9",
+    "Cadd9",
+    "Gadd9",
+    "D",
+    "Em7",
+    "Cadd9",
+    "Gadd9/B",
+    "Cadd9",
+  ];
+  const chords = Array.from({ length: 16 }, (_, index) => ({
+    start: index * 2,
+    end: index * 2 + 2,
+    symbol: symbols[index % symbols.length],
+    bar: index,
+  }));
+  // measured the way the strip measures: here, 6.2 px a character
+  const measure = (symbol: string) => symbol.length * 6.2;
+  const marks = chordLayout(chords, 32, 880, undefined, measure);
+  assert.deepEqual(
+    chords.filter((_, index) => !marks[index].label).map((item) => item.symbol),
+    [],
+    "v0.3.0 dropped Cadd9 after Gadd9/B: 7.4 px a character plus 8 px was assumed",
+  );
+  // without a measure an estimate is used: close to the real type, a little wide
+  for (const [symbol, real] of [
+    ["Gadd9/B", 46.5],
+    ["Cadd9", 34.5],
+    ["Dsus4", 33],
+    ["Em7", 23.5],
+    ["F#m7", 30],
+    ["C", 7.4],
+  ] as const) {
+    const guess = estimateChordText(symbol);
+    assert.ok(
+      guess >= real - 1.5 && guess <= real + 4,
+      `${symbol}: ${guess.toFixed(1)} for about ${real} px`,
+    );
+  }
+  assert.ok(
+    chordLayout(chords, 32, 960).every((mark) => mark.label),
+    "60 px a bar is enough for every name of this piece, also by the estimate",
+  );
+  // labels never touch: at least the gap between one label's text and the next tick
+  const printed = chords
+    .map((item, index) => ({
+      left: (item.start / 32) * 880,
+      right: (item.start / 32) * 880 + chordLabelWidth(item.symbol, measure),
+      on: marks[index].label,
+    }))
+    .filter((item) => item.on);
+  for (let index = 1; index < printed.length; index++)
+    assert.ok(printed[index].left >= printed[index - 1].right + 3 - 0.5);
+  // the width a label takes: the text plus what stands left of it
+  assert.equal(
+    chordLabelWidth("C", () => 7.2),
+    8 + 6,
+  );
+  assert.ok(
+    chordLabelWidth("Gadd9/B") < 60,
+    "the estimate no longer overshoots",
+  );
+  assert.ok(chordLabelWidth("Gadd9/B") >= 46);
+});
+
+test("FQ-07: where not every chord fits, the chord that opens a bar is the one that is named", () => {
+  // two chords a bar, 30 px a chord: there is room for one label per bar
+  const chords = Array.from({ length: 16 }, (_, index) => ({
+    start: index,
+    end: index + 1,
+    symbol: ["Cmaj7", "Am7", "Dm7", "G7"][index % 4],
+    bar: index >> 1,
+  }));
+  const measure = () => 34;
+  const marks = chordLayout(chords, 16, 480, undefined, measure);
+  const labelled = chords
+    .map((item, index) => (marks[index].label ? index : -1))
+    .filter((index) => index >= 0);
+  assert.deepEqual(
+    labelled,
+    [0, 2, 4, 6, 8, 10, 12, 14],
+    "every bar's first chord — none of the chords inside a bar took its place",
+  );
+  // every chord still shows where it starts, unless a label is printed over that spot
+  chords.forEach((item, index) => {
+    const left = (item.start / 16) * 480;
+    const under = labelled.some((other) => {
+      const from = (chords[other].start / 16) * 480;
+      return other !== index && left > from && left < from + 34 + 6;
+    });
+    assert.equal(marks[index].tick, !under, `tick of chord ${index}`);
+  });
+  // with room to spare the chords inside the bars are named as well
+  const roomy = chordLayout(chords, 16, 1200, undefined, measure);
+  assert.ok(roomy.every((mark) => mark.label));
+  // a strip too narrow for one label per bar: bar starts are thinned, in order
+  const tight = chordLayout(chords, 16, 200, undefined, measure);
+  const kept = chords
+    .map((item, index) => (tight[index].label ? index : -1))
+    .filter((index) => index >= 0);
+  assert.ok(kept.length >= 2);
+  assert.ok(
+    kept.every((index) => index % 2 === 0),
+    `only chords that open a bar: ${kept.join(",")}`,
+  );
+  // without bar numbers every chord counts as opening one: plain left to right
+  const plain = chords.map(({ start, end, symbol }) => ({
+    start,
+    end,
+    symbol,
+  }));
+  const order = chordLayout(plain, 16, 480, undefined, measure);
+  assert.deepEqual(
+    plain.map((_, index) => order[index].label),
+    plain.map((_, index) => index % 2 === 0),
+  );
+  // the pill of the current chord is measured the same way
+  const pill = chordPill(chords, marks, 1, 16, 480, measure);
+  assert.ok(
+    pill.hidden.has(0) || pill.hidden.has(2),
+    "it hides what it covers",
+  );
+  assert.ok(!pill.hidden.has(14));
+});
+
+test("FQ-16: a tip set to the side stays off what is written above its control", () => {
+  const viewport = { width: 1366, height: 768 };
+  const bubble = { width: 280, height: 48 };
+  // 换一版旋律 at the bottom of the inspector column, the apply hint right above it
+  const button = { left: 1067, top: 720, bottom: 752, width: 279 };
+  const hint = { top: 668, bottom: 708 };
+  const beside = tipPlacement(button, bubble, viewport, "left");
+  assert.equal(beside.left, 1067 - 280 - 8);
+  assert.ok(
+    beside.top + bubble.height <= viewport.height - 4,
+    "inside the window",
+  );
+  assert.ok(
+    beside.left + bubble.width <= button.left,
+    "beside the button: nothing over the column it sits in",
+  );
+  // v0.3.0: above the button, over the hint
+  const above = tipPlacement(button, bubble, viewport);
+  assert.ok(above.top < hint.bottom && above.top + bubble.height > hint.top);
+  // no room beside it (a button as wide as the page): below when that fits…
+  const wideButton = { left: 16, top: 300, bottom: 332, width: 358 };
+  const phone = { width: 390, height: 780 };
+  assert.deepEqual(tipPlacement(wideButton, bubble, phone, "left"), {
+    left: 16 + 358 / 2 - 140,
+    top: 332 + 8,
+  });
+  // …and only above when there is no room below either
+  const low = { left: 16, top: 730, bottom: 762, width: 358 };
+  assert.equal(tipPlacement(low, bubble, phone, "left").top, 730 - 48 - 8);
+  assert.equal(tipSide("left"), "left");
+  assert.equal(tipSide("bottom"), "bottom");
+  assert.equal(tipSide(undefined), "top");
+  assert.equal(tipSide("sideways"), "top");
+});
+
+test("NEW-09: a question takes no click and no Enter from the gesture that opened it", () => {
+  assert.equal(DIALOG_HOLD_MS, 500);
+  // the second click of a double-click: 80–450 ms after the first
+  for (const since of [0, 80, 250, 450, 499]) {
+    assert.equal(pointerHeld(since), true, `${since} ms`);
+    assert.equal(
+      keyHeld({ key: "Enter", repeat: false, sinceOpenMs: since }),
+      true,
+      `Enter ${since} ms after it opened`,
+    );
+    assert.equal(
+      keyHeld({ key: " ", repeat: false, sinceOpenMs: since }),
+      true,
+    );
+  }
+  // after that a deliberate click or key answers
+  assert.equal(pointerHeld(500), false);
+  assert.equal(pointerHeld(4000), false);
+  assert.equal(
+    keyHeld({ key: "Enter", repeat: false, sinceOpenMs: 500 }),
+    false,
+  );
+  // a key that is being held down never answers, however long
+  assert.equal(
+    keyHeld({ key: "Enter", repeat: true, sinceOpenMs: 60_000 }),
+    true,
+  );
+  assert.equal(keyHeld({ key: " ", repeat: true, sinceOpenMs: 60_000 }), true);
+  // Escape can only mean no: it is never held back; neither is moving the focus
+  for (const key of ["Escape", "Tab", "ArrowLeft", "a"])
+    for (const repeat of [false, true])
+      assert.equal(keyHeld({ key, repeat, sinceOpenMs: 0 }), false, key);
+  // a clock that cannot be read holds the input rather than letting it through
+  assert.equal(pointerHeld(Number.NaN), true);
+  assert.equal(pointerHeld(-5), true);
+  // every question the core can ask goes through the same dialog, with the hold
+  const dialog = readFileSync(
+    join("src", "ui", "shell", "CoreDialog.tsx"),
+    "utf8",
+  );
+  assert.match(dialog, /holdMs=\{DIALOG_HOLD_MS\}/);
+  for (const kind of [
+    "paid",
+    "fallback",
+    "unsaved",
+    "pending",
+    "discard",
+    "duration",
+  ])
+    assert.match(dialog, new RegExp(`\\b${kind}:`), `an icon for ${kind}`);
+});
+
+test("FQ-15: a key that does not look like the vendor's is pointed out, not refused", () => {
+  assert.equal(keyShapeWarning("anthropic", "sk-ant-api03-abcdef"), "");
+  assert.equal(keyShapeWarning("anthropic", "  sk-ant-api03-abcdef  "), "");
+  assert.match(
+    keyShapeWarning("anthropic", "sk-proj-123456"),
+    /不是以 sk-ant- 开头.*仍然可以保存/,
+  );
+  assert.equal(
+    keyShapeWarning("anthropic", ""),
+    "",
+    "nothing typed: nothing to say",
+  );
+  // only where the vendor's own hint names a prefix
+  for (const preset of LLM_PRESETS) {
+    const named = /以 (\S+) 开头/.exec(preset.keyHint)?.[1];
+    const warned = keyShapeWarning(preset.id, "zz-not-a-real-key") !== "";
+    assert.equal(warned, named !== undefined, preset.id);
+    if (named)
+      assert.equal(keyShapeWarning(preset.id, `${named}rest-of-the-key`), "");
+  }
+  // FQ-15: one link per destination — the model hint no longer repeats 获取 API Key
+  const settings = readFileSync(
+    join("src", "ui", "modals", "SettingsModal.tsx"),
+    "utf8",
+  );
+  assert.doesNotMatch(settings, /llm-console-link|打开服务商控制台/);
+  assert.match(settings, /llm-key-link/);
+});
+
+test("NEW-08: what the interface says about a failing model is true for cloud engines too", () => {
+  for (const file of [
+    join("src", "ui", "modals", "SettingsModal.tsx"),
+    join("src", "ui", "modals", "HelpModal.tsx"),
+  ]) {
+    const text = readFileSync(file, "utf8");
+    assert.doesNotMatch(
+      text,
+      /自动改用离线规则/,
+      `${file}: with a cloud engine the app stops and asks`,
+    );
+    assert.match(text, /改用离线规则.{0,12}云端生成时会先问你/);
+  }
+  // the engine's notes are shown with the interface's quotation marks
+  assert.equal(houseQuotes("轻快的“嘣嚓”伴奏"), "轻快的「嘣嚓」伴奏");
+  const inspector = readFileSync(
+    join("src", "ui", "studio", "Inspector.tsx"),
+    "utf8",
+  );
+  assert.match(inspector, /houseQuotes\(note\)/);
+  // …and the composer writes them that way itself: its notes and the styles' summaries
+  const music: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else if (name.endsWith(".ts")) music.push(path);
+    }
+  };
+  walk(join("src", "music"));
+  assert.ok(music.length > 30, "the composer and its 22 styles");
+  for (const file of music)
+    assert.doesNotMatch(
+      readFileSync(file, "utf8"),
+      /[“”]/,
+      `${file}: curly quotes`,
+    );
+});
+
+test("FQ-08: 换一版旋律 says what the composer really rewrites — the chords too, when they change", () => {
+  let rewritten = 0;
+  let kept = 0;
+  for (const style of STYLES) {
+    const base = work(styled(style.id, { duration: 30 }));
+    const { plan, request } = planVariation(base, 987654, "local");
+    assert.equal(request, "换一版旋律");
+    assert.notEqual(plan.config.seed, base.config.seed);
+    const chords = (config: MusicConfig) =>
+      summarize(compose(config))
+        .chords.map((chord) => chord.symbol)
+        .join(" ");
+    const changed = chords(base.config) !== chords(plan.config);
+    if (changed) {
+      rewritten++;
+      assert.equal(
+        plan.reply,
+        "换了一组新的旋律：旋律与和弦走向都重写了，风格、速度、调性和乐器保持不变。",
+        `${style.id}: v0.3.0 said 其余设置保持不变 while the chord strip showed other chords`,
+      );
+      assert.deepEqual(plan.reasoning, [
+        "换一组新的旋律",
+        "和弦走向随新的旋律重写",
+      ]);
+    } else {
+      kept++;
+      assert.equal(
+        plan.reply,
+        "换了一组新的旋律，其余设置保持不变。",
+        style.id,
+      );
+      assert.deepEqual(plan.reasoning, ["换一组新的旋律"]);
+    }
+    // what it names as unchanged is unchanged
+    for (const field of [
+      "mood",
+      "bpm",
+      "key",
+      "instrument",
+      "duration",
+    ] as const)
+      assert.equal(
+        plan.config[field],
+        base.config[field],
+        `${style.id} ${field}`,
+      );
+  }
+  assert.ok(rewritten + kept === STYLES.length && rewritten > 0);
+  // a cloud service is told what it is: a new paid piece (nothing about chords is claimed)
+  const cloud = planVariation(work(styled("chill")), 5, "tencent").plan;
+  assert.match(cloud.reply, /重新生成了一首：这是一次新的生成，不保留原旋律/);
+  assert.deepEqual(cloud.reasoning, ["云端重新生成"]);
+  // a v0.2 work is rewritten as a whole by the new engine; that is said by its own line
+  const old = planVariation(
+    work({ ...styled("chill"), engine: 1 }),
+    5,
+    "local",
+  ).plan;
+  assert.deepEqual(old.reasoning, ["换一组新的旋律", "改用新版引擎"]);
 });

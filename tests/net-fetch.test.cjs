@@ -841,3 +841,186 @@ test("MAIN-01: main.cjs gives the music service the billing transport, turns QUI
     "model calls stay on the ordinary path",
   );
 });
+
+/* --------------------------------------------------------------------- ND-1 */
+// closeAllConnections() was awaited bare. If it never settled (its reply lost with the network
+// service, say) the submission could not be ended by anything: not by cancel, not by the job's
+// time limit - the music service stayed busy until the app was restarted.
+
+const { wasNotSent, CLOSE_TIMEOUT_MS } = require("../electron/net-fetch.cjs");
+
+/** A session whose closeAllConnections() behaves as `close` says and whose fetch counts. */
+function closingSession(close) {
+  const session = {
+    closes: 0,
+    fetches: 0,
+    closeAllConnections: () => {
+      session.closes++;
+      return close(session);
+    },
+    fetch: async (_url, init) => {
+      session.fetches++;
+      return session.respond ? session.respond(init) : new Response("sent");
+    },
+  };
+  return session;
+}
+
+test("ND-1: a closeAllConnections() that never settles is given up after the bound; nothing is sent and the queue moves on", async () => {
+  assert.equal(CLOSE_TIMEOUT_MS, 5000);
+  for (const bound of [0, -1, NaN, Infinity, "5000", null, 2 ** 31])
+    assert.throws(
+      () => createBillingFetch(() => ({}), { closeTimeoutMs: bound }),
+      TypeError,
+      String(bound),
+    );
+  let healthy = false;
+  const session = closingSession(() =>
+    healthy ? Promise.resolve() : new Promise(() => {}),
+  );
+  const billingFetch = createBillingFetch(() => session, {
+    closeTimeoutMs: 80,
+  });
+  const started = Date.now();
+  const first = post(billingFetch);
+  const second = post(billingFetch); // queued behind it
+  for (const stuck of [first, second])
+    await assert.rejects(stuck, (error) => {
+      assert.equal(wasNotSent(error), true, "nothing was sent");
+      assert.notEqual(error.name, "AbortError", "nobody cancelled it");
+      return true;
+    });
+  const elapsed = Date.now() - started;
+  assert.ok(
+    elapsed >= 140 && elapsed < 2000,
+    `each waited for its own bound: ${elapsed} ms`,
+  );
+  assert.equal(session.closes, 2);
+  assert.equal(session.fetches, 0, "the request never went out");
+  // The session answers again: the next submission goes through, after a close of its own.
+  healthy = true;
+  assert.equal(await (await post(billingFetch)).text(), "sent");
+  assert.equal(session.closes, 3);
+  assert.equal(session.fetches, 1);
+});
+
+test("ND-1: cancel ends a submission that is stuck closing at once, and one that waits behind it", async () => {
+  const session = closingSession(() => new Promise(() => {}));
+  // A bound far beyond the test: only the abort can end these. (A timer left behind would keep the test file running.)
+  const billingFetch = createBillingFetch(() => session, {
+    closeTimeoutMs: 600_000,
+  });
+  const stuck = new AbortController();
+  const queued = new AbortController();
+  const first = post(billingFetch, { signal: stuck.signal });
+  const second = post(billingFetch, { signal: queued.signal });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const started = Date.now();
+  queued.abort();
+  await assert.rejects(
+    second,
+    (error) => error.name === "AbortError" && wasNotSent(error),
+  );
+  stuck.abort();
+  await assert.rejects(
+    first,
+    (error) => error.name === "AbortError" && wasNotSent(error),
+  );
+  assert.ok(Date.now() - started < 500);
+  assert.equal(session.closes, 1, "the queued one never got as far as closing");
+  assert.equal(session.fetches, 0);
+});
+
+test("ND-1: a close that fails or answers after it was given up changes nothing later", async () => {
+  // Rejects after the bound: no unhandled rejection, the submission was already called off.
+  let rejectLate;
+  const late = closingSession(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectLate = reject;
+      }),
+  );
+  const billingFetch = createBillingFetch(() => late, { closeTimeoutMs: 30 });
+  await assert.rejects(post(billingFetch), (error) => wasNotSent(error));
+  rejectLate(new Error("network service restarted"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(late.fetches, 0);
+  // Resolves just inside the bound: the request is sent as usual, once.
+  const slow = closingSession(
+    () => new Promise((resolve) => setTimeout(resolve, 40)),
+  );
+  const patient = createBillingFetch(() => slow, { closeTimeoutMs: 2000 });
+  assert.equal(await (await post(patient)).text(), "sent");
+  assert.equal(slow.fetches, 1);
+});
+
+test("ND-1: every rejection from before the request went out is marked not-sent; none from after it is", async () => {
+  const ready = closingSession(async () => {});
+  const billingFetch = createBillingFetch(() => ready);
+  const aborted = new AbortController();
+  aborted.abort();
+  const unsent = [
+    post(billingFetch, { signal: aborted.signal }),
+    post(billingFetch, { method: "GET", body: undefined }),
+    post(billingFetch, { redirect: "follow" }),
+    post(billingFetch, { headers: { Host: "evil.test" } }),
+    billingFetch("not a url", { method: "POST", body: "{}" }),
+    post(
+      createBillingFetch(() =>
+        closingSession(async () => {
+          throw new Error("network service is gone");
+        }),
+      ),
+    ),
+    post(
+      createBillingFetch(() =>
+        closingSession(() => {
+          throw new Error("thrown synchronously");
+        }),
+      ),
+    ),
+    post(createBillingFetch(() => null)),
+    post(
+      createBillingFetch(() => {
+        throw new Error("the app is not ready");
+      }),
+    ),
+  ];
+  for (const [index, attempt] of unsent.entries())
+    await assert.rejects(attempt, (error) => {
+      assert.equal(wasNotSent(error), true, `case ${index}: ${error.message}`);
+      return true;
+    });
+  assert.equal(ready.fetches, 0);
+
+  // Handed to the network: whatever happens now, the service may have received it.
+  ready.respond = async () => {
+    throw new Error("net::ERR_CONNECTION_RESET");
+  };
+  await assert.rejects(post(billingFetch), (error) => {
+    assert.match(error.message, /ERR_CONNECTION_RESET/);
+    assert.equal(wasNotSent(error), false);
+    return true;
+  });
+  const inFlight = new AbortController();
+  ready.respond = (init) =>
+    new Promise((_resolve, reject) =>
+      init.signal.addEventListener(
+        "abort",
+        () =>
+          reject(new DOMException("This operation was aborted", "AbortError")),
+        { once: true },
+      ),
+    );
+  const sent = post(billingFetch, { signal: inFlight.signal });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  inFlight.abort();
+  await assert.rejects(
+    sent,
+    (error) => error.name === "AbortError" && wasNotSent(error) === false,
+  );
+  assert.equal(ready.fetches, 2);
+  // Only errors of the billing path are ever marked.
+  for (const other of [new Error("x"), null, undefined, "text", 42, {}])
+    assert.equal(wasNotSent(other), false);
+});

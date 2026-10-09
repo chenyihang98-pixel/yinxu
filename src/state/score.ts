@@ -57,6 +57,8 @@ export interface ScoreFacts {
   frame: string;
   /** per mixer group: changes whenever its notes, hits or part settings do */
   content: Record<TrackName, string>;
+  /** the chord symbols in order ("C G/B Am7 …"): the harmony as the strip names it */
+  harmony: string;
 }
 
 /** FNV-1a over a string: a short stand-in for a long score dump. */
@@ -115,6 +117,7 @@ export function scoreFacts(config: MusicConfig): ScoreFacts | null {
       content: Object.fromEntries(
         TRACKS.map((track) => [track, hash(JSON.stringify(sounds(track)))]),
       ) as Record<TrackName, string>,
+      harmony: score.chords.map((chord) => chord.symbol).join(" "),
     };
   } catch {
     return null;

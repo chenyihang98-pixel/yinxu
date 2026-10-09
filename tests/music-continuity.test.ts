@@ -4,7 +4,9 @@
  * composeLead in src/music/melody.ts). These tests measure that over all 22
  * styles and many seeds, and hold melodyContinuity() — the composer's own
  * account of what a change does to the tune, used for the agent's replies —
- * against the scores it describes.
+ * against the scores it describes: every one of its four answers
+ * (identical, adapted, rhythm, new) is checked against notes read back from
+ * the two composed pieces.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -16,14 +18,19 @@ import {
   type InstrumentId,
   type StyleId,
 } from "../src/music/catalog";
-import { compose, melodyContinuity } from "../src/music/compose";
+import {
+  MELODY_PROMISE,
+  compose,
+  melodyContinuity,
+  type MelodyContinuity,
+} from "../src/music/compose";
 import {
   DEFAULT_CONFIG,
   clampConfig,
   stylePreset,
 } from "../src/music/defaults";
 import { planForm, planTiming } from "../src/music/form";
-import { TUNE_ABOVE, TUNE_BELOW, leadCentre } from "../src/music/harmony";
+import { leadCentre, tuneCompass } from "../src/music/harmony";
 import { SWUNG_FEELS, makeTimeMap } from "../src/music/rhythm";
 import type { NoteEvent, NotePart, Score } from "../src/music/score";
 import { getStyle } from "../src/music/styles";
@@ -46,11 +53,15 @@ const leadOf = (score: Score): NoteEvent[] =>
   (score.parts.find((part) => part.role === "lead") as NotePart | undefined)
     ?.notes ?? [];
 
+const beatClocks = new WeakMap<Score, (seconds: number) => number>();
+
 /** Seconds → beats: the inverse of the clock the piece was written on (swing and rubato included). */
 function beatClock(
   cfg: MusicConfig,
   score: Score,
 ): (seconds: number) => number {
+  const known = beatClocks.get(score);
+  if (known) return known;
   const style = getStyle(cfg.mood);
   const timing = planTiming(cfg, style);
   const feel = cfg.arrangement?.drums
@@ -66,17 +77,24 @@ function beatClock(
       bars: section.playBars,
     })),
   );
-  const total = score.bars * 4;
-  return (seconds) => {
-    let low = -1;
-    let high = total + 1;
-    for (let i = 0; i < 40; i++) {
-      const middle = (low + high) / 2;
-      if (time.seconds(middle) < seconds) low = middle;
+  // the clock at every thirty-second (it runs evenly between two of them)
+  const GRID = 8;
+  const steps = (score.bars * 4 + 2) * GRID;
+  const at = new Float64Array(steps + 2);
+  for (let i = 0; i <= steps + 1; i++) at[i] = time.seconds((i - GRID) / GRID);
+  const clock = (seconds: number) => {
+    let low = 0;
+    let high = steps + 1;
+    while (high - low > 1) {
+      const middle = (low + high) >> 1;
+      if (at[middle] <= seconds) low = middle;
       else high = middle;
     }
-    return (low + high) / 2;
+    const span = at[high] - at[low];
+    return (low - GRID + (span > 0 ? (seconds - at[low]) / span : 0)) / GRID;
   };
+  beatClocks.set(score, clock);
+  return clock;
 }
 
 interface Placed {
@@ -93,8 +111,31 @@ interface Excerpt {
 }
 
 /**
+ * The notes of the lead as a listener counts them: a tremolo (one note
+ * re-struck, on the plucked and struck leads of the styles that write one)
+ * is the one note it is. Repeated short notes anywhere else stay notes.
+ */
+function tuneNotes(cfg: MusicConfig, score: Score): NoteEvent[] {
+  const all = leadOf(score);
+  const tremolo =
+    (getStyle(cfg.mood).melody.tremolo ?? 0) > 0 &&
+    !LEAD_TRAITS[cfg.instrument].sustain;
+  if (!tremolo) return all;
+  const beat = 60 / score.bpm;
+  return all.filter((note, i) => {
+    const before = all[i - 1];
+    return !(
+      before &&
+      before.midi === note.midi &&
+      note.t - before.t < Math.max(0.17, beat * 0.3) &&
+      before.d < beat * 0.3
+    );
+  });
+}
+
+/**
  * The lead in the first section of `type`, at most eight bars of it, on the
- * sixteenth grid. A tremolo (one note re-struck) counts as the one note it is.
+ * sixteenth grid.
  */
 function excerpt(
   cfg: MusicConfig,
@@ -104,19 +145,8 @@ function excerpt(
   const section =
     score.sections.find((item) => item.type === type) ?? score.sections[0];
   const toBeat = beatClock(cfg, score);
-  const beat = 60 / score.bpm;
   const bars = Math.min(section.bars, 8);
-  const all = leadOf(score);
-  const notes = all
-    .filter((note, i) => {
-      const before = all[i - 1];
-      return !(
-        before &&
-        before.midi === note.midi &&
-        note.t - before.t < Math.max(0.17, beat * 0.3) &&
-        before.d < beat * 0.3
-      );
-    })
+  const notes = tuneNotes(cfg, score)
     .map((note) => ({
       step: Math.round(toBeat(note.t) * 4) - section.startBar * 16,
       degree: pc(note.midi - score.key.tonic),
@@ -148,9 +178,23 @@ interface Kept {
   a: Excerpt;
   b: Excerpt;
 }
+/** compose(), remembering the last few hundred pieces: every survey returns to the same bases */
+const composedScores = new Map<string, Score>();
+function composed(cfg: MusicConfig): Score {
+  const id = JSON.stringify(cfg);
+  let score = composedScores.get(id);
+  if (!score) {
+    score = compose(cfg);
+    if (composedScores.size >= 600)
+      composedScores.delete(composedScores.keys().next().value as string);
+    composedScores.set(id, score);
+  }
+  return score;
+}
+
 function kept(before: MusicConfig, after: MusicConfig): Kept {
-  const scoreA = compose(before);
-  const scoreB = compose(after);
+  const scoreA = composed(before);
+  const scoreB = composed(after);
   const type = commonSection(scoreA, scoreB);
   const a = excerpt(before, type, scoreA);
   const b = excerpt(after, type, scoreB);
@@ -178,6 +222,101 @@ function kept(before: MusicConfig, after: MusicConfig): Kept {
     a,
     b,
   };
+}
+
+/**
+ * Share of ALL lead notes that keep their place in their section and their
+ * scale degree, read back from the two scores. Sections are matched by kind
+ * and order ("the second chorus"); a note counts against the busier piece.
+ * `raw` leaves tremolo strokes as the notes they are struck as and compares
+ * on thirty-seconds: what "identical" promises.
+ */
+function wholeKept(
+  before: MusicConfig,
+  after: MusicConfig,
+  scoreA: Score,
+  scoreB: Score,
+  raw = false,
+): number {
+  const grid = raw ? 8 : 4;
+  const places = (cfg: MusicConfig, score: Score) => {
+    const toBeat = beatClock(cfg, score);
+    const seen = new Map<string, number>();
+    const names = score.sections.map((section) => {
+      const k = seen.get(section.type) ?? 0;
+      seen.set(section.type, k + 1);
+      return `${section.type}#${k}`;
+    });
+    const notes = raw ? leadOf(score) : tuneNotes(cfg, score);
+    const at = new Map<string, number[]>();
+    for (const note of notes) {
+      const step = Math.round(toBeat(note.t) * grid);
+      const bar = Math.floor(step / (4 * grid));
+      let index = score.sections.findIndex(
+        (section) =>
+          bar >= section.startBar && bar < section.startBar + section.bars,
+      );
+      if (index < 0) index = score.sections.length - 1;
+      const section = score.sections[index];
+      const place = `${names[index]}@${step - section.startBar * 4 * grid}`;
+      at.set(place, [
+        ...(at.get(place) ?? []),
+        pc(note.midi - score.key.tonic),
+      ]);
+    }
+    return { at, total: notes.length };
+  };
+  const a = places(before, scoreA);
+  const b = places(after, scoreB);
+  let kept = 0;
+  for (const [place, degrees] of a.at) {
+    const others = (b.at.get(place) ?? []).slice();
+    for (const degree of degrees) {
+      const match = others.indexOf(degree);
+      if (match < 0) continue;
+      kept++;
+      others.splice(match, 1);
+    }
+  }
+  const most = Math.max(a.total, b.total);
+  return most ? kept / most : 1;
+}
+
+/**
+ * melodyContinuity's answer for a pair of settings, held against the two
+ * composed scores: each answer promises a measurable share of kept notes
+ * (MELODY_PROMISE), and none may hide a tune that was in fact kept.
+ */
+function honest(
+  before: MusicConfig,
+  after: MusicConfig,
+  what: string,
+): { verdict: MelodyContinuity; result: Kept } {
+  const verdict = melodyContinuity(before, after);
+  const result = kept(before, after);
+  const said = `${what}: "${verdict}", but the scores keep ${result.notes.toFixed(2)} of the first ${result.type}'s notes and ${result.onsets.toFixed(2)} of its onsets`;
+  if (verdict === "identical") {
+    const whole = wholeKept(
+      before,
+      after,
+      result.a.score,
+      result.b.score,
+      true,
+    );
+    assert.ok(
+      whole >= MELODY_PROMISE.identical,
+      `${what}: "identical", but only ${whole.toFixed(3)} of all notes keep place and scale degree`,
+    );
+  } else if (verdict === "adapted")
+    assert.ok(result.notes >= MELODY_PROMISE.adapted, said);
+  else if (verdict === "rhythm") {
+    assert.ok(result.onsets >= MELODY_PROMISE.rhythm, said);
+    // (the pitches really are written again: otherwise it would be "adapted")
+    assert.ok(result.notes < 0.75, said);
+  } else if (before.seed === after.seed && before.mood === after.mood)
+    // the same seed and style: "new" must not be said of a tune that stayed
+    assert.ok(result.notes < 0.75, said);
+  return { verdict, result };
 }
 
 const SEEDS = [3000, 3151, 3302, 3453, 3604, 3755];
@@ -244,7 +383,7 @@ test("reverb, faders, drum and bass feel and layer toggles leave every note of t
       const what = `${label(base)}, ${name}`;
       assert.equal(melodyContinuity(base, next), "identical", what);
       // nothing about the clock changed either: the part is the same to the last digit
-      assert.deepEqual(leadOf(compose(next)), leadOf(compose(base)), what);
+      assert.deepEqual(leadOf(compose(next)), leadOf(composed(base)), what);
       checked++;
     }
   assert.equal(checked, STYLE_IDS.length * 4 * 2 * changes.length);
@@ -317,7 +456,11 @@ test("tempo ±10 %: at least 85 % of the first verse stays on average, never les
 });
 
 test("a tempo change that keeps the form keeps every pitch and every onset in beats", () => {
-  // loops whose bar count survives the change: nothing but the clock differs
+  // loops whose bar count survives the change: nothing but the clock differs —
+  // unless the new tempo crosses one of the few steps at which an ornament no
+  // longer fits (a turn above 132 BPM, a sixteenth-note grace above 126), and
+  // then the answer says so
+  let same = 0;
   let checked = 0;
   for (const base of bases()) {
     if (!base.loop) continue;
@@ -328,16 +471,23 @@ test("a tempo change that keeps the form keeps every pitch and every onset in be
     ]) {
       const next = { ...base, bpm };
       if (compose(next).bars !== compose(base).bars) continue;
-      assert.equal(
-        melodyContinuity(base, next),
-        "identical",
-        `${label(base)} at ${bpm} BPM`,
-      );
-      assertSameTune(base, next, `${label(base)} at ${bpm} BPM`);
+      const what = `${label(base)} at ${bpm} BPM`;
+      const { verdict, result } = honest(base, next, what);
       checked++;
+      if (verdict === "identical") {
+        assertSameTune(base, next, what);
+        same++;
+      } else {
+        assert.equal(verdict, "adapted", what);
+        assert.ok(
+          result.notes >= 0.85,
+          `${what}: only ${result.notes.toFixed(2)} of the verse kept`,
+        );
+      }
     }
   }
   assert.ok(checked >= 150, `${checked} loops kept their bars`);
+  assert.ok(same >= checked * 0.9, `${same} of ${checked} note for note`);
 });
 
 test("energy ±0.15 leaves the tune alone: only its dynamics follow", () => {
@@ -423,60 +573,123 @@ test("complexity ±0.15 adds or takes a note here and there: 85 % of the first v
   }
 });
 
-test("another key in the same mode is the same tune transposed", () => {
+test("another key in the same mode is the same tune transposed, in every style and from every key", () => {
   const keysLike = (cfg: MusicConfig) =>
     KEYS.filter(
       (key) => key.endsWith(cfg.key.split(" ")[1]) && key !== cfg.key,
     );
-  let whole = 0;
-  let pieces = 0;
-  const result = survey(
-    (cfg, index) => ({ key: keysLike(cfg)[(index * 5) % 11] }),
-    (kept, before, after) => {
-      assert.equal(melodyContinuity(before, after), "adapted");
-      assert.equal(
-        kept.onsets,
-        1,
-        `${label(before)} → ${after.key}: the rhythm changed`,
+  // Every style's own key against all eleven others, the whole lead: every
+  // note keeps its scale degree and its place. (This is what used to fail for
+  // styles whose preset key put the tune against the top of the instrument:
+  // rock in E minor shared two thirds of its notes with any other key.)
+  let pairs = 0;
+  let exact = 0;
+  let moved = 0;
+  let notes = 0;
+  let worst = 0;
+  let worstCase = "";
+  for (const style of STYLE_IDS)
+    for (const seed of SEEDS.slice(0, 3))
+      for (const loop of [true, false]) {
+        const base = config(style, { seed, loop, duration: loop ? 30 : 45 });
+        const home = compose(base);
+        const first = leadOf(home);
+        for (const key of keysLike(base)) {
+          const next = { ...base, key };
+          const what = `${label(base)} → ${key}`;
+          assert.equal(melodyContinuity(base, next), "identical", what);
+          const other = compose(next);
+          const second = leadOf(other);
+          assert.equal(second.length, first.length, `${what}: notes`);
+          const shifts = new Map<number, number>();
+          for (let i = 0; i < first.length; i++) {
+            assert.equal(
+              pc(second[i].midi - other.key.tonic),
+              pc(first[i].midi - home.key.tonic),
+              `${what}: note ${i} changed its scale degree`,
+            );
+            const shift = second[i].midi - first[i].midi;
+            shifts.set(shift, (shifts.get(shift) ?? 0) + 1);
+          }
+          assert.equal(
+            wholeKept(base, next, home, other, true),
+            1,
+            `${what}: a note moved on the beat grid`,
+          );
+          // the few notes the instrument cannot reach in this key are played an octave nearer
+          const main = Math.max(...shifts.values());
+          const folded = first.length - main;
+          for (const shift of shifts.keys())
+            assert.equal(
+              pc(shift),
+              pc(parseKey(key).tonic - parseKey(base.key).tonic),
+              `${what}: a note moved by ${shift} semitones`,
+            );
+          pairs++;
+          notes += first.length;
+          moved += folded;
+          if (!folded) exact++;
+          if (folded / first.length > worst) {
+            worst = folded / first.length;
+            worstCase = what;
+          }
+        }
+      }
+  assert.equal(pairs, STYLE_IDS.length * 3 * 2 * 11);
+  assert.ok(
+    exact / pairs >= 0.9,
+    `${exact} of ${pairs} leads are exact transpositions from the first note to the last`,
+  );
+  assert.ok(
+    moved / notes <= 0.005,
+    `${((100 * moved) / notes).toFixed(2)} % of all notes are played an octave away`,
+  );
+  assert.ok(
+    worst <= 0.15,
+    `${(100 * worst).toFixed(0)} % of the notes an octave away in ${worstCase}`,
+  );
+
+  // from any key to any key, and on a lead that is not the style's own
+  let index = 0;
+  for (const base of bases(SEEDS.slice(0, 2))) {
+    const from = keysLike(base)[(index * 7) % 11];
+    const to = keysLike(base).filter((key) => key !== from)[(index * 3) % 10];
+    const instrument = INSTRUMENT_IDS[index++ % INSTRUMENT_IDS.length];
+    const a = { ...base, key: from, instrument };
+    const b = { ...base, key: to, instrument };
+    const what = `${label(base)} on ${instrument}, ${from} → ${to}`;
+    assert.equal(melodyContinuity(a, b), "identical", what);
+    const scoreA = compose(a);
+    const scoreB = compose(b);
+    assert.deepEqual(
+      leadOf(scoreB).map((note) => pc(note.midi - scoreB.key.tonic)),
+      leadOf(scoreA).map((note) => pc(note.midi - scoreA.key.tonic)),
+      what,
+    );
+    // and nobody leaves the comfortable range of the instrument for it
+    const trait = LEAD_TRAITS[instrument];
+    for (const note of leadOf(scoreB))
+      assert.ok(
+        note.midi >= trait.low && note.midi <= trait.high,
+        `${what}: ${note.midi}`,
       );
-      // the whole lead, not just the verse: one interval for every note
-      const a = leadOf(kept.a.score);
-      const b = leadOf(kept.b.score);
-      pieces++;
-      if (
-        a.length === b.length &&
-        a.every((note, i) => b[i].midi - note.midi === b[0].midi - a[0].midi)
-      )
-        whole++;
-    },
-  );
-  assert.ok(
-    result.mean >= 0.97,
-    `${result.mean.toFixed(3)} of the scale degrees kept on average`,
-  );
-  assert.ok(
-    result.least >= 0.6,
-    `only ${result.least.toFixed(2)} kept in ${result.worst}`,
-  );
-  // (the rest reach the edge of the instrument's range in the new key and fold a few notes back)
-  assert.ok(
-    whole / pieces >= 0.85,
-    `${whole} of ${pieces} leads are exact transpositions from the first note to the last`,
-  );
+  }
+
   // the shorter way round, up or down, wherever the tune's whole compass has
   // room on the instrument there (see leadCentre); never further than a fifth
   for (const style of ["bright", "sad", "retro"] as StyleId[]) {
     const base = config(style, { loop: true, duration: 30 });
     const home = leadOf(compose(base));
     const trait = LEAD_TRAITS[base.instrument];
+    const compass = tuneCompass(base.instrument, getStyle(style));
     const centre = leadCentre({
       config: base,
       style: getStyle(style),
       key: makeKey(base.key, "major"),
     });
     for (const key of keysLike(base)) {
-      const moved = leadOf(compose({ ...base, key }));
-      const shift = moved[0].midi - home[0].midi;
+      const other = leadOf(compose({ ...base, key }));
+      const shift = other[0].midi - home[0].midi;
       assert.ok(
         Math.abs(shift) <= 7,
         `${style} in ${key}: the tune moved by ${shift} semitones`,
@@ -485,14 +698,15 @@ test("another key in the same mode is the same tune transposed", () => {
         ((((parseKey(key).tonic - parseKey(base.key).tonic) % 12) + 18) % 12) -
         6;
       const fits =
-        centre + shorter - TUNE_BELOW >= trait.low &&
-        centre + shorter + TUNE_ABOVE <= trait.high;
+        centre + shorter - compass.below >= trait.low &&
+        centre + shorter + compass.above <= trait.high;
       if (fits) assert.equal(shift, shorter, `${style} in ${key}`);
     }
   }
 });
 
-test("major to minor keeps the rhythm of the tune and maps it onto the new scale", () => {
+test('major to minor keeps the rhythm of the tune and writes its pitches again: the answer is "rhythm"', () => {
+  let rewritten = 0;
   const result = survey(
     (cfg) => ({
       key: cfg.key.endsWith("major")
@@ -500,7 +714,14 @@ test("major to minor keeps the rhythm of the tune and maps it onto the new scale
         : cfg.key.replace("minor", "major"),
     }),
     (kept, before, after) => {
-      assert.equal(melodyContinuity(before, after), "adapted");
+      const what = `${label(before)} → ${after.key}`;
+      // never "the motifs are unchanged": the chords come from the other mode's bank
+      assert.equal(honest(before, after, what).verdict, "rhythm", what);
+      assert.ok(
+        kept.onsets >= MELODY_PROMISE.rhythm,
+        `${what}: ${kept.onsets.toFixed(2)} of the onsets kept`,
+      );
+      if (kept.notes < 0.5) rewritten++;
       assert.notDeepEqual(
         kept.a.score.key.scale.map((value) =>
           pc(value - kept.a.score.key.tonic),
@@ -511,10 +732,13 @@ test("major to minor keeps the rhythm of the tune and maps it onto the new scale
       );
     },
   );
-  // the motif is the same; the chords under it come from the other mode's bank
   assert.ok(
     result.onsets >= 0.95,
     `${result.onsets.toFixed(3)} of the onsets kept`,
+  );
+  assert.ok(
+    rewritten >= result.count * 0.9,
+    `${rewritten} of ${result.count} verses kept less than half their scale degrees`,
   );
 });
 
@@ -527,12 +751,17 @@ test("another lead instrument plays the same notes, an octave away at most", () 
   let least = 1;
   let worst = "";
   let index = 0;
+  const tally = { identical: 0, adapted: 0, rhythm: 0, new: 0 };
   for (const base of bases()) {
     const instrument: InstrumentId = others(base)[index++ % 13];
     const next = { ...base, instrument };
-    const result = kept(base, next);
     const what = `${label(base)} → ${instrument}`;
-    assert.equal(melodyContinuity(base, next), "adapted", what);
+    // the same notes an octave away ("identical"), a chorus lifted more or
+    // less for the new lead ("adapted"), or — where the style keeps another
+    // scale for this lead — the rhythm alone; never a new tune
+    const { verdict, result } = honest(base, next, what);
+    assert.notEqual(verdict, "new", what);
+    tally[verdict]++;
     assert.ok(
       result.onsets >= 0.9,
       `${what}: onsets ${result.onsets.toFixed(2)}`,
@@ -558,6 +787,9 @@ test("another lead instrument plays the same notes, an octave away at most", () 
   );
   assert.ok(least >= 0.6, `only ${least.toFixed(2)} kept in ${worst}`);
   assert.ok(modal < 20, `${modal} lead changes changed the scale`);
+  // (the rhythm alone where the scale changes, or where a piece without a
+  // verse is all chorus and the new lead does not lift it)
+  assert.ok(tally.identical >= 150 && tally.rhythm <= 6, JSON.stringify(tally));
   // the notes are the same pitch classes; whole octaves apart for instruments of the same kind of range
   const base = config("bright", { loop: true, duration: 30 });
   const piano = leadOf(compose(base));
@@ -587,13 +819,17 @@ test("another length or form keeps the motif of every section family", () => {
     ["30 → 90 s", () => ({ duration: 90 })],
     ["loop ↔ piece that ends", (cfg: MusicConfig) => ({ loop: !cfg.loop })],
   ] as [string, (cfg: MusicConfig) => Partial<MusicConfig>][]) {
+    let adapted = 0;
     const result = survey(change, (kept, before, after) => {
-      assert.equal(
-        melodyContinuity(before, after),
-        "adapted",
-        `${label(before)} ${name}`,
-      );
+      const { verdict } = honest(before, after, `${label(before)} ${name}`);
+      // (a piece of other proportions is never the same lead note for note)
+      assert.notEqual(verdict, "identical", `${label(before)} ${name}`);
+      if (verdict === "adapted") adapted++;
     });
+    assert.ok(
+      adapted >= result.count * 0.95,
+      `${name}: ${adapted} of ${result.count} keep the motifs`,
+    );
     assert.ok(
       result.mean >= 0.9,
       `${name}: ${result.mean.toFixed(3)} of the notes kept on average`,
@@ -688,8 +924,10 @@ test("far from the style's own settings the tune thins, fills and climbs — the
     // the answers and the chorus climb (see LeadTraits.lift)
     const calm = { ...base, energy: 0 };
     const wild = { ...base, energy: 1 };
-    assert.equal(melodyContinuity(calm, wild), "adapted");
-    const range = kept(calm, wild);
+    // (whatever is said of it — the answers climb to other pitches — is true of the scores)
+    const range = honest(calm, wild, `${label(base)} energy 0 → 1`).result;
+    honest(base, { ...base, complexity: 0 }, `${label(base)} complexity 0`);
+    honest(base, { ...base, complexity: 1 }, `${label(base)} complexity 1`);
     assert.ok(
       range.shared >= 0.6,
       `${label(base)} energy 0 → 1: ${range.shared.toFixed(2)} of the onsets shared`,
@@ -707,8 +945,173 @@ test("far from the style's own settings the tune thins, fills and climbs — the
   assert.equal(checked, STYLE_IDS.length * 3 * 2);
 });
 
-test("melodyContinuity: identical, adapted and new mean what the scores say", () => {
-  // random pairs of settings, several fields at once
+test("melodyContinuity: each of its four answers is true of the scores, for every kind of change in every style", () => {
+  // one change at a time, all 22 styles × five seeds × loop and piece that ends
+  const TABLE_SEEDS = SEEDS.slice(0, 5);
+  const otherMode = (key: string) =>
+    key.endsWith("major")
+      ? key.replace("major", "minor")
+      : key.replace("minor", "major");
+  const sameMode = (cfg: MusicConfig, index: number) =>
+    KEYS.filter(
+      (key) => key.endsWith(cfg.key.split(" ")[1]) && key !== cfg.key,
+    )[(index * 5) % 11];
+  type Change = (cfg: MusicConfig, index: number) => Partial<MusicConfig>;
+  /** [what, the change, the one answer it must always get — or the answers it may get] */
+  const changes: [string, Change, MelodyContinuity[]][] = [
+    ["reverb", (cfg) => ({ reverb: 1 - cfg.reverb }), ["identical"]],
+    [
+      "drums and bass",
+      () => ({ arrangement: { drums: "halftime", bass: "octave" } }),
+      ["identical"],
+    ],
+    [
+      "energy +0.15",
+      (cfg) => ({ energy: Math.min(1, cfg.energy + 0.15) }),
+      ["identical"],
+    ],
+    [
+      "energy −0.15",
+      (cfg) => ({ energy: Math.max(0, cfg.energy - 0.15) }),
+      ["identical"],
+    ],
+    ["key", (cfg, index) => ({ key: sameMode(cfg, index) }), ["identical"]],
+    ["mode", (cfg) => ({ key: otherMode(cfg.key) }), ["rhythm"]],
+    [
+      "tempo +10 %",
+      (cfg) => ({ bpm: Math.round(cfg.bpm * 1.1) }),
+      ["identical", "adapted"],
+    ],
+    [
+      "tempo −10 %",
+      (cfg) => ({ bpm: Math.round(cfg.bpm * 0.9) }),
+      ["identical", "adapted"],
+    ],
+    [
+      "tempo +30 %",
+      (cfg) => ({ bpm: Math.round(cfg.bpm * 1.3) }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    [
+      "tempo −30 %",
+      (cfg) => ({ bpm: Math.round(cfg.bpm * 0.7) }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    [
+      "complexity +0.15",
+      (cfg) => ({ complexity: Math.min(1, cfg.complexity + 0.15) }),
+      ["identical", "adapted", "rhythm"],
+    ],
+    [
+      "complexity −0.15",
+      (cfg) => ({ complexity: Math.max(0, cfg.complexity - 0.15) }),
+      ["identical", "adapted", "rhythm"],
+    ],
+    [
+      "complexity 0",
+      () => ({ complexity: 0 }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    [
+      "complexity 1",
+      () => ({ complexity: 1 }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    [
+      "energy 0",
+      () => ({ energy: 0 }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    [
+      "energy 1",
+      () => ({ energy: 1 }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    [
+      "lead",
+      (cfg, index) => ({
+        instrument: INSTRUMENT_IDS.filter((item) => item !== cfg.instrument)[
+          index % 13
+        ],
+      }),
+      ["identical", "adapted", "rhythm"],
+    ],
+    [
+      "register",
+      (_, index) => ({
+        arrangement: { melody: { register: index % 2 ? "high" : "low" } },
+      }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    [
+      "motion",
+      (_, index) => ({
+        arrangement: {
+          melody: {
+            motion: (["stepwise", "leaps", "arpeggio"] as const)[index % 3],
+          },
+        },
+      }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    [
+      "density",
+      (_, index) => ({
+        arrangement: { melody: { density: [0.1, 0.35, 0.6, 0.9][index % 4] } },
+      }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    [
+      "progression",
+      (cfg) => ({
+        arrangement: {
+          progression: cfg.key.endsWith("minor")
+            ? ["i", "bVI", "bIII", "bVII"]
+            : ["I", "V", "vi", "IV"],
+        },
+      }),
+      ["identical", "adapted", "rhythm", "new"],
+    ],
+    ["length", () => ({ duration: 75 }), ["adapted", "rhythm"]],
+    ["loop", (cfg) => ({ loop: !cfg.loop }), ["adapted", "rhythm"]],
+  ];
+  const seen: Record<string, Record<MelodyContinuity, number>> = {};
+  for (const [name] of changes)
+    seen[name] = { identical: 0, adapted: 0, rhythm: 0, new: 0 };
+  let index = 0;
+  for (const base of bases(TABLE_SEEDS)) {
+    for (const [name, change, allowed] of changes) {
+      const next = clampConfig({ ...base, ...change(base, index) });
+      const what = `${label(base)}, ${name}`;
+      const { verdict } = honest(base, next, what);
+      assert.ok(allowed.includes(verdict), `${what}: "${verdict}"`);
+      seen[name][verdict]++;
+    }
+    index++;
+  }
+  const pieces = STYLE_IDS.length * TABLE_SEEDS.length * 2;
+  // what a user asks for most keeps the motifs in all but a few pieces …
+  for (const name of [
+    "tempo +10 %",
+    "tempo −10 %",
+    "complexity +0.15",
+    "complexity −0.15",
+    "length",
+    "loop",
+  ])
+    assert.ok(
+      seen[name].identical + seen[name].adapted >= pieces * 0.97,
+      `${name}: ${JSON.stringify(seen[name])}`,
+    );
+  // … a register, motion or progression hint mostly rewrites the pitches and says so
+  for (const name of ["register", "progression"])
+    assert.ok(
+      seen[name].rhythm >= pieces * 0.6,
+      `${name}: ${JSON.stringify(seen[name])}`,
+    );
+});
+
+test("melodyContinuity: random pairs of settings, several fields at once", () => {
   let state = 20261;
   const random = () => {
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
@@ -716,15 +1119,19 @@ test("melodyContinuity: identical, adapted and new mean what the scores say", ()
   };
   const pick = <T>(items: readonly T[]) =>
     items[Math.floor(random() * items.length)];
-  const tally = { identical: 0, adapted: 0, new: 0 };
-  let adaptedOnsets = 0;
+  const tally = { identical: 0, adapted: 0, rhythm: 0, new: 0 };
+  let adaptedNotes = 0;
+  let rhythmOnsets = 0;
   let newNotes = 0;
-  for (let i = 0; i < 700; i++) {
+  let reseeded = 0;
+  for (let i = 0; i < 900; i++) {
     const style = pick(STYLE_IDS);
     const base = config(style, {
       seed: 1 + Math.floor(random() * 1e6),
       loop: random() < 0.5,
       duration: pick([20, 30, 45]),
+      ...(random() < 0.3 ? { key: pick(KEYS) } : {}),
+      ...(random() < 0.3 ? { instrument: pick(INSTRUMENT_IDS) } : {}),
     });
     const changes: Partial<MusicConfig> = {};
     const fields = 1 + Math.floor(random() * 2);
@@ -735,6 +1142,7 @@ test("melodyContinuity: identical, adapted and new mean what the scores say", ()
         "energy",
         "energySmall",
         "complexity",
+        "complexitySmall",
         "key",
         "instrument",
         "reverb",
@@ -762,6 +1170,11 @@ test("melodyContinuity: identical, adapted and new mean what the scores say", ()
           Math.max(0, base.energy + pick([-0.1, 0.1, 0.2, -0.2])),
         );
       else if (what === "complexity") changes.complexity = random();
+      else if (what === "complexitySmall")
+        changes.complexity = Math.min(
+          1,
+          Math.max(0, base.complexity + pick([-0.15, -0.1, 0.1, 0.15])),
+        );
       else if (what === "key") changes.key = pick(KEYS);
       else if (what === "instrument") changes.instrument = pick(INSTRUMENT_IDS);
       else if (what === "reverb") changes.reverb = random();
@@ -813,29 +1226,38 @@ test("melodyContinuity: identical, adapted and new mean what the scores say", ()
       }
     }
     const next = clampConfig({ ...base, ...changes });
-    const verdict = melodyContinuity(base, next);
-    tally[verdict]++;
     const what = `${label(base)} + ${JSON.stringify(changes)}`;
-    if (verdict === "identical") assertSameTune(base, next, what);
-    else {
-      const result = kept(base, next);
-      if (verdict === "adapted") adaptedOnsets += result.shared;
-      else newNotes += result.notes;
+    // (each answer is held against the two scores in here)
+    const { verdict, result } = honest(base, next, what);
+    tally[verdict]++;
+    if (verdict === "adapted") adaptedNotes += result.notes;
+    else if (verdict === "rhythm") rhythmOnsets += result.onsets;
+    else if (verdict === "new") {
+      if (next.seed !== base.seed) reseeded++;
+      newNotes += result.notes;
     }
   }
   assert.ok(
-    tally.identical >= 100 && tally.adapted >= 250 && tally.new >= 50,
+    tally.identical >= 150 &&
+      tally.adapted >= 150 &&
+      tally.rhythm >= 80 &&
+      tally.new >= 60,
     JSON.stringify(tally),
   );
-  // an adapted tune shares most of its rhythm with the one it came from; a new one shares little of anything
+  // on average the promises are kept with room to spare
   assert.ok(
-    adaptedOnsets / tally.adapted >= 0.85,
-    `adapted: ${(adaptedOnsets / tally.adapted).toFixed(3)} of the onsets shared`,
+    adaptedNotes / tally.adapted >= 0.8,
+    `adapted: ${(adaptedNotes / tally.adapted).toFixed(3)} of the first verse kept`,
   );
   assert.ok(
-    newNotes / tally.new <= 0.35,
+    rhythmOnsets / tally.rhythm >= 0.95,
+    `rhythm: ${(rhythmOnsets / tally.rhythm).toFixed(3)} of the onsets kept`,
+  );
+  assert.ok(
+    newNotes / tally.new <= 0.4,
     `new: ${(newNotes / tally.new).toFixed(3)} of the notes coincide`,
   );
+  assert.ok(reseeded >= 30, `${reseeded} new seeds among the new tunes`);
   // the frozen v0.2 engine is another composer altogether
   const old = { ...config("bright"), engine: 1 as const };
   assert.equal(melodyContinuity(old, config("bright")), "new");

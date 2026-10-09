@@ -10,6 +10,7 @@ import {
 } from "../src/music/catalog";
 import { MAX_PART_GAIN, compose, summarize } from "../src/music/compose";
 import { DEFAULT_CONFIG, ROMAN, stylePreset } from "../src/music/defaults";
+import { TEMPO_FIT_TOLERANCE, loopBars, planTiming } from "../src/music/form";
 import { hashSeed, seededRandom } from "../src/music/random";
 import {
   DRUM_KINDS,
@@ -459,23 +460,35 @@ test("loops: bars and tempo close the loop exactly", () => {
           Math.abs(score.duration - (score.bars * 240) / score.bpm) < 1e-6,
           `${label}: length is not whole bars`,
         );
-        // is there a multiple of four bars whose tempo is within 6 %?
+        // is there a multiple of four bars whose tempo is within 3 %?
         let fits = false;
         for (let bars = 4; bars <= 512; bars += 4)
-          if (Math.abs((240 * bars) / duration / bpm - 1) <= 0.06) fits = true;
+          if (Math.abs((240 * bars) / duration / bpm - 1) <= 0.03) fits = true;
         if (fits) {
           assert.equal(score.bars % 4, 0, `${label}: ${score.bars} bars`);
           assert.equal(score.duration, duration, label);
           assert.ok(
-            Math.abs(score.bpm / bpm - 1) <= 0.06 + 1e-9,
+            Math.abs(score.bpm / bpm - 1) <= 0.03 + 1e-9,
             `${label}: tempo moved to ${score.bpm}`,
           );
         } else {
+          // the tempo is the one asked for, to the digit; the length gives way
           assert.equal(score.bpm, bpm, label);
           assert.equal(score.bars % 2, 0, `${label}: ${score.bars} bars`);
+          const wanted = (duration * bpm) / 240;
           assert.ok(
-            Math.abs(score.duration - duration) <= 240 / bpm + 1e-6,
-            `${label}: ${score.duration}s`,
+            Math.abs(score.bars - wanted) <= 1 + 1e-9,
+            `${label}: ${score.bars} bars for ${wanted.toFixed(2)}`,
+          );
+          // whole four-bar phrases wherever they lie within a bar of the request
+          const phrases = [
+            4 * Math.floor(wanted / 4),
+            4 * Math.ceil(wanted / 4),
+          ].some((bars) => bars >= 4 && Math.abs(bars - wanted) <= 1 + 1e-9);
+          assert.equal(
+            score.bars % 4 === 0,
+            phrases,
+            `${label}: ${score.bars} bars for ${wanted.toFixed(2)}`,
           );
         }
         assert.ok(score.bars >= 2);
@@ -485,15 +498,101 @@ test("loops: bars and tempo close the loop exactly", () => {
             section.type !== "intro" && section.type !== "outro",
             `${label}: ${section.type} in a loop`,
           );
-        // the user is told whenever tempo or length had to move
-        const mentions = score.notes.some((line) =>
-          line.includes("为了无缝循环"),
-        );
+        // the user is told whenever tempo or length had to move, and by how much
+        const line = score.notes.find((text) => text.includes("为了无缝循环"));
         const changed =
           Math.abs(score.bpm - bpm) > 0.005 ||
           Math.abs(score.duration - duration) > 0.005;
-        assert.equal(mentions, changed, `${label}: tempo-fit note`);
+        assert.equal(!!line, changed, `${label}: tempo-fit note`);
+        if (line && score.bpm !== bpm) {
+          assert.match(line, /速度微调为 [\d.]+ BPM（设定 \d+）/, label);
+          const said = Number(/速度微调为 ([\d.]+) BPM/.exec(line)![1]);
+          assert.ok(Math.abs(said - score.bpm) <= 0.05, `${label}: ${line}`);
+        } else if (line) {
+          assert.match(
+            line,
+            new RegExp(`速度保持 ${bpm} BPM，时长取整为`),
+            label,
+          );
+          assert.ok(
+            line.includes(`${score.bars} 小节`) &&
+              line.includes(`设定 ${duration} 秒`),
+            `${label}: ${line}`,
+          );
+        }
       }
+});
+
+test("loops: a tempo that is asked for is the tempo that is played", () => {
+  // every whole tempo and every whole length the controls can produce
+  const style = getStyle("bright");
+  let fitted = 0;
+  let total = 0;
+  for (let bpm = 50; bpm <= 200; bpm++)
+    for (let duration = 15; duration <= 120; duration++) {
+      const timing = planTiming(
+        config("bright", { loop: true, bpm, duration }),
+        style,
+      );
+      const what = `${bpm} BPM, ${duration} s`;
+      total++;
+      assert.ok(
+        Math.abs(timing.bpm / bpm - 1) <= TEMPO_FIT_TOLERANCE + 1e-9,
+        `${what}: played at ${timing.bpm.toFixed(2)}`,
+      );
+      assert.ok(TEMPO_FIT_TOLERANCE <= 0.03);
+      if (timing.adjusted === "tempo") {
+        fitted++;
+        assert.equal(timing.duration, duration, what);
+        assert.equal(timing.bars % 4, 0, what);
+      } else {
+        assert.equal(timing.bpm, bpm, what);
+        assert.equal(timing.bars, loopBars(duration, bpm), what);
+        assert.ok(
+          Math.abs(timing.duration - duration) <= 240 / bpm + 1e-6,
+          `${what}: ${timing.duration.toFixed(2)} s`,
+        );
+      }
+      assert.equal(
+        timing.adjusted === "duration",
+        timing.bpm === bpm && Math.abs(timing.duration - duration) > 0.005,
+        what,
+      );
+    }
+  // most requests keep their tempo outright
+  assert.ok(fitted < total * 0.5, `${fitted} of ${total} loops bent the tempo`);
+
+  // a step of a few BPM on a short loop moves the tempo by that step (the
+  // case that used to jump from 112 to 128 when ten more were asked for)
+  for (const duration of [15, 20, 30])
+    for (let bpm = 60; bpm <= 180; bpm += 4)
+      for (const step of [-20, -10, -5, 5, 10, 20]) {
+        if (bpm + step < 50 || bpm + step > 200) continue;
+        const before = compose(config("bright", { loop: true, bpm, duration }));
+        const after = compose(
+          config("bright", { loop: true, bpm: bpm + step, duration }),
+        );
+        const moved = after.bpm - before.bpm;
+        // each side may sit up to 3 % off its own setting, never more
+        const slack = 0.03 * (2 * bpm + step) + 1e-6;
+        assert.ok(
+          Math.abs(moved - step) <= slack,
+          `${duration} s loop, ${bpm} ${step > 0 ? "+" : ""}${step} BPM: ${before.bpm.toFixed(1)} → ${after.bpm.toFixed(1)}`,
+        );
+      }
+  const short = compose(
+    config("bright", { loop: true, bpm: 122, duration: 15 }),
+  );
+  assert.equal(short.bpm, 122);
+  assert.equal(short.bars, 8);
+  assert.ok(Math.abs(short.duration - 15.738) < 0.01, `${short.duration} s`);
+  // loopBars: an even count, whole four-bar phrases when they are within a bar
+  assert.deepEqual(
+    [3.2, 4.9, 5, 5.1, 6, 6.9, 7, 9, 10, 11, 54, 55].map((bars) =>
+      loopBars(bars * 2, 120),
+    ),
+    [4, 4, 4, 6, 6, 6, 8, 8, 10, 12, 54, 56],
+  );
 });
 
 test("loops: the last bar turns around into bar 1", () => {

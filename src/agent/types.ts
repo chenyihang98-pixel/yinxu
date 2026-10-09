@@ -22,6 +22,12 @@ export interface AgentTurn {
   revision?: number;
   /** agent turns that report a failure */
   error?: boolean;
+  /**
+   * agent turns from a language model: the model's own words (≤ 400 chars),
+   * shown as a secondary note. `text` is always written by the app from the
+   * actual change, so it cannot claim something that did not happen.
+   */
+  note?: string;
 }
 
 export interface AgentRequest {
@@ -59,8 +65,14 @@ export interface AgentPlan {
   /** complete, sanitised next configuration */
   config: MusicConfig;
   title: string;
-  /** one or two friendly sentences for the chat thread */
+  /**
+   * One or two sentences for the chat thread. Always derived by the app from
+   * the difference between the current and the planned configuration — for
+   * both brains — so it states exactly what will change.
+   */
   reply: string;
+  /** llm brain only: the model's own reply, kept as a secondary note */
+  modelNote?: string;
   reasoning: string[];
   tags: string[];
   /** true when nothing audible would change (the request was not understood) */

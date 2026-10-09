@@ -2,8 +2,16 @@
  * Decisions of the app core as pure functions: no React, no timers, no
  * storage, no audio. Everything here runs under Node and is unit-tested.
  */
+import { TRACK_LABELS, keyLabel } from "../agent/cloudPrompt";
 import type { AgentPlan, AgentTurn } from "../agent/types";
-import { LIMITS, isInstrumentId, isKey, isStyleId } from "../music/catalog";
+import {
+  INSTRUMENT_LIST,
+  LIMITS,
+  STYLES,
+  isInstrumentId,
+  isKey,
+  isStyleId,
+} from "../music/catalog";
 import { clampConfig, stylePreset } from "../music/defaults";
 import { TRACKS } from "../music/score";
 import type {
@@ -223,6 +231,29 @@ function cleanDraftValue<K extends DraftField>(
 }
 
 /**
+ * Inspector edits read back from somewhere that cannot be trusted (the
+ * remembered session): only fields that exist, with values the engine
+ * accepts. A value of the wrong kind is left out, never replaced by a guess.
+ */
+export function cleanDraftPatch(value: unknown): Partial<Draft> {
+  const patch: Partial<Draft> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return patch;
+  const source = value as Record<string, unknown>;
+  const absent = Symbol("absent");
+  for (const field of DRAFT_FIELDS) {
+    if (!Object.hasOwn(source, field)) continue;
+    const cleaned = cleanDraftValue(
+      field,
+      source[field] as Draft[typeof field],
+      absent as unknown as Draft[typeof field],
+    );
+    if ((cleaned as unknown) !== absent)
+      Object.assign(patch, { [field]: cleaned });
+  }
+  return patch;
+}
+
+/**
  * One inspector edit. Choosing a style also moves tempo, key, lead, energy,
  * richness and reverb to that style's preset — except the fields the user has
  * already set by hand (`touched`). Going back to the committed style returns
@@ -421,26 +452,128 @@ export function houseTerms(text: string): string {
 export const houseStyle = (text: string): string =>
   houseTerms(houseQuotes(text));
 
+/**
+ * Apply `change` to everything in `text` that is not a quotation. Quoted
+ * words — the user's request repeated back in 「」, or in the curly quotes a
+ * language model may use — are somebody's own wording: they are never
+ * rewritten, whatever the text around them is corrected to.
+ */
+export function outsideQuotes(
+  text: string,
+  change: (part: string) => string,
+): string {
+  return text
+    .split(/(「[^「」]*」|\u201c[^\u201c\u201d]*\u201d)/)
+    .map((part, index) => (index % 2 === 1 ? part : change(part)))
+    .join("");
+}
+
+/* ---------- names instead of ids ---------- */
+
+/**
+ * The catalogue's own ids, as they can turn up in something a language model
+ * wrote ("主奏乐器更换为 piano"), with the names the interface uses for them.
+ */
+const NAME_OF_ID: ReadonlyMap<string, string> = new Map<string, string>([
+  ...STYLES.map((style) => [style.id, style.label] as const),
+  ...INSTRUMENT_LIST.map((item) => [item.id, item.label] as const),
+  ...TRACKS.map((track) => [track, TRACK_LABELS[track]] as const),
+]);
+const ID_WORD = new RegExp(
+  `( ?)(?<![A-Za-z0-9_#.-])(${[...NAME_OF_ID.keys()]
+    .sort((a, b) => b.length - a.length)
+    .join("|")})(?![A-Za-z0-9_-])( ?)`,
+  "g",
+);
+const KEY_WORD =
+  /( ?)(?<![A-Za-z0-9_-])([A-G](?:#|b)? (?:major|minor))(?![A-Za-z])( ?)/g;
+const HAN = /\p{Script=Han}/u;
+
+/**
+ * Text for the thread with every bare id put into words: a style, a lead
+ * instrument, a track or a key is called what the inspector and the mixer
+ * call it. A space that only separated the id from Chinese text goes with it.
+ * Text without ids comes back unchanged.
+ */
+export function plainNames(text: string): string {
+  const named =
+    (nameOf: (id: string) => string | undefined) =>
+    (
+      match: string,
+      gapBefore: string,
+      id: string,
+      gapAfter: string,
+      offset: number,
+      whole: string,
+    ) => {
+      const name = nameOf(id);
+      if (!name) return match;
+      const before = whole[offset - 1] ?? "";
+      const after = whole[offset + match.length] ?? "";
+      const closeBefore = HAN.test(before) && HAN.test(name[0] ?? "");
+      const closeAfter = HAN.test(after) && HAN.test(name.at(-1) ?? "");
+      return `${closeBefore ? "" : gapBefore}${name}${closeAfter ? "" : gapAfter}`;
+    };
+  // What stands in quotes is somebody's own wording and stays as it is.
+  return outsideQuotes(text, (part) =>
+    part
+      .replace(
+        KEY_WORD,
+        named((id) => (isKey(id) ? keyLabel(id) : undefined)),
+      )
+      .replace(
+        ID_WORD,
+        named((id) => NAME_OF_ID.get(id)),
+      ),
+  );
+}
+
+/** The model's own words under an answer: this many characters at most. */
+export const MAX_NOTE_CHARS = 400;
+
+/**
+ * What a language model said in its own words, as the thread may show it:
+ * one line, house quotes and names, clipped. "" when there is nothing to show.
+ */
+export function cleanNote(note: unknown): string {
+  if (typeof note !== "string") return "";
+  return clip(
+    plainNames(houseStyle(note.replace(/[\p{Cc}\s]+/gu, " ").trim())),
+    MAX_NOTE_CHARS,
+  ).trim();
+}
+
 /** The producer's answer as a stored turn. `revision` only when a version was made. */
 export function agentTurn(
   id: string,
   at: string,
-  plan: Pick<AgentPlan, "reply" | "reasoning" | "brain">,
+  plan: Pick<AgentPlan, "reply" | "reasoning" | "brain"> &
+    Partial<Pick<AgentPlan, "modelNote">>,
   options: { revision?: number; direct?: boolean } = {},
 ): AgentTurn {
   const reasoning = plan.reasoning
-    .map((line) => clip(houseStyle(line.trim()), 160))
+    .map((line) => {
+      const styled = houseStyle(line.trim());
+      // The offline rules write their own chips; a model may name things by id.
+      return clip(plan.brain === "llm" ? plainNames(styled) : styled, 160);
+    })
     .filter(Boolean)
     .slice(0, 8);
+  const text = clip(houseStyle(plan.reply), 1500);
+  // The model's own words are kept apart from the answer, which the app
+  // writes from what really changes. A note that only repeats the answer
+  // adds nothing, and a direct control has no model behind it.
+  const said = options.direct ? "" : cleanNote(plan.modelNote);
   return {
     id,
     role: "agent",
-    text: clip(houseStyle(plan.reply), 1500),
+    text,
     at,
     ...(reasoning.length ? { reasoning } : {}),
     // Direct controls (应用调整 / 换一版旋律) are not a brain's answer.
     ...(options.direct ? {} : { brain: plan.brain }),
     ...(options.revision !== undefined ? { revision: options.revision } : {}),
+    ...(said && said !== text ? { note: said } : {}),
   };
 }
 

@@ -81,6 +81,8 @@ const QuickPrompts = memo(function QuickPrompts(props: {
 export function ComposerHero(props: {
   studio: StudioView;
   platform: Platform;
+  /** a question from the app is open: nothing here starts another one */
+  asking: boolean;
   actions: AppActions;
 }) {
   useRenderCount("ComposerHero");
@@ -116,7 +118,10 @@ export function ComposerHero(props: {
     studio.activeBrain,
   );
   const creating = job?.kind === "generate";
-  const canSend = !busy && (!!text.trim() || pinsOnly);
+  const canSend = !busy && !props.asking && (!!text.trim() || pinsOnly);
+  const range = studio.durationRange;
+  const offered = (seconds: number) =>
+    !range || (seconds >= range[0] && seconds <= range[1]);
   const send = () => {
     if (canSend) void actions.send();
   };
@@ -224,9 +229,11 @@ export function ComposerHero(props: {
                 </span>
               </div>
               {pinned && (
+                // What the style is stands next to 风格 below; this only says
+                // that the pin alone is enough to start from.
                 <p className="style-hint" data-testid="style-hint">
-                  已选「{pinned.label}」：{pinned.description}
-                  可以直接生成，也可以再写几句想要的画面。
+                  已选「{pinned.label}
+                  」风格，可以直接生成，也可以再写几句想要的画面。
                 </p>
               )}
             </div>
@@ -251,8 +258,16 @@ export function ComposerHero(props: {
             >
               <option value="">自动</option>
               {DURATION_CHOICES.map((seconds) => (
-                <option key={seconds} value={seconds}>
-                  {seconds} 秒
+                // A length the selected service does not take stays listed,
+                // so it is clear why it cannot be picked.
+                <option
+                  key={seconds}
+                  value={seconds}
+                  disabled={!offered(seconds)}
+                >
+                  {offered(seconds)
+                    ? `${seconds} 秒`
+                    : `${seconds} 秒 · 该引擎不支持`}
                 </option>
               ))}
             </Select>

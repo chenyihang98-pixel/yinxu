@@ -28,6 +28,7 @@ const BRIDGE_KEYS = [
   "cancelGeneration",
   "deleteLlmSettings",
   "deleteProviderCredentials",
+  "discardPendingResult",
   "generateMusic",
   "getSettings",
   "openExternal",
@@ -224,9 +225,15 @@ async function bridgeChecks(root) {
     assert.deepEqual(Object.keys(result.settings).sort(), [
       "dataPath",
       "llm",
+      "pendingResult",
       "providers",
       "version",
     ]);
+    assert.equal(
+      result.settings.pendingResult,
+      null,
+      "no paid result is waiting in a fresh start",
+    );
     assert.equal(
       path.resolve(result.settings.dataPath),
       path.join(profile, "Muse-Data"),
@@ -592,6 +599,87 @@ async function bridgeChecks(root) {
       window.museDesktop.deleteProviderCredentials("elevenlabs"),
     );
 
+    // A credential file that is no store at all (here: zero bytes) used to refuse every save and
+    // removal for ever. Now the first save sets it aside, starts empty, and tells the user once.
+    // (The notice is a native dialog: recorded here instead of shown on the tester's desktop.)
+    await desktop.evaluate(({ dialog }) => {
+      globalThis.__museNotices = [];
+      dialog.showMessageBox = async (...args) => {
+        const options = args[args.length - 1];
+        globalThis.__museNotices.push({
+          message: options.message,
+          detail: options.detail,
+          buttons: options.buttons,
+          modal: args.length > 1,
+        });
+        return { response: 0 };
+      };
+    });
+    const notices = () => desktop.evaluate(() => globalThis.__museNotices);
+    const dataFiles = async () =>
+      (await fs.readdir(path.dirname(credentialFile))).filter((name) =>
+        name.startsWith("music-credentials"),
+      );
+    await fs.writeFile(credentialFile, "");
+    const unusable = await page.evaluate(() =>
+      window.museDesktop.getSettings(),
+    );
+    assert.deepEqual(unusable.providers.tencent, {
+      configured: false,
+      damaged: true,
+    });
+    assert.equal(
+      await messageOf(
+        page,
+        `window.museDesktop.generateMusic({ provider: 'tencent', prompt: '测试', duration: 30 })`,
+      ),
+      "无法读取服务凭据：凭据文件已损坏。请在设置中重新填写并保存密钥。",
+    );
+    assert.deepEqual(await dataFiles(), ["music-credentials.json"]);
+    assert.deepEqual(await notices(), [], "reading sets nothing aside");
+    assert.equal(
+      await messageOf(
+        page,
+        `window.museDesktop.saveProviderCredentials('tencent', { apiKey: 'tokenhub-smoke-only-not-a-real-key' })`,
+      ),
+      null,
+      "the save goes through",
+    );
+    const setAside = (await dataFiles()).filter((name) =>
+      /^music-credentials\.damaged-\d{8}T\d{6}Z\.bak$/.test(name),
+    );
+    assert.equal(setAside.length, 1, JSON.stringify(await dataFiles()));
+    assert.equal(
+      (await fs.readFile(path.join(path.dirname(credentialFile), setAside[0])))
+        .length,
+      0,
+      "the copy is the damaged file, byte for byte",
+    );
+    const told = await until(
+      notices,
+      (list) => list.length === 1,
+      "the notice about the damaged credential file",
+    );
+    assert.equal(told[0].message, "之前保存的密钥需要重新填写");
+    assert.ok(told[0].detail.includes(setAside[0]), told[0].detail);
+    assert.deepEqual(told[0].buttons, ["知道了"]);
+    assert.equal(told[0].modal, true);
+    const restarted = await page.evaluate(() =>
+      window.museDesktop.getSettings(),
+    );
+    assert.deepEqual(restarted.providers, {
+      elevenlabs: { configured: false },
+      tencent: { configured: true, model: "minimax-music-v3.0" },
+      volcengine: { configured: false },
+      aliyun: { configured: false },
+    });
+    await page.evaluate(() =>
+      window.museDesktop.deleteProviderCredentials("tencent"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal((await notices()).length, 1, "told once");
+    assert.equal((await dataFiles()).length, 2, "one copy");
+
     if (process.env.MUSE_SCREENSHOT_PATH) {
       const screenshotPath = path.resolve(process.env.MUSE_SCREENSHOT_PATH);
       await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
@@ -634,6 +722,9 @@ async function lowercaseDriveCheck(root) {
 
 const UNCONFIRMED =
   "无法连接音乐服务，请检查网络。请求结果未确认，先查看服务控制台记录，再决定是否手动重试。";
+/** The Aliyun endpoint of workspace "muse-smoke" and the OSS bucket its results are fetched from. */
+const ALIYUN_API = "muse-smoke.cn-beijing.maas.aliyuncs.com";
+const OSS = "muse-smoke.oss-cn-beijing.aliyuncs.com";
 /** How long the stand-in server holds a request before it drops the connection without answering. */
 const DROP_AFTER_MS = 800;
 
@@ -649,10 +740,22 @@ const DROP_AFTER_MS = 800;
  *             without answering: what a NAT or proxy does to a connection that
  *             sits idle while the service is composing;
  *   "hang"    read the request and never answer.
+ * With `download`, GET requests are recorded in `state.gets` and answered by it
+ * (a stand-in for the file server a finished result is fetched from).
  */
-async function startVendor({ protocol, tls, answer }) {
+async function startVendor({
+  protocol,
+  tls,
+  answer = () => ({
+    status: 405,
+    type: "text/plain",
+    body: Buffer.from("not offered"),
+  }),
+  download,
+}) {
   const state = {
     posts: [],
+    gets: [],
     next: "answer",
     connections: 0,
     sockets: new Map(),
@@ -666,6 +769,11 @@ async function startVendor({ protocol, tls, answer }) {
   };
   const handle = (method, remotePort, body, reply) => {
     const socket = state.sockets.get(remotePort);
+    if (method === "GET" && download) {
+      state.gets.push({ connection: socket.museId });
+      reply(download(state));
+      return;
+    }
     if (method !== "POST") {
       reply({
         status: 404,
@@ -783,9 +891,36 @@ async function paidRequestChecks(root) {
     path.join(root, "tests", "fixtures", "music-3s.mp3"),
   );
   const tls = selfSignedCertificate({
-    names: ["api.elevenlabs.io", "tokenhub.tencentmaas.com"],
+    names: ["api.elevenlabs.io", "tokenhub.tencentmaas.com", ALIYUN_API, OSS],
   });
   const vendors = {
+    // Aliyun answers with the address of the file; the file server is a second stand-in
+    // whose `failing` flag decides whether a download gets the file or HTTP 503.
+    aliyun: await startVendor({
+      protocol: "https1",
+      tls,
+      answer: () => ({
+        status: 200,
+        type: "application/json",
+        body: Buffer.from(
+          JSON.stringify({
+            request_id: "smoke-aliyun-0001",
+            output: {
+              finish_reason: "stop",
+              audio: { url: `https://${OSS}/music.mp3?Signature=smoke` },
+            },
+          }),
+        ),
+      }),
+    }),
+    oss: await startVendor({
+      protocol: "https1",
+      tls,
+      download: (state) =>
+        state.failing
+          ? { status: 503, type: "text/plain", body: Buffer.from("busy") }
+          : { status: 200, type: "audio/mpeg", body: mp3 },
+    }),
     elevenlabs: await startVendor({
       protocol: "https1",
       tls,
@@ -811,7 +946,7 @@ async function paidRequestChecks(root) {
   let desktop;
   try {
     // Only this Electron process resolves the two vendor names to the stand-ins; nothing else on the machine changes.
-    const rules = `MAP api.elevenlabs.io 127.0.0.1:${vendors.elevenlabs.port}, MAP tokenhub.tencentmaas.com 127.0.0.1:${vendors.tencent.port}`;
+    const rules = `MAP api.elevenlabs.io 127.0.0.1:${vendors.elevenlabs.port}, MAP tokenhub.tencentmaas.com 127.0.0.1:${vendors.tencent.port}, MAP ${ALIYUN_API} 127.0.0.1:${vendors.aliyun.port}, MAP ${OSS} 127.0.0.1:${vendors.oss.port}`;
     const launched = await launch(root, root, profile, [
       `--host-resolver-rules=${rules}`,
     ]);
@@ -1110,7 +1245,6 @@ async function paidRequestChecks(root) {
       document.querySelector("#muse-smoke-probe").remove(),
     );
 
-    /* MAIN-05: closing asks first while something paid for would be lost. */
     const windows = () =>
       main(
         ({ BrowserWindow }) =>
@@ -1121,6 +1255,173 @@ async function paidRequestChecks(root) {
       main(({ BrowserWindow }) => {
         BrowserWindow.getAllWindows()[0].close();
       });
+    const settings = () =>
+      page.evaluate(() => window.museDesktop.getSettings());
+
+    /* ND-1: a billable request that cannot leave this computer still ends - by cancel, or by itself - and is reported as not sent. */
+    const posted = () =>
+      vendors.elevenlabs.state.posts.length +
+      vendors.tencent.state.posts.length;
+    const sentBeforeStall = posted();
+    // The real billing session, with a closeAllConnections() whose answer never comes.
+    await main(({ session }, partition) => {
+      session.fromPartition(partition).closeAllConnections = () =>
+        new Promise(() => {});
+    }, BILLING_PARTITION);
+    const stalled = generate("tencent");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const cancelStarted = Date.now();
+    await page.evaluate(() => window.museDesktop.cancelGeneration());
+    assert.deepEqual(await stalled, {
+      ok: false,
+      message: "已取消等待生成。这次请求还没有发出，不会计费。",
+    });
+    facts.cancelMs = Date.now() - cancelStarted;
+    assert.ok(facts.cancelMs < 3000, `cancel took ${facts.cancelMs} ms`);
+    // Nobody cancels: the app gives up by itself after 5 s, and the music service is free again.
+    const boundStarted = Date.now();
+    assert.deepEqual(await generate("elevenlabs"), {
+      ok: false,
+      message:
+        "没有发出请求，不会计费：应用没能为这次付费请求准备好独立的网络连接。请稍后重试；如果反复出现，请重启应用。",
+    });
+    facts.boundMs = Date.now() - boundStarted;
+    assert.ok(
+      facts.boundMs >= 4500 && facts.boundMs < 12000,
+      `gave up after ${facts.boundMs} ms`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(
+      posted(),
+      sentBeforeStall,
+      "neither request reached a service",
+    );
+    await main(({ session }, partition) => {
+      delete session.fromPartition(partition).closeAllConnections;
+    }, BILLING_PARTITION);
+    for (const provider of ["tencent", "elevenlabs"]) {
+      const after = await generate(provider);
+      assert.equal(after.ok, true, `${provider}: ${JSON.stringify(after)}`);
+    }
+    assert.equal(posted(), sentBeforeStall + 2);
+
+    /* FQ-01: a paid result the main process still holds - reported, guarded and never replaced unasked. */
+    const collect = (provider) =>
+      page.evaluate(async (id) => {
+        try {
+          const result = await window.museDesktop.retryLastDownload(id);
+          return {
+            ok: true,
+            mimeType: result.mimeType,
+            bytes: result.audio.byteLength,
+          };
+        } catch (error) {
+          return { ok: false, message: error.message };
+        }
+      }, provider);
+    await page.evaluate(() =>
+      window.museDesktop.saveProviderCredentials("aliyun", {
+        apiKey: "bailian-smoke-only-not-a-real-key",
+        workspaceId: "muse-smoke",
+        model: "fun-music-v1",
+      }),
+    );
+    assert.equal((await settings()).pendingResult, null);
+    const aliyun = vendors.aliyun.state;
+    const oss = vendors.oss.state;
+    oss.failing = true;
+    const undelivered = await generate("aliyun");
+    assert.equal(undelivered.ok, false);
+    assert.match(
+      undelivered.message,
+      /^音乐已生成，但下载失败（已尝试 4 次.*（请求编号 smoke-aliyun-0001）$/,
+    );
+    assert.equal(aliyun.posts.length, 1, "one paid request");
+    assert.equal(oss.gets.length, 4, "four download attempts");
+    assert.deepEqual(
+      (await settings()).pendingResult,
+      { provider: "aliyun" },
+      "getSettings says what the main process holds",
+    );
+    // The page reports nothing at stake (its notice was closed, say): closing asks all the same.
+    await page.evaluate(() => window.museDesktop.setUnsavedWork(false));
+    await closeWindow();
+    const held = (
+      await until(
+        smoke,
+        (state) => state.boxes.length === 1,
+        "the question about music that was not fetched",
+      )
+    ).boxes[0];
+    assert.equal(held.message, "有一首已经生成的音乐还没有取回");
+    assert.match(held.detail, /已经生成了这首音乐并计费/);
+    assert.match(held.detail, /再也取不回/);
+    assert.match(held.detail, /重新生成需要再次付费[\s\S]*「重新下载」/);
+    assert.deepEqual(held.buttons, ["返回应用", "仍然关闭"]);
+    assert.equal(held.cancelId, 0);
+    assert.equal(held.modal, true);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(await windows(), 1, '"返回应用": the window stays open');
+    // A new paid generation is refused - for that service and for any other - and nothing is sent.
+    const paidBefore = posted() + aliyun.posts.length;
+    for (const provider of ["tencent", "aliyun"])
+      assert.deepEqual(await generate(provider), {
+        ok: false,
+        message:
+          "还有一首已经付费的音乐没有取回，这次没有发出新的生成请求。请先点「重新下载」把它取回；确认不要它之后，才能开始新的生成。",
+      });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(posted() + aliyun.posts.length, paidBefore);
+    assert.deepEqual((await settings()).pendingResult, { provider: "aliyun" });
+    // Giving it up takes the id of the service that holds it; then nothing is waiting any more.
+    assert.equal(
+      await page.evaluate(() =>
+        window.museDesktop.discardPendingResult("tencent"),
+      ),
+      false,
+    );
+    assert.deepEqual((await settings()).pendingResult, { provider: "aliyun" });
+    assert.equal(
+      await page.evaluate(() =>
+        window.museDesktop.discardPendingResult("aliyun"),
+      ),
+      true,
+    );
+    assert.equal((await settings()).pendingResult, null);
+    assert.deepEqual(await collect("aliyun"), {
+      ok: false,
+      message:
+        "没有等待重新下载的音乐。如需这首音乐，请到服务控制台查找，或重新生成。",
+    });
+    assert.equal(
+      (await generate("tencent")).ok,
+      true,
+      "free to generate again",
+    );
+    // Once more, and this time the file server recovers: the result is fetched without a second paid request.
+    assert.equal((await generate("aliyun")).ok, false);
+    assert.deepEqual((await settings()).pendingResult, { provider: "aliyun" });
+    oss.failing = false;
+    assert.deepEqual(await collect("aliyun"), {
+      ok: true,
+      mimeType: "audio/mpeg",
+      bytes: mp3.length,
+    });
+    assert.equal(aliyun.posts.length, 2, "two generations, two paid requests");
+    assert.equal(
+      oss.gets.length,
+      9,
+      "4 + 4 failed attempts and the one that worked",
+    );
+    assert.equal((await settings()).pendingResult, null);
+    facts.pending =
+      "reported, asked about on close, refused over, given up, collected";
+    // (The questions recorded so far belong to this section.)
+    await main(() => {
+      globalThis.__museSmoke.boxes.length = 0;
+    });
+
+    /* MAIN-05: closing asks first while something paid for would be lost. */
     // The renderer holds a paid result that is not stored yet.
     await page.evaluate(() => window.museDesktop.setUnsavedWork(true));
     await closeWindow();
@@ -1245,7 +1546,10 @@ async function main() {
   const drive = await lowercaseDriveCheck(root);
   const paid = await paidRequestChecks(root);
   console.log(
-    `Desktop smoke passed: isolated preload, ${BRIDGE_KEYS.length} bridge methods, settings shape, plain Chinese errors, encrypted music + LLM settings CRUD, plan through the Chromium network stack, local-model connection messages and refused ports, damaged-entry isolation, lowercase drive start (${drive}).`,
+    `Desktop smoke passed: isolated preload, ${BRIDGE_KEYS.length} bridge methods, settings shape, plain Chinese errors, encrypted music + LLM settings CRUD, plan through the Chromium network stack, local-model connection messages and refused ports, damaged-entry isolation, a zero-byte credential file set aside on the first save with one notice, lowercase drive start (${drive}).`,
+  );
+  console.log(
+    `Not sent: with the billing session's closeAllConnections() never answering, cancel ended the job in ${paid.cancelMs} ms and the app gave up by itself after ${paid.boundMs} ms, both reported as not sent, no POST reached a service, and the next generations went through. Pending result (Aliyun, real network path): ${paid.pending}.`,
   );
   console.log(
     `Paid requests: 4 dropped submissions (HTTP/1.1 over TLS and HTTP/2, reset and close) each reached the service exactly once on a never-used connection and were reported as unconfirmed; network service ${paid.networkService}; the same drop on the ordinary path: ${JSON.stringify(paid.control)}. Context menu in text fields / on selected text only. Closing asked ${paid.questions} times (unsaved work, generation in flight, quit) and left only on "仍然关闭".`,

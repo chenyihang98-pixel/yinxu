@@ -8,15 +8,16 @@
 - **产品**：把一句话变成纯器乐背景音乐，可以试听、用对话继续改、调四条分轨、导出。Windows 桌面版（Electron）和只有本地作曲的静态网页版共用一套渲染层代码。
 - **做音乐的两种方式**：①**本地作曲（引擎 2）**：符号作曲器 → Score → 纯 TypeScript 合成器；48 kHz、四分轨、−16 LUFS；离线、免费、确定性；22 种风格、14 种主奏乐器、24 个调。②**云端 AI 音乐服务**（仅桌面版，用户自己的密钥）：腾讯云 TokenHub、火山引擎、阿里云百炼 Fun-Music、ElevenLabs；每次一个付费请求，返回一条混合音轨。
 - **制作人**（把话变成制作方案）：离线规则（永远可用）和可选的大模型（Claude 官方 SDK、OpenAI 兼容接口、本机 Ollama；只从主进程调用；失败时回退到规则并说明原因）。
-- **验证边界（最重要）**：云端音乐服务和托管的大模型只在本机模拟的服务上跑通过，**没有用过任何真实付费账号**；真实的外部调用只有本机 Ollama。安装包**从未运行过**。只在 Chromium / Electron 里测过。**没有人听过生成的音频**——响度、平衡、接缝的结论全是测量值。不要把模拟写成真实联调，不要把测量写成「好听」。
-- **结构**：`src/` 渲染层（React 19 + TypeScript + Vite 7）；`electron/` 主进程（CommonJS，Electron 41）；`window.museDesktop` 是唯一的桥（13 个方法，S08）。渲染层 CSP 为 `connect-src 'none'`，外部请求全部从主进程发出。没有后端、自动更新和遥测。
+- **验证边界（最重要）**：云端音乐服务和托管的大模型只在本机模拟的服务上跑通过，**没有用过任何真实付费账号**；真实的外部调用只有本机 Ollama；ElevenLabs 连模拟的界面全流程也没有。安装包**从未运行过**。只在一台 Windows 11 电脑上、只在 Chromium / Electron 里测过。**没有人听过生成的音频**——响度、平衡、接缝的结论全是测量值。不要把模拟写成真实联调，不要把测量写成「好听」。
+- **结构**：`src/` 渲染层（React 19 + TypeScript + Vite 7）；`electron/` 主进程（CommonJS，Electron 41）；`window.museDesktop` 是唯一的桥（14 个方法，S08）。渲染层 CSP 为 `connect-src 'none'`，外部请求全部从主进程发出。没有后端、自动更新和遥测。
 - **状态规则**：`studio.project` 是已生成的作品（标题、封面、混音、导出都读它）；`studio.draft` 只是「声音微调」里没应用的修改；输入框里的字只是字。每次生成都是新作品（新 id、`revision + 1`、`parentId`），旧版本保留。
-- **钱和数据的规则**（`src/state/studioFlows.ts` 文件头）：付费请求先确认；从不自动重试生成；云端音频先保存再解码；保存失败的结果留在窗口并提示导出；已生成但没取回的文件用「重新下载」，不再付一次钱。
+- **钱和数据的规则**（`src/state/studioFlows.ts` 文件头）：付费请求先确认；从不自动重试生成；云端音频先保存再解码；保存失败的结果留在窗口并提示导出；已经付费但没取回的结果（文件没下到，或任务没等到结果）留在一条关不掉的横幅上，用「重新下载」取回、不再付一次钱，任何会替换或忘掉它的动作都先问；服务不接受的时长在付费确认之前就问。
+- **回复由应用来写**：制作人回复里「改了什么」和关于旋律的那句话，永远由应用按前后两份设置的实际差别写出（`src/agent/cloudPrompt.ts` 的 `tellChanges` / `melodyNote`）；大模型自己的话只作为「模型说明」附在下面，说得与实际不符的不显示（S07）。
 - **数据**：作品在 IndexedDB `muse-bgm` / `projects`；桌面数据目录 `%APPDATA%\Muse BGM`，凭据在其中的 `music-credentials.json`（Windows safeStorage 加密）。开发时不需要读取或清空它们；测试和套件都用临时目录。
 - **不要运行旧程序**：`release/` 里的 0.1.0 / 0.2.0 EXE 与 0.3 共用数据目录和数据库，会把 0.3 的作品改写成旧引擎作品并丢掉对话（S11）。`启动音序.cmd` 只启动与 `package.json` 版本一致的便携版。
-- **最低开发动作**：`npm run typecheck`、`npm test`（约 1 分钟；`npm run test:fast` 几秒）。改了界面或主进程：`npm run build` 后跑相应的 Electron 套件；`npm run test:all` 是完整回归（约 3.5 分钟，不含打包）。
-- **仓库**：本地 Git，没有远端；四个提交，基线 `634c650`（v0.2.0），HEAD `7972e71`。**HEAD 之后的评审修复、整理、打包配置和全部文档都在工作区里没有提交**（约 220 个路径），提交与否由仓库主人决定。文本固定为 LF，代码用 Prettier。
-- **发行物**：`release/` 里有从当前代码打出的 0.3.0 安装版和便携版（文件名与哈希见 S10）。**什么都没有发布**：没有 GitHub 仓库和 release，门户页面没有上线。
+- **最低开发动作**：`npm run typecheck`、`npm test`（约 1 分钟；`npm run test:fast` 几秒）。改了界面或主进程：`npm run build` 后跑相应的 Electron 套件；`npm run test:all` 是完整回归（约 5 分钟，不含打包）。
+- **仓库**：本地 Git，没有远端，什么都没有推送；五个提交，基线 `634c650`（v0.2.0），HEAD `6f6e2cc`（第三轮评审的修复、排版、第一次打包和文档）。**HEAD 之后的第四轮——发行物验收后的修复、集成、重新打包和这次的文档——都在工作区里没有提交**（91 个路径），提交与否由仓库主人决定。文本固定为 LF，代码用 Prettier。
+- **发行物**：`release/` 里有从当前工作区的代码打出的 0.3.0 安装版和便携版（文件名与哈希见 S10；它们对应的是没提交的工作区，不是 HEAD）。**什么都没有发布**：没有 GitHub 仓库和 release，门户页面没有上线。
 - **最该先做的事**（S11 第一组）：仓库主人听一遍 `demos/` 的 22 段示例；用真实账号各做一次最便宜的云端生成和一次托管大模型的规划。
 
 ## S01｜阅读与改动导航
@@ -40,7 +41,7 @@
 定向读取示例（PowerShell）：
 
 ```powershell
-Get-Content .\HANDOFF.md -TotalCount 51      # S00 + S01
+Get-Content .\HANDOFF.md -TotalCount 52      # S00 + S01
 rg -n '^## S' HANDOFF.md                     # 章节行号
 rg --files src electron tests scripts docs   # 文件清单
 ```
@@ -55,7 +56,7 @@ rg --files src electron tests scripts docs   # 文件清单
 | --- | --- |
 | v0.1.0 | React + Electron 骨架、关键词规则 + 简单合成、ElevenLabs、便携 EXE |
 | v0.2.0（基线 `634c650`，2026-10-08） | 三家国内云端服务、多凭据加密存储、工作流修复。六种情绪、四种主奏、五个调、32 kHz、单文件界面（`App.tsx` 1842 行） |
-| v0.3.0（2026-10-08 晚至 10-09） | 整体重建，见下 |
+| v0.3.0（2026-10-08 晚至 10-09） | 整体重建，随后一轮发行物验收与修复，见下 |
 
 **推动重建的审计结论**（对 v0.2 的七份只读审计，`.scratch/audit/`）：
 
@@ -66,9 +67,9 @@ rg --files src electron tests scripts docs   # 文件清单
 - 网页：`body` 最小宽度 780 px，窄屏没有布局；浏览器里云端入口是死路。
 - 门户：旧的产物文件名不被门户的发布同步脚本识别（SITE-01）。
 
-**重建的组织方式**（一段话）：先由负责人写下契约文件（共享清单、`MusicConfig` / `Project` / `DesktopAPI`、Score 中间表示、音色与渲染契约、软削波、制作人契约）以及实现简报和界面规格；第一轮十个并行实现（作曲核心、22 个风格、DSP 基础、键盘与拨弦音色、长音与贝斯音色、鼓、渲染与效果与母带、主进程、制作人、存储与播放器），提交 `1b1186e`；第二轮做引擎集成（Worker、测量工具、质量门槛）、按风格分三组的混音评审、引擎收尾、应用内核、界面、端到端套件和制作人补充，提交 `24e5854`；随后一轮跟进（发行程序冒烟、Worker 导出、本机模型预热、规则措辞），提交 `7972e71`；第三轮是八份互相独立的评审（制作人、应用内核、音频引擎、作曲、遗留与一致性、桌面安全、渲染层数据安全、界面与文案），共 71 条已确认的发现，逐条修复并配回归测试；最后是集成整理、排版、打包和本次文档。修复、整理、打包、文档这几步都没有提交（见 S00）。修复阶段没有留下逐条的书面报告：某一条是否修了，以测试名里的编号为准（`rg -n 'MAIN-0|CORE-0|AGENT-' tests`），没修的列在 S11。
+**重建的组织方式**（一段话）：先由负责人写下契约文件（共享清单、`MusicConfig` / `Project` / `DesktopAPI`、Score 中间表示、音色与渲染契约、软削波、制作人契约）以及实现简报和界面规格；第一轮十个并行实现（作曲核心、22 个风格、DSP 基础、键盘与拨弦音色、长音与贝斯音色、鼓、渲染与效果与母带、主进程、制作人、存储与播放器），提交 `1b1186e`；第二轮做引擎集成（Worker、测量工具、质量门槛）、按风格分三组的混音评审、引擎收尾、应用内核、界面、端到端套件和制作人补充，提交 `24e5854`；随后一轮跟进（发行程序冒烟、Worker 导出、本机模型预热、规则措辞），提交 `7972e71`；第三轮是八份互相独立的评审（制作人、应用内核、音频引擎、作曲、遗留与一致性、桌面安全、渲染层数据安全、界面与文案），共 71 条已确认的发现，逐条修复并配回归测试；随后是集成整理、排版、第一次打包和文档，提交 `6f6e2cc`。第四轮从发行物出发：对打包好的程序和网页版走了七条完整的用户旅程（最终验收，17 条发现），并对第三轮的修复逐条复核（又发现若干新问题）；由四个并行的修复（制作人、作曲器、应用内核与界面、主进程）处理，然后是这一次的集成、重新打包和文档——**这一轮没有提交**（见 S00）。修复阶段没有留下逐条的书面报告：某一条是否修了，以测试名里的编号为准（`rg -n 'MAIN-0|CORE-0|AGENT-|FQ-|ND-|NEW-' tests`），没修的列在 S11。
 
-测试名和少量注释里的编号是这些条目的稳定标签：`AGENT-`（制作人）、`MUS-`（作曲）、`ENG-`（音频引擎）、`CORE-` / `RB-`（应用内核与渲染层数据安全）、`UX-`（界面与文案）、`MAIN-`（主进程）、`LEFT-`（遗留项）、`F##` / `APP-##` / `PS-##`（v0.2 审计）、`QA-##`（第二轮端到端缺陷）。
+测试名和少量注释里的编号是这些条目的稳定标签：`AGENT-`（制作人）、`MUS-`（作曲）、`ENG-`（音频引擎）、`CORE-` / `RB-`（应用内核与渲染层数据安全）、`UX-`（界面与文案）、`MAIN-`（主进程）、`LEFT-`（遗留项）、`F##` / `APP-##` / `PS-##`（v0.2 审计）、`QA-##`（第二轮端到端缺陷）、`FQ-##`（第四轮在发行物上的最终验收）、`ND-#` / `NEW-##`（第四轮复核时新发现的；`NEW-` 在各领域各自编号）。
 
 **值得记住的决定**：
 
@@ -79,11 +80,12 @@ rg --files src electron tests scripts docs   # 文件清单
 - **渲染在 Worker 里**：一个常驻的模块 Worker 完成作曲、合成、母带和 WAV 导出的混音编码；Worker 起不来时退回到调用线程分片执行。同一时间只有一个渲染（音色有模块级状态，不可重入）。
 - **两个制作人**：离线规则保证没有网络、没有密钥、网页版里也能用；大模型是可选的增强，只从主进程调用，结果在主进程和渲染层各校验一次，失败就回退到规则并说明原因。
 - **主进程的网络栈**：所有主进程请求走 Chromium 网络栈（遵守系统代理），不带 Cookie、不写缓存。**计费请求走专用通道**：Chromium 在复用连接被重置时会自己重发 POST，所以四家服务的计费 POST 使用独立的内存会话，每次请求前关闭所有连接，并全局关闭 QUIC。
-- **付费保护**：发送前确认、不自动重试、先保存后解码、保存失败留在窗口并可重试 / 导出、文件没取回时「重新下载」、关闭窗口前询问（S05、S07）。
+- **付费保护**：发送前确认（确认框出现后的 500 ms 内不接受点击和回车）、不自动重试、先保存后解码、保存失败留在窗口并可重试 / 导出、已付费但没取回的结果留在关不掉的横幅上（「重新下载」/「放弃这次结果」）、主进程在持有这样的结果时拒绝新的付费请求、关闭窗口前由主进程按自己的状态询问（S05、S07、S08）。
 - **存储保持数据库版本 1**：`muse-bgm` / `projects` 与 0.2 相同，旧作品库原样可读；工程 JSON 的 `schemaVersion` 升到 2。读入时逐条严格校验，读不了的进入「损坏记录」而不是让整个列表失败。代价是旧程序还能写这个库（S11）。
 - **网页版**：同一份渲染层代码，`vite build --mode web` 产出相对路径的静态站点，可以放进 iframe；没有云端和大模型（界面上标为「桌面版可用」并给出下载链接）。
-- **循环片段按整小节对齐**：速度或时长会被微调，使结尾正好落在小节线上；界面、制作人的回复和标签显示的是对齐后的实际值。
-- **旋律连续性由作曲器说了算**：`melodyContinuity(before, after)` 返回 `identical` / `adapted` / `new`，回复里那句「旋律保持不变 / 旋律动机不变，会按新的设置重新演绎 / 这是一段新的旋律」就来自它；云端和旧引擎作品不承诺保留旋律。
+- **循环片段按整小节对齐**：结尾必须落在小节线上。速度只在 ±3 % 以内微调（听不出来，时长则分毫不差）；差得更多时速度一拍不动，长度取到最近的整小节（最多差一小节）——用户说出的速度或「快 10 bpm」永远兑现。界面、制作人的回复和标签显示的是对齐后的实际值（S06）。
+- **旋律连续性由作曲器说了算，而且是量出来的**：`melodyContinuity(before, after)` 把前后两版的主旋律都写出来再比较，返回 `identical` / `adapted` / `rhythm` / `new`；回复里那句「旋律保持不变 / 旋律动机不变，会按新的设置重新演绎 / 节奏型保持，音高会按新的调式（设置）重写 / 这是一段新的旋律」就来自它（换种子时是「旋律与和弦走向都会重写」）。云端和旧引擎作品不承诺保留旋律。
+- **回复说的是实际发生的事**：两种制作人的回复都由应用从「改动前的设置 → 实际生成的设置」的差别写出，每一项改动都在回复里；大模型的原话降为附注，并且只在它说的每一件事都真的发生时才显示。离线规则按语法而不是按短语表读数字、否定和抱怨（「最多 100 bpm」是上限，「鼓别关」是不许关，「快了点」是嫌快），读不懂时宁可不动并如实说。
 - **听不出区别就不算新版本**：会渲染出完全相同音频的请求只回答、不生成。
 - **文案统一**：作品库叫「我的作品」；结构叫「循环片段 / 完整结尾」；参数叫「情绪能量 / 旋律丰富度 / 空间混响 / 主奏乐器」；分轨叫「旋律 / 和声 / 贝斯 / 鼓组」；引用一律用「」。
 
@@ -93,10 +95,10 @@ rg --files src electron tests scripts docs   # 文件清单
 | --- | --- | --- |
 | 创作 | 描述（最多 1500 字）+ 可选的风格（「自动」或 22 种）、时长（15 / 30 / 60 / 90 / 120 秒）、结构（循环片段 / 完整结尾）、生成引擎、制作人；输入框下实时显示离线规则的理解 | 选了大模型时预览注明「发送后由大模型重新理解」 |
 | 试听 | 波形、段落带、和弦条；空格播放、← / → 定位 5 秒、`L` 循环试听（循环片段默认开，完整结尾默认关）、`Ctrl+Enter` 发送、`Ctrl+N` 新建、`Ctrl+E` 导出 | 浏览器标签页里拦不住 `Ctrl+N`，帮助里只在桌面版列出 |
-| 对话微调 | 自然语言指令；数字按最近的维度词理解（「快 10 bpm」「速度降到 90」「加长 15 秒」「鼓调到 30%」）；听不懂时如实说并给出例子 | 不支持人声、撤销、只改某一段、3/4 拍、模仿具体歌手；会说明 |
-| 声音微调 | 风格、速度（50–200 BPM）、调性、主奏乐器、情绪能量、旋律丰富度、空间混响、时长、结构；「应用调整」同一旋律种子生成新版本；「换一版旋律」换种子 | 这两个按钮用离线规则直接出方案，不经过大模型；云端引擎下它们都是新的付费请求 |
+| 对话微调 | 自然语言指令；数字按它周围的词理解（「快 10 bpm」「速度降到 90」「加长 15 秒」「鼓调到 30%」「最多 100 bpm」是上限、「不要 120，要 100」取后者）；否定跟着它的动词（「鼓别关」「别换乐器」什么都不做并锁住那一项）；「快了点」「鼓大了」按抱怨反着改；回复逐项列出实际改动和关于旋律的那句话；听不懂时如实说并给出例子 | 不支持人声、音效、撤销、只改某一段（音量类的要求会按整首处理并注明，只关某一段的鼓会拒绝）、3/4 拍、模仿具体歌手；会说明 |
+| 声音微调 | 风格、速度（50–200 BPM）、调性、主奏乐器、情绪能量、旋律丰富度、空间混响、时长、结构；「应用调整」同一旋律种子生成新版本；「换一版旋律」换种子（旋律和和弦走向都重写，回复里说明）；没应用的修改跟着作品记住，重启后还在；单列布局里卡片滚出屏幕时有「N 项未应用」的小条，点它回到卡片 | 这两个按钮用离线规则直接出方案，不经过大模型；云端引擎下它们都是新的付费请求（按钮叫「重新生成一版」） |
 | 混音台 | 旋律 / 和声 / 贝斯 / 鼓组推子（即时、自动保存）、静音、独奏 | 独奏只影响试听，不影响导出；云端作品没有分轨 |
-| 我的作品 | 改名、收藏、搜索、排序、8 秒可撤销的删除（云端作品要再确认）、导入工程 JSON、损坏记录的原始数据和原始音频导出；同一首曲子的各版本共享一条对话 | 全部在本机；没有账号、同步、协作 |
+| 我的作品 | 改名、收藏、搜索、排序、8 秒可撤销的删除（云端作品要再确认；撤销正开着的那首会把它重新载入创作页）、导入工程 JSON、损坏记录的原始数据和原始音频导出；同一首曲子的各版本共享一条对话 | 全部在本机；没有账号、同步、协作 |
 | 导出 | 混音 WAV（48 kHz / 16 bit；循环片段可重复 ×2 / ×4）、单轨 WAV、工程 JSON；云端作品另有原始音频（MP3 / WAV / M4A / FLAC 原样） | 工程 JSON 不含音频，云端作品不能靠它恢复；云端作品的 WAV 导出是解码后重采样到 48 kHz 的 |
 | 设置（桌面） | AI 音乐服务凭据、制作人大模型、关于（版本、数据目录） | 密钥只写不读；保存成功只代表已保存，不代表已连通 |
 | 桌面 | Windows x64 安装版（NSIS，当前用户）和便携版；默认窗口 1440×940，最小 1060×720 | 没有自动更新、没有代码签名、没有 macOS / Linux 包 |
@@ -115,7 +117,7 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
      ├─ 播放    src/player：4 × 源 → 4 × 推子 → 淡入淡出 → WaveShaper(softClip) → 主音量
      ├─ 存储    src/storage.ts：IndexedDB（本地作品存配方，云端作品存音频 Blob）
      └─ 导出    services/exporter.ts → Worker 混音编码 → desktop.saveAudio（系统保存框）或浏览器下载
-主进程 electron/main.cjs：窗口、13 个受信任的 IPC 通道、凭据、网络封装、关闭确认
+主进程 electron/main.cjs：窗口、14 个受信任的 IPC 通道、凭据、网络封装、关闭确认
 ```
 
 - **两个构建**：`vite build` → `dist/`（Electron 以 `file://` 加载）；`vite build --mode web` → `dist-web/`（`__MUSE_WEB__ = true`）。两者都是相对路径（`base: "./"`），各有一个主包和一个 Worker 包。`src/platform.ts` 是唯一接触 `window.museDesktop` 的模块；网页版即使页面上有个叫 `museDesktop` 的对象也不会用它。
@@ -140,22 +142,22 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
 
 | 文件 | 职责 |
 | --- | --- |
-| `main.cjs` | 应用启动、窗口与安全选项、13 个 `muse:*` 通道的注册、保存对话框、单实例锁、`disable-quic`、会话权限一律拒绝 |
-| `preload.cjs` | 冻结的 `window.museDesktop`（13 个方法）；去掉 Electron 的 IPC 错误前缀，只留中文消息 |
+| `main.cjs` | 应用启动、窗口与安全选项、14 个 `muse:*` 通道的注册、保存对话框、单实例锁、`disable-quic`、会话权限一律拒绝、凭据文件被隔离后的一次性原生提示 |
+| `preload.cjs` | 冻结的 `window.museDesktop`（14 个方法）；去掉 Electron 的 IPC 错误前缀，只留中文消息 |
 | `ipc-guard.cjs` | 谁可以调用 IPC：主窗口主框架、页面是应用自己的 `dist/index.html`（按文件路径比较，Windows 下不分大小写）或开发地址；只有 `MusicError` 的消息能过桥 |
 | `csp.cjs` | 渲染层的 Content-Security-Policy 字符串 |
-| `net-fetch.cjs` | 基于 Electron `net` 的 `fetch`（`createNetFetch`）和计费专用通道（`createBillingFetch`、分区 `muse-billing`） |
-| `music-service.cjs` | 云端生成的总入口：任务锁、5 分钟时限、取消、ElevenLabs 分支、适配器路由、`retryLastDownload`、安全文件名、外链白名单 |
+| `net-fetch.cjs` | 基于 Electron `net` 的 `fetch`（`createNetFetch`）和计费专用通道（`createBillingFetch`、分区 `muse-billing`）；`wasNotSent(error)` 标出「请求根本没有离开这台电脑」的失败 |
+| `music-service.cjs` | 云端生成的总入口：任务锁、5 分钟时限、取消、ElevenLabs 分支、适配器路由、那一份「已付费但没取回」的结果（`pendingResult`、`retryLastDownload`、`discardPending`、持有时拒绝新的付费请求）、安全文件名、外链白名单 |
 | `providers/shared.cjs` | `MusicError`、密钥格式（10–4096 个可打印 ASCII）、有上限的读取、`requestJson`、音频格式识别、带逐跳域名校验和重试的 `downloadAudio` |
 | `providers/tencent.cjs`、`volcengine.cjs`、`aliyun.cjs` | 三家国内服务的请求、错误码映射、轮询和下载（S07） |
 | `credentials.cjs` | 服务 id、各服务凭据与模型的规范化；大模型设置的规范化（`normalizeLlmSettings`）和 Claude 模型列表 |
-| `key-store.cjs` | `music-credentials.json` 的加密读写、逐项状态、V1 → V2、不可读旧密钥的备份 |
+| `key-store.cjs` | `music-credentials.json` 的加密读写、逐项状态、V1 → V2、不可读旧密钥的备份、整个文件损坏时的隔离与重新开始 |
 | `agent-service.cjs` | 大模型规划的任务锁、90 秒 / 240 秒时限、取消、本机模型预热；只把校验过的方案和模型 id 交回渲染层 |
 | `agent/plan-schema.cjs` | 方案的 JSON Schema、系统提示词、`validatePlanInput` / `validatePlan` / `completePlan`、`buildMessages` |
 | `agent/anthropic.cjs` | 经官方 SDK 调 Claude（结构化输出），自己控制请求头和目标主机 |
 | `agent/openai.cjs` | OpenAI 兼容的 `chat/completions`（含本机 Ollama）、请求形状降级、预热 |
 | `agent/base-url.cjs` | 接口地址策略：公网 HTTPS / 本机回环、内网与私有地址拒绝、受限端口、调用前的 DNS 复查 |
-| `close-guard.cjs` | 关闭窗口和退出应用前的询问逻辑（云端生成进行中、有未保存的付费成果） |
+| `close-guard.cjs` | 关闭窗口和退出应用前的询问逻辑：主进程自己持有没取回的结果或任务、云端生成进行中、渲染层报告有未保存的付费成果 |
 | `context-menu.cjs` | 最小的右键菜单：文本框里的剪切 / 复制 / 粘贴 / 全选，选中文本上的复制 |
 | `shared/music-catalog.json` | 风格、主奏乐器、调、段落类型、鼓和贝斯律动、数值范围的**唯一清单**（主进程和渲染层都读） |
 | `assets/muse.svg`、`.png`、`.ico` | 应用图标（`scripts/generate-icons.py` 可重新生成，非运行依赖） |
@@ -184,7 +186,7 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
 | `defaults.ts` | `DEFAULT_CONFIG`、`stylePreset`、`clampConfig`、`cleanArrangement`、`promptSeed`、`ROMAN` |
 | `random.ts`、`theory.ts` | 具名分叉的种子随机；音阶、调、罗马数字和弦、声部进行、乐器音域 |
 | `form.ts`、`harmony.ts`、`melody.ts`、`rhythm.ts` | 速度与长度的规划和曲式；和声与伴奏声部；主旋律、副旋律、琶音；时间映射、鼓、打击乐、贝斯 |
-| `compose.ts` | `compose(config) → Score`、`summarize(score)`、`melodyContinuity(before, after)` |
+| `compose.ts` | `compose(config) → Score`、`summarize(score)`、`melodyContinuity(before, after)`、`melodyRetention(before, after)`（两版旋律各保留了多少）、`MELODY_PROMISE` |
 | `validate.ts` | `scoreProblems(score)`：合成器和界面依赖的全部结构规则 |
 | `styles/types.ts`、`styles/index.ts` | `StyleDef` 及其各部分的类型；风格注册表 `STYLE_DEFS: Record<StyleId, StyleDef>` |
 | `styles/<id>.ts`（22 个） | `acoustic` `ambient` `battle` `bright` `chill` `chiptune` `cinematic` `corporate` `cute` `dance` `dreamy` `epic` `festive` `focus` `guofeng` `hiphop` `jazz` `retro` `rock` `romantic` `sad` `tension`：每个风格的数据定义 |
@@ -215,10 +217,11 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
 | 文件 | 职责 |
 | --- | --- |
 | `types.ts` | 契约：`AgentRequest`、`AgentPlan`、`AgentTurn`、`RawAgentPlan`、`AgentPlanInput`、`LlmSettingsInput`、`LlmStatus` |
-| `lexicon.ts`、`reading.ts`、`rules.ts` | 词典（词 → 风格权重、维度、方向、目标声部）与分词；逐句阅读（否定、程度、抱怨、数字归属）；`planWithRules(request) → AgentPlan` |
-| `brain.ts` | `producePlan`：有大模型时先问它，校验并夹回范围（`agentPlanFromRaw`），任何失败都回退到规则并写明 `fallbackReason` |
+| `lexicon.ts`、`reading.ts`、`rules.ts` | 词典（词 → 风格权重、维度、方向、目标声部）与分词；逐句阅读（程度、抱怨、比较、描述词在什么时候算指令）；`planWithRules(request) → AgentPlan` |
+| `amounts.ts`、`vetoes.ts` | 一个数字是什么意思（方向、目标值、上限 / 下限、总长、时间位置与区间、被否定的值、被抱怨的值、「从…到…」）；否定跟着哪个动词（被禁止的动作不做并锁住它说的那一项，被禁止的「去掉」则保留该声部） |
+| `brain.ts` | `producePlan`：有大模型时先问它，校验并夹回范围（`agentPlanFromRaw`），用户明说的话压过模型的选择，回复由应用重写、模型的原话经核对后放进 `modelNote`；任何失败都回退到规则并写明 `fallbackReason` |
 | `pins.ts` | 用户在界面上固定的风格 / 时长 / 结构，两条路径都强制生效 |
-| `cloudPrompt.ts` | 把设置写成给云端音乐模型的中文提示词（`buildCloudPrompt`，最多 1800 字，以「纯音乐，无人声，无歌词」结尾）；`describeChanges` |
+| `cloudPrompt.ts` | 把设置写成给云端音乐模型的中文提示词（`buildCloudPrompt`，最多 1800 字，以「纯音乐，无人声，无歌词」结尾）；两种制作人共用的「说真话」部件：`describeChanges` / `changeLines` / `tellChanges`（回复和标签）、`melodyNote`（关于旋律的那句话） |
 | `llm-presets.ts` | 十个大模型预设（Claude、DeepSeek、通义千问、豆包、智谱、Kimi、腾讯混元、OpenAI、本机 Ollama、自定义） |
 
 **`src/state/` 应用内核（不依赖 React）**
@@ -228,12 +231,12 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
 | `types.ts` | 状态契约：`AppContextValue`、`StudioState` / `StudioView`、`Job`、`Dialog`、`AppActions`、`ExportRequest` |
 | `core.ts`、`app.ts`、`ports.ts`、`context.ts` | `AppCore` 把各块接起来并暴露 `actions`；真实依赖的装配；对外部世界的接口（测试传入替身）；唯一的 React context（`useApp()`、`useAppActions()`） |
 | `kernel.ts` | store、提示（toast）、询问（dialog）、作品库的唯一写入队列、按字段修改（`patch`）、会话 |
-| `studioFlows.ts` | 输入、唯一的运行中任务（生成 / 打开）、云端结果的各种结局、混音保存、导出、`closeRisk()` |
+| `studioFlows.ts` | 输入、唯一的运行中任务（生成 / 打开）、云端结果的各种结局（含没取回的结果的横幅、提问和重新加载后的恢复）、每首作品没应用的修改、混音保存、导出、`closeRisk()` |
 | `libraryFlows.ts`、`settingsFlows.ts` | 列表、改名、收藏、软删除、导入、损坏记录、其他标签页的通知；凭据与大模型设置 |
 | `reducer.ts`、`selectors.ts` | 全部渲染层状态和唯一能改它的代码（丢弃过期或已取消任务的结果）；派生视图 |
 | `plan.ts` | 从用户动作到方案：`buildAgentRequest`、`planFromDraft`、`planVariation`、让方案说真话的 `withAskedDrums` / `inaudiblePlan` / `honestPlan` / `truthfulTiming`、`suggestionsFor`、`paidNotice` |
 | `logic.ts`、`options.ts`、`score.ts`、`works.ts`、`format.ts`、`content.ts` | 纯函数：草稿与差异、文案统一（`houseStyle`）、定时常量；可选的引擎和制作人、任务阶段的文字；不渲染音频就读出作品的实际速度和长度；排序、搜索、版本关系；显示用的小工具；应用自带的文字（灵感卡片、示例） |
-| `session.ts`、`sync.ts` | 跨启动记住的少量信息（localStorage `muse-bgm:session`）；标签页之间的通知（BroadcastChannel，退化为 `storage` 事件，键 `muse-bgm:sync`） |
+| `session.ts`、`sync.ts` | 跨启动记住的少量信息（localStorage `muse-bgm:session`，含没应用的修改和没取回的付费结果该怎样归档）；标签页之间的通知（BroadcastChannel，退化为 `storage` 事件，键 `muse-bgm:sync`） |
 | `shortcuts.ts`、`useStudio.ts`、`useLibrary.ts`、`useSettings.ts`、`usePlanPreview.ts` | 全局快捷键；薄订阅 hook；输入停顿约 300 ms 后的理解预览 |
 
 **`src/ui/` 界面**
@@ -241,22 +244,22 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
 | 位置 | 职责 |
 | --- | --- |
 | `AppShell.tsx`、`ErrorBoundary.tsx` | 导航、当前页面、底栏、弹窗、提示；根错误边界（渲染失败时仍可导出内存里的作品） |
-| `shell/` | `ShellNav`（≥1100 px 侧栏，以下为顶栏）、`BottomBar`（任务进度与迷你走带）、`CoreDialog`（付费确认等询问）、`UnsavedBanner`、`Toasts` |
+| `shell/` | `ShellNav`（≥1100 px 侧栏，以下为顶栏）、`BottomBar`（任务进度与迷你走带）、`CoreDialog`（付费确认等询问，出现后先挡 500 ms）、`UnsavedBanner`、`ResultBanners`（没取回的付费结果、取消后才到达又没存上的结果——都关不掉）、`Toasts` |
 | `studio/` | `StudioPage`、`ComposerHero`（新作品）、`ComposerOptions`、`StyleChips`、`PlayerCard`、`Waveform`、`Transport`、`ProducerThread`（对话）、`Mixer`、`Inspector`（声音微调） |
 | `library/LibraryPage.tsx`、`inspiration/InspirationPage.tsx` | 我的作品；灵感（22 个风格卡片和场景提示词） |
 | `modals/` | `SettingsModal`（AI 音乐服务 / 制作人大模型 / 关于）、`ExportModal`、`HelpModal` |
 | `primitives/` | `Button`、`Controls`（滑块、选择、分段、标签）、`Modal`、`Tooltip`、`Art`（标志、封面、小波形） |
 | `hooks/` | 小型 UI hook：`store.ts`、`uiStores.ts`（主走带是否在屏幕上）、`useAutosize.ts`、`useElementWidth.ts`、`useMediaQuery.ts`、`usePlaybackSelector.ts`（按播放头派生值，只在值变化时重渲染）、`useRenderCount.ts`（只在开发构建里计数）、`useStable.ts` |
-| `logic/` | 无 DOM 的界面逻辑：`focus.ts`、`instruments.ts`（四个混音组里各有哪些乐器）、`timeline.ts`（段落带、和弦条、波形柱）、`tooltip.ts` |
+| `logic/` | 无 DOM 的界面逻辑：`dialogGuard.ts`（询问出现后的 500 ms 内不接受点击和回车，按住的键永远不算回答）、`focus.ts`、`instruments.ts`（四个混音组里各有哪些乐器）、`timeline.ts`（段落带、和弦条、波形柱）、`tooltip.ts` |
 | `styles/` | `index.css` 依次引入 `tokens` `base` `primitives` `shell` `studio` `library` `inspiration` `modals`；纯 CSS，没有远程字体和图片 |
 
 ### `tests/` 与 `scripts/`
 
 | 位置 | 职责 |
 | --- | --- |
-| `tests/*.test.ts`（34 个）、`tests/*.test.cjs`（20 个） | 单元测试，逐文件见 S09 |
+| `tests/*.test.ts`（35 个）、`tests/*.test.cjs`（21 个） | 单元测试，逐文件见 S09 |
 | `tests/helpers/` | `app-fakes.ts`（内核测试的时钟、存储、播放器、引擎、桥替身）、`electron-harness.cjs`（三个 Electron 套件共用的启动与主进程钩子）、`source-shape.cjs`（去掉排版后比较源文件接线）、`spectrum.ts`（DSP 测试的谱线测量） |
-| `tests/fixtures/` | `music-3s.{mp3,m4a,wav}`（可解码的 3 秒音频，模拟云端返回）、`engine-worker.node.ts`（在真实线程里跑渲染 Worker）、`literal-aliasing.check.ts`（Node 24.18 的 V8 问题复现） |
+| `tests/fixtures/` | `agent-corpus.ts`（复核制作人时用的 725 条带期望的提示词，原样收作夹具）、`music-3s.{mp3,m4a,wav}`（可解码的 3 秒音频，模拟云端返回）、`engine-worker.node.ts`（在真实线程里跑渲染 Worker）、`literal-aliasing.check.ts`（Node 24.18 的 V8 问题复现） |
 | `scripts/web-smoke.cjs`、`desktop-smoke.cjs`、`ui-smoke.cjs`、`cloud-workflow.cjs`、`packaged-smoke.cjs` | 五个端到端套件（S09） |
 | `scripts/audio-audit.ts`、`render-demos.ts` | 客观音频测量工具；示例渲染器（S06） |
 | `scripts/typecheck.mjs`、`generate-icons.py` | 对 `src/`、`tests/`、`scripts/` 的类型检查；图标生成（需要 Python + Pillow，非运行依赖） |
@@ -279,23 +282,33 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
 **状态规则**（`src/state/types.ts`、`reducer.ts`）：
 
 - 已生成 = `studio.project` + `studio.audio`。标题、封面、标签、推子、种子、导出都读 `project.config`。
-- 草稿 = `studio.draft`，只有「声音微调」的九个字段（风格、速度、主奏、调、三个滑块、时长、结构），放不下种子、推子和描述，所以改不坏它们。`changedFields` 是算出来的，不是标志位。
+- 草稿 = `studio.draft`，只有「声音微调」的九个字段（风格、速度、主奏、调、三个滑块、时长、结构），放不下种子、推子和描述，所以改不坏它们。`changedFields` 是算出来的，不是标志位。每首作品没应用的修改（和为它打了没发的字）在换到别的作品时被「寄存」起来，回来时还在，并写进会话，重启后也在。
 - `studio.composerText` 只是文字；打字不会改草稿或作品。`studio.pins` 是新作品输入框里固定的风格 / 时长 / 结构，缺省表示「自动」。
 - 推子写进已生成作品的 `volumes`：立即作用于播放，最后一次移动 400 ms 后（或松手时）保存。独奏只是试听状态。
 - 版本：每次生成是一个新 `Project`；同一首曲子的版本靠 `parentId` 连成一条线，共享一条对话（最新版本带着整条对话）。
+- 对话里的一轮（`AgentTurn`）：`text` 是应用写的回复，`reasoning` 是最多 8 个标签，`note`（最多 400 字）是大模型自己的话，界面上显示为次要的一行「模型说明：…」；存储对它同样严格校验。
+- 询问（`Dialog`，付费确认、离开未保存的作品、放弃付费结果等）出现后的 500 ms 内不接受点击，也不接受回车和空格，按住不放的键永远不算回答（`src/ui/logic/dialogGuard.ts`）；焦点停在安全的那个选项上，Esc 随时可用——打开它的那一下双击或按住的回车不会顺手把它答掉。
 
 **任务与锁**（`StudioFlows`）：
 
 - `running` 是同步的任务锁，第二个任务被拒绝、不排队；每个任务有 id。任务只能通过 `commit()` 和带任务 id 的 reducer action 改当前作品，被取消的任务两者都无效。
-- 一次生成的顺序：输入检查 → 引擎可用性检查 → 当前作品若只存在于窗口里先处理 → 云端引擎先确认付费（可勾选「本次会话不再提示」，按服务记）→ 制作人出方案（大模型失败且引擎付费时停下来问：取消 / 重试大模型 / 用离线规则继续）→ 让方案说真话（`enforcePins`、`withAskedDrums`、`inaudiblePlan`、`honestPlan`、`truthfulTiming`）→ 本地渲染，或云端「请求 → 收到 → 保存 → 解码」→ `commit()` → 保存。
-- 任务阶段：`planning`、`asking`、`rendering`、`cloud`、`downloading`、`saving`、`decoding`、`cancelling`。取消：本地是 `AbortSignal`；云端是 `desktop.cancelGeneration()`（只停止等待，服务端可能仍然完成并计费，文案如实说明）；规划是 `desktop.cancelAgent()`。
+- 一次生成的顺序：输入检查 → 引擎可用性检查 → 当前作品若只存在于窗口里先处理 → 还有一份付费结果没取回时先问（取消 / 重新下载 / 放弃它继续发送；本地生成时第三项是「稍后再取，继续」，不会丢掉那份结果）→ 云端服务不接受这个时长时先问（改为 N 秒 / 取消；所要的时长由离线规则即时读出）→ 云端引擎确认付费（可勾选「本次会话不再提示」，按服务记）→ 制作人出方案（大模型失败且引擎付费时停下来问：取消 / 重试大模型 / 用离线规则继续；大模型定出了服务不接受的时长时，在发送之前再问一次时长——只有这一种情况时长的问题排在付费确认之后）→ 让方案说真话（`enforcePins`、`withAskedDrums`、`inaudiblePlan`、`honestPlan`、`truthfulTiming`）→ 本地渲染，或云端「请求 → 收到 → 保存 → 解码」→ `commit()` → 保存。
+- 任务阶段：`planning`、`asking`、`rendering`、`cloud`、`downloading`、`saving`、`decoding`、`cancelling`。`Job.llm` 记着规划用的是哪一类模型，等待的文字据此区分「本机模型可能需要一两分钟」和托管模型的「通常几秒到一分钟」。取消：本地是 `AbortSignal`；云端是 `desktop.cancelGeneration()`（只停止等待，服务端可能仍然完成并计费，文案如实说明）；规划是 `desktop.cancelAgent()`。
 - 主进程另有两把锁：云端生成一次一个（`music-service.cjs`）、规划一次一个（`agent-service.cjs`），两者互不相干。
 
-**云端结果的几种结局**：正常保存；保存失败 → 留在窗口，横幅「重试保存 / 导出原始音频」，3 秒后自动重试一次，离开前询问；解码失败 → 仍保存，可导出原始文件；取消后才到达 → 仍保存为新作品，不替换当前作品；音乐已生成但文件没取回（主进程消息以「音乐已生成，但下载失败」「已取消下载。」「下载等待超过」开头）→ 常驻提示上的「重新下载」调用 `retryLastDownload`，不提交新请求。以上任何一种存在风险时 `closeRisk()` 非空，渲染层通过 `setUnsavedWork(true)` 告诉主进程，关闭窗口前会询问。
+**云端结果的几种结局**：
 
-**作品库写入与多标签页**：所有写入走 `Kernel` 的一个队列；标签页之间通过 BroadcastChannel（退化为 `storage` 事件）通知「存了 / 改了 / 真删了」。删除是软删除：8 秒撤销窗口，到期或页面离开时才真正删除。
+- 正常保存；解码失败 → 仍保存，可导出原始文件。
+- 保存失败 → 留在窗口，横幅「重试保存 / 导出原始音频」，3 秒后自动重试一次，离开前询问。
+- 取消后才到达 → 仍保存为新作品，不替换当前作品；连这次保存也失败时，它成为一条关不掉的横幅（`studio.strays`：「重试保存 / 导出原始音频」）。
+- **已付费但没取回**（`studio.pending`）：音乐已经生成但文件没下到（主进程消息以「音乐已生成，但下载失败」「已取消下载。」「下载等待超过」开头），或者主进程自己报告它还持有一份结果（`getSettings().pendingResult`——也包括火山引擎提交了但没等到结果的任务）。这时每个页面顶部都有一条**关不掉**的横幅（`ResultBanners.tsx`）：「重新下载」调用 `retryLastDownload`（不提交新请求；成功后像新结果一样先保存、再解码、载入，并接在提出它的那条对话后面），「放弃这次结果」要再确认一次并调用 `discardPendingResult`。新的生成、打开别的作品、已有作品时的「新建创作」都会先问。请求的全部上下文（方案、提示词、基于哪一版、对话）写进会话的 `pendingOrder`，所以**重新加载页面后横幅会从主进程的状态和这份记录里恢复**；主进程重启后结果就没有了（它只在内存里）。
+- 主进程在持有这样一份结果时拒绝新的付费请求（消息以「还有一首已经付费的音乐没有取回」开头，什么都没有发出）；渲染层在用户选了「放弃它，继续发送」之后先让主进程放手，再发新的请求。
 
-**会话**（localStorage `muse-bgm:session`）：`lastProjectId, composerText, brain, pendingRemovals[{id, expiresAt}], pendingMixes[{id, volumes, at}]`。后两项是页面关闭时还欠作品库的事（撤销窗口内的删除、没写完的推子位置），下次启动先做完。没应用的草稿不保存。
+以上任何一种存在风险时 `closeRisk()` 非空，渲染层通过 `setUnsavedWork(true)` 告诉主进程；没取回的结果则由主进程按自己的状态询问，不依赖渲染层的报告（S08）。
+
+**作品库写入与多标签页**：所有写入走 `Kernel` 的一个队列；标签页之间通过 BroadcastChannel（退化为 `storage` 事件）通知「存了 / 改了 / 真删了」。删除是软删除：8 秒撤销窗口，到期或页面离开时才真正删除；撤销的是正开着的那首、其间又没有打开别的作品时，它会被重新载入创作页。会话里读不懂的撤销期限（`expiresAt`）不会被当成「已到期」去执行删除。
+
+**会话**（localStorage `muse-bgm:session`）：`lastProjectId, composerText, brain, pendingRemovals[{id, expiresAt}], pendingMixes[{id, volumes, at}], parked[{id, draft?, text?}], pendingOrder`。`pendingRemovals` 和 `pendingMixes` 是页面关闭时还欠作品库的事（撤销窗口内的删除、没写完的推子位置），下次启动先做完；`parked` 是各首作品上没应用的「声音微调」修改和没发出的字；`pendingOrder` 是那份没取回的付费结果到手之后该怎样归档（或者「用户已经放弃它」）。读出来的每一项都当作不可信：读不全的记录直接忽略，从不「修好」了再执行。
 
 **播放器**（`src/player/usePlayer.ts`）：
 
@@ -316,9 +329,9 @@ clampConfig → 风格 + 调式 → 速度与长度（form.ts: planTiming）→ 
   → 一次摇摆 + 人性化 → 秒 → 校验过的 Score
 ```
 
-- **长度**：循环片段的小节数是 4 的倍数，速度在 ±6 % 内微调使音频正好是所要的长度；调不到时保持速度，长度对齐到偶数小节。所以实际值可能和设置不同——例如默认的嘻哈律动（88 BPM、30 秒循环）实际是 32.7 秒，可爱俏皮的 124 BPM 实际按 128 BPM。完整结尾的曲子严格保持速度和时长，结束在保持的主和弦上并留出自然衰减。
+- **长度**（`form.ts` 的 `planTiming`、`loopBars`、`TEMPO_FIT_TOLERANCE = 0.03`）：循环片段必须是整小节。先找 4 的倍数的小节数里，哪一个只要把速度动 **±3 % 以内**就正好凑成所要的长度——有就微调速度、长度分毫不差（动感电音 126 BPM 的 30 秒循环按 128 BPM、16 小节）。没有时**速度一拍不动**，小节数取最接近的：离所要的长度不超过一小节时取 4 的倍数（完整的四小节乐句），否则取最近的偶数；所以实际长度与所选的最多差一小节。例如默认的嘻哈律动（88 BPM、30 秒循环）是 12 小节、32.7 秒，可爱俏皮（124 BPM）是 16 小节、31.0 秒，慵懒松弛（80 BPM）的 15 秒循环是 4 小节、12 秒。22 个默认预设的 30 秒循环落在 28.2–32.7 秒，15 秒的落在 12–17.1 秒，60 秒的落在 56.5–64 秒，120 秒的全部正好 120 秒。完整结尾的曲子严格保持速度和时长，结束在保持的主和弦上并留出自然衰减。
 - **和声**：每种调式一个罗马数字进行库，功能替换、转位、副属和弦、借用和弦、挂留属和弦；和声色彩随「旋律丰富度」连续上升；有声部进行求解。
-- **旋律**：每个段落家族一个动机，发展成问答乐句并有一个高点；强拍落在和弦音上，之间是级进的经过音。旋律按「种子 + 风格 + 段落类型」只写一次，速度、情绪能量、旋律丰富度只增删音符、移调或换八度。
+- **旋律**：每个段落家族一个动机，发展成问答乐句并有一个高点；强拍落在和弦音上，之间是级进的经过音。旋律按「种子 + 风格 + 段落类型」只写一次，写在属于**乐器**而不属于调的音域里；速度、情绪能量、旋律丰富度只增删音符或换八度。换调是精确移调：乐器在某个调里够不到的音改在近一个八度上演奏（音级不变）。疏密变化先动装饰音，留下的是原来那些音、在原来的位置，并且不把该避开的音留成长音、不在空隙两边留下三全音跳进；其他声部都关掉、只剩主旋律时，不论要求多稀疏，都没有长休止、每小节都有音（`tests/music-quality.test.ts`）。
 - **节奏**：16 步的字符串律动、鬼音、过门、段落交界处的镲和冲击，贝斯跟底鼓。
 - **两个连续旋钮**：情绪能量改变配器密度、音区、鼓的强度和音色亮度；旋律丰富度改变和声色彩、节奏细分、装饰音和副旋律。
 - 只有 4/4 拍。副旋律是导音线加少量应答，不是第二条曲调。
@@ -371,9 +384,11 @@ clampConfig → 风格 + 调式 → 速度与长度（form.ts: planTiming）→ 
 
 **确定性规则**：影响音乐的代码里不许有 `Math.random()` 和 `Date.now()`；所有随机来自具名分叉（`rng.fork("melody")`），分叉只取决于种子和名字，所以改一个鼓的决定不会洗掉旋律；`config.volumes` 不影响 Score；音色用传入的 `ctx.random`。同一进程内渲染逐位相同（有测试）；不同 JavaScript 引擎之间 `sin` / `exp` / `pow` 可能有末位差异，所以示例文件的比较是 −40 dB 而不是逐位。纯模块（`src/music`、`src/audio` 除 Worker 胶水、`src/agent` 的规则）必须能在 Node 下运行：不碰 DOM、`window`、`AudioBuffer`。
 
-**旋律连续性**：`melodyContinuity(before, after)`——种子、风格或旋律走向变了，或者任一边是引擎 1 → `new`；决定旋律音高和拍位的全部输入（调、主奏、旋律丰富度、循环与小节数、段落、每和弦小节数、和弦进行、音区、活跃度等）都没变 → `identical`；否则 `adapted`。`tests/music-continuity.test.ts` 在 22 种风格和多个种子上把每个答案和实际写出的 Score 对照。已知边界：大调 / 小调互换时保留节奏，音高按另一个调式的和声重写；旋律丰富度大幅变化且牵动主歌和声时，保留的音符比例会明显下降。
+**旋律连续性**：`melodyContinuity(before, after)` 不再从设置去推测，而是把前后两版的主旋律都写出来再比较（`melodyRetention` 给出各项比例；音级从主音算起、按音名比较，所以移调和换八度都算保留）。任一边是引擎 1，或者种子、风格不同 → `new`。否则：每个音都在原位、音级相同 → `identical`（同调式的换调、换八度、换速度、混响、推子、鼓和贝斯的律动、多数换主奏都在这里）；第一段主歌（最多八小节）里至少三分之二的音保持位置和音级 → `adapted`；至少九成的音保持位置（音高重写）→ `rhythm`（大调 / 小调互换、音区或和弦进行的提示）；其余 → `new`。每个答案对成品 Score 的承诺是 `MELODY_PROMISE`（`identical` 0.99、`adapted` 0.6、`rhythm` 0.85，比判定用的门槛宽，留给人性化和摇摆）；`tests/music-continuity.test.ts` 在 22 种风格和多个种子上把每个答案和实际写出的 Score 对照。已知边界：只是被疏密提示删到一半以下或填密的旋律按这个尺度算 `new`，其实还是同一条旋律（`melodyRetention().contained` 接近 1 就是这种情况，回复目前没有用它）。
 
-**性能与内存**（第二轮的测量，之后引擎还有改动，量级可参考）：120 秒的渲染在 Node 里 0.65–5.6 秒，在 Electron 的 Worker 里常见风格 2.7–5.8 秒，最重的史诗燃向单次测得 8.46 秒；Worker 路径下主线程没有长任务。一次 120 秒的渲染在 Node 里 ArrayBuffer 峰值约 310 MB，四条 120 秒的立体声浮点分轨本身是 184 MB，页面上每个在用的结果另有 184 MB 的 AudioBuffer。失败以 `EngineError` 拒绝；Worker 在约 1 秒内没准备好时先在调用线程渲染，并通过 `onPhase("starting")` 让界面显示「正在启动作曲引擎」。
+**性能**（第二轮的测量，之后引擎还有改动，量级可参考）：120 秒的渲染在 Node 里 0.65–5.6 秒，在 Electron 的 Worker 里常见风格 2.7–5.8 秒，最重的史诗燃向单次测得 8.46 秒；Worker 路径下主线程没有长任务。失败以 `EngineError` 拒绝；Worker 在约 1 秒内没准备好时先在调用线程渲染，并通过 `onPhase("starting")` 让界面显示「正在启动作曲引擎」。
+
+**内存**（最后一轮在最终代码上重测，Node 24.18，不强制回收；下面的 MB 按 2^20 字节计）：一次 120 秒的渲染，工作内存的峰值取决于音符有多长——**默认的氛围冥想预设做成 120 秒循环时峰值是 399 MB**（引擎自己报告的 `diagnostics.bufferBytes` 是 397 MB；整个进程的常驻内存峰值约 450 MB），因为贯穿全曲的长音各自占着整首长度的缓冲；史诗燃向的完整结尾是 308 MB，青春欢快的循环是 305 MB。所以应当按 **300–400 MB** 来估计，而不是早先写的「约 310 MB」。四条 120 秒的立体声浮点分轨本身是 176 MB，交给页面之后工作内存全部释放（留下不到 1 MB），页面上每个在用的结果另有同样大小的 AudioBuffer。30 秒的渲染峰值是 88 MB。要读这个数字就读 `bufferBytes`，`tests/render-memory.test.ts` 钉着它与真实高水位的关系。**对手机意味着什么**：网页版在手机浏览器里渲染 120 秒时，Worker 里要 300–400 MB、页面里还要两份 176 MB 的分轨（新旧结果交接时更多），合计可以超过 700 MB——移动浏览器在这个量级上可能直接回收或重新加载标签页；这没有在任何真实手机上测过。在手机上建议用 15–60 秒的时长，长曲子放到桌面版做。
 
 ## S07｜云端音乐服务与制作人大模型
 
@@ -390,11 +405,11 @@ clampConfig → 风格 + 调式 → 速度与长度（form.ts: planTiming）→ 
 
 **0.3 改了什么**：
 
-- **免费的步骤可以重试，付费的不行**：下载最多 4 次（间隔 1 / 2 / 4 秒；网络错误、408、429、5xx 才重试，每次从原始地址重新开始并重新校验）；火山的状态查询连续失败 5 次才放弃（退避到最多 15 秒）。提交仍然只发一次。
+- **免费的步骤可以重试，付费的不行**：下载最多 4 次（间隔 1 / 2 / 4 秒；网络错误、408、429、5xx 才重试，每次从原始地址重新开始并重新校验）；火山的状态查询连续失败 5 次才停止等待（退避到最多 15 秒）——停止的只是等待，任务留着（见下）。提交仍然只发一次。
 - **消息里带编号**：服务端有任务或请求编号时，超时、取消和下载失败的消息会附上它（火山「任务编号」、阿里「请求编号」、腾讯「追踪编号」），方便到服务控制台查找。只回显形如 id 的值，不回显自由文本。
 - **枚举的服务商错误码**：非 2xx 的响应里，已知的错误码映射成固定的中文说明（鉴权、欠费、限流、内容审核、模型权限），未知的退回按状态码的说明。
-- **重新下载**：音乐已经在服务端生成、但文件没有取回时（火山、阿里这两家返回下载地址的服务），主进程把「怎样再取一次」留在内存里；`retryLastDownload(provider)` 只收服务 id，地址不出主进程；与生成共用任务锁、取消和时限。下一次生成开始时丢弃，重启后也没有了。腾讯和 ElevenLabs 的音频就在那一次付费请求的响应里，没有可以单独再取的东西。
-- **计费请求走不会重发的连接**（S08「网络」）：四家服务的那一个计费 POST 经 `submitFetch`；轮询和下载经普通的 `fetchImpl`。连接在响应头到达前断开时，结果报告为「请求结果未确认，先查看服务控制台记录」。
+- **没取回的付费结果**（`music-service.cjs` 的 `pending`，只有一份、只在内存里）：两种来历——音乐已经在服务端生成但文件没有取回（火山、阿里这两家返回下载地址的服务；`kind: "download"`），或者火山的任务已经提交、但等待在它结束之前就停了（查询连续失败、被拒绝、状态未知、超过 5 分钟、用户取消等待；`kind: "task"`）。`retryLastDownload(provider)` 只收服务 id：前一种再下载一次，后一种继续查询（同样最多 150 次、连续 5 次失败为限、总共 5 分钟）再下载——都不提交新任务，地址和提交时的凭据都不出主进程；与生成共用任务锁、取消和时限。取到手或服务明确说任务没有结果之后才清掉。**持有它的时候新的付费请求被拒绝**（「还有一首已经付费的音乐没有取回，这次没有发出新的生成请求。…」），除非输入里带 `discardPending: true`——那样旧结果在新的计费请求真正发出的那一刻才放弃，新任务什么都没发出时旧结果还在；`discardPendingResult(provider)` 是不发新请求的明确放弃。`getSettings().pendingResult` 报告它，关闭确认也按它来问（S08）。腾讯和 ElevenLabs 的音频就在那一次付费请求的响应里，没有可以单独再取的东西。火山的续查沿用提交时的凭据；在这期间轮换过 AK / SK 的话续查会失败，只能放弃这份结果。
+- **计费请求走不会重发的连接**（S08「网络」）：四家服务的那一个计费 POST 经 `submitFetch`；轮询和下载经普通的 `fetchImpl`。连接在响应头到达前断开时，结果报告为「请求结果未确认，先查看服务控制台记录」。**请求根本没有离开这台电脑**时（发送之前就取消或超时、专用连接没准备好、发送之前出了别的问题）则明说「没有发出请求，不会计费」/「这次请求还没有发出，不会计费」——两种情况不再混为一谈。
 - **锁在读凭据之前就拿**：读取凭据期间的取消不会丢。
 - **阿里云的下载域名收紧**到 OSS 桶域名（依据是文档，不是真实账号，见 S11）。
 
@@ -412,33 +427,38 @@ clampConfig → 风格 + 调式 → 速度与长度（form.ts: planTiming）→ 
 
 **预设**（`src/agent/llm-presets.ts`，十个）：`anthropic`；`deepseek`（`https://api.deepseek.com`）、`qwen`（`https://dashscope.aliyuncs.com/compatible-mode/v1`）、`doubao`（`https://ark.cn-beijing.volces.com/api/v3`）、`zhipu`（`https://open.bigmodel.cn/api/paas/v4`）、`moonshot`（`https://api.moonshot.cn/v1`）、`hunyuan`（`https://api.hunyuan.cloud.tencent.com/v1`）、`openai`（`https://api.openai.com/v1`）——以上七个都是 kind `openai`，模型名手填；`ollama`；`custom`。`tests/llm-presets.test.cjs` 保证每个预设都通过主进程的保存校验。这些地址和设置里「获取 API Key」的链接没有对着真实服务逐个验证过。
 
-**发给模型的内容**（`buildMessages`）：固定的系统提示词（约 8600 个字符，由清单生成，说明输出格式、每个字段的含义和规则）；最近最多 12 轮对话（每轮最多 600 字）；最后一条用户消息带着模式（新作品 / 修改）、生成方式、当前设置的 JSON（风格、主奏、调、速度、时长、三个滑块、结构、四个推子；修改时还有当前的编排）和用户的话（最多 1500 字；界面上固定的选项以一行 `【界面选定】…` 附在后面）。**不发送**：任何音频、作品库、音乐服务的凭据、作品标题、之前的描述原文。
+**发给模型的内容**（`buildMessages`）：固定的系统提示词（8901 个字符，由清单生成，说明输出格式、每个字段的含义和规则，包括「…了」是抱怨、被禁止的动作、上下限、被否定的数值、时间位置这几类容易读反的说法，并告诉模型它的 `reply` 只是一句附注）；最近最多 12 轮对话（每轮最多 600 字）；最后一条用户消息带着模式（新作品 / 修改）、生成方式、当前设置的 JSON（风格、主奏、调、速度、时长、三个滑块、结构、四个推子；修改时还有当前的编排）和用户的话（最多 1500 字；界面上固定的选项以一行 `【界面选定】…` 附在后面）。**不发送**：任何音频、作品库、音乐服务的凭据、作品标题、之前的描述原文。
 
 **请求形状**：
 
 - Claude：`messages.create`，`max_tokens: 16000`，`output_config: { effort: "medium", format: { type: "json_schema", schema: PLAN_SCHEMA } }`。Opus 和 Sonnet 先走带 `server-side-fallback-2026-07-01` beta 的接口，收到 HTTP 400 时在稳定接口上再问一次（没有该 beta 的组织会对这个头返回 400）；Haiku 直接走稳定接口。SDK `maxRetries: 1`。客户端显式固定了 `baseURL`、`apiKey`、`authToken: null`、`logLevel: "off"`，并在自己的 `fetch` 里重写全部请求头——用户环境里的 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_CUSTOM_HEADERS` 等都不能改变密钥发往哪里或随它发出什么。`stop_reason` 为 `refusal` 或 `max_tokens` 时给出专门的说明。
 - OpenAI 兼容：`POST <baseUrl>/chat/completions`，`max_tokens: 4096`，`response_format: { type: "json_object" }`，`Authorization: Bearer`。HTTP 400 且错误文字里出现我们发过的参数名时把那个参数降级（`json_schema` → `json_object` → 不带；`max_tokens` → `max_completion_tokens`；去掉 `reasoning_effort`），最多 3 次；429 / 5xx 在 1.5 秒后重试一次。调用前解析主机名，任何一个地址是内网或回环就拒绝（解析不了的放行——公司代理后面只有代理能解析）。
 - Ollama：同一个端点，但用 `response_format: json_schema`（strict）并加 `reasoning_effort: "none"`——实测 9B 的本机模型开着思考会把额度用完或把 JSON 提前关掉。没有 `Authorization`。
-- 读取上限：OpenAI 兼容和 Ollama 的响应体 256 KiB、回答 64 KiB 字符（Claude 的响应体 1 MiB）；`extractPlanObject` 会去掉 `<think>` 块再找 JSON 对象。不够强的模型漏掉的字段由 `completePlan` 从当前设置补齐（从不替它猜枚举）。
+- 读取上限：OpenAI 兼容和 Ollama 的响应体 256 KiB、回答 64 KiB 字符（Claude 的响应体 1 MiB）；`extractPlanObject` 会去掉 `<think>` 块，再从后往前找**最后一个通过校验的完整顶层对象**（模型常常先写一份草稿再写定稿；按解析过的字符数设预算，所以对任何输入都是线性的）。不够强的模型漏掉的字段由 `completePlan` 从当前设置补齐（从不替它猜枚举）。
 
-**校验**：主进程 `validatePlan` 要求字段齐全、类型正确、枚举来自清单，数字夹进范围，字符串和列表截断，未知字段在每一层都丢弃，和弦进行只留作曲器读得懂的罗马数字。渲染层 `agentPlanFromRaw` 只读自有属性，再过一遍 `clampConfig` / `cleanArrangement`；新作品里只有文字提到的分轨才允许模型动推子；修改时忽略没人提到的小漂移（滑块 < 0.06、速度 < 3 BPM）；放不进时长的段落计划（不在可容纳小节数的 0.6–1.5 倍内）交还给作曲器；模型的回复宣称了设置里看不到的改动时不采用它的话；回复入库前经 `houseStyle` 统一引号和用词。
+**校验**：主进程 `validatePlan` 要求字段齐全、类型正确、枚举来自清单，数字夹进范围，字符串和列表截断，未知字段在每一层都丢弃，和弦进行只留作曲器读得懂的罗马数字。渲染层 `agentPlanFromRaw` 只读自有属性，再过一遍 `clampConfig` / `cleanArrangement`；新作品里只有文字提到的分轨才允许模型动推子；修改时忽略没人提到的小漂移（滑块 < 0.06、速度 < 3 BPM）；放不进时长的段落计划（不在可容纳小节数的 0.6–1.5 倍内）交还给作曲器；**用户明说的话压过模型的选择**（离线规则从这句话里读出的硬性要求——「不要鼓」「只留鼓和贝斯」、点名的数值——会被强制执行）。
+
+**回复的契约**（两种制作人相同）：`AgentPlan.reply` 永远由应用写——「好的：」加上每一项实际改动（`changeLines` 比较前后两份设置；只是随新风格一起变的那些合成一句「…随风格调整」），再加 `melodyNote` 那句关于旋律的话；`reasoning` 是应用的改动清单（最多 8 个标签，装不下时最后一个合并），大模型最多再添两行，而且要过同样的核对、把 id 换成界面上的名字。大模型自己的 `reply` 放进 `AgentPlan.modelNote`（最多 400 字）→ `AgentTurn.note` → 界面上的「模型说明：…」；方案没有变化、被界面固定项或用户的明确要求改掉了、或者它提到了一个并没有改变的参数或声部时，这句话整句不要。云端和旧引擎作品上，其中承诺保留旋律的句子还会被 `honestPlan` 去掉。回复入库前经 `houseStyle` 统一引号和用词。
+
+**离线规则怎样读一句话**（`reading.ts`、`amounts.ts`、`vetoes.ts`、`rules.ts`）：数字的含义来自它周围的词——方向词在前、在中间或在后（上调 / 往下降 / raise the tempo 10 / 10 bpm faster）、目标值、上限和下限（只是界限，不是跳到界限）、总长（总长 / N 秒长 / seconds long）、时间位置和区间、被否定的值、被抱怨的值、「从…到…」。否定绑在它的动词上：被禁止的动作不做，它说的那一项在整句话里锁住；被禁止的「去掉」意味着保留（鼓别关、不能没有贝斯）。完成体的抱怨反着改（快了点、鼓大了）。修改时一个描述词只有带着比较、抱怨、否定、愿望，或者自成一句时才算指令；「很 + 形容词」只是感想；换风格要有表示改变的动词或一句纯粹的描述；乐器名不会被当成风格；音效类的要求会说明做不了。读不懂的话不改任何东西并如实回答。复核时用的 725 条带期望的提示词原样收作测试夹具（644 条修改、81 条新作品），其中 4 条修改按另一种结果断言并写明理由，5 条新作品是记录在案的未解决项（S11）。
 
 **时限与回退**：托管服务 90 秒、本机模型 240 秒（从请求开始算；`agent-service.cjs` 的 `HOSTED_TIMEOUT_MS` / `LOCAL_TIMEOUT_MS`）；一次只做一个规划；取消立即返回，迟到的结果丢弃。任何失败（超时、网络、鉴权、拒答、格式不对）都由 `producePlan` 改用离线规则，`fallbackReason` 是一句话加「，已改用离线规则」，显示在对话里。**例外**：生成引擎是付费的云端服务时不会拿规则的方案直接去花钱，而是弹出「大模型没有给出编曲方案」让用户选取消 / 重试大模型 / 用离线规则继续。
 
-**Ollama 备注**：保存本机模型的设置后，主进程在后台发一次只要 1 个 token 的请求（带同样的系统提示词，让 Ollama 把模型载入内存并缓存这段前缀）；真实请求、新的保存、删除设置或退出都会中止它；托管服务从不预热。Ollama 默认 5 分钟后卸载模型，所以隔久了第一条消息仍然会遇到冷启动——240 秒的时限就是为此留的。最后一轮在这台机器上（`qwen3.5:9b-q4_K_M`）冷启动后的第一条消息用了 121.8 秒，修改用了 37.6 秒。提示词较长，Ollama 需要 8k 以上的上下文窗口，而 OpenAI 兼容接口设不了它。9B 模型的音乐判断偏弱（见 S11）。
+**Ollama 备注**：保存本机模型的设置后，主进程在后台发一次只要 1 个 token 的请求（带同样的系统提示词，让 Ollama 把模型载入内存并缓存这段前缀）；真实请求、新的保存、删除设置或退出都会中止它；托管服务从不预热。Ollama 默认 5 分钟后卸载模型，所以隔久了第一条消息仍然会遇到冷启动——240 秒的时限就是为此留的。最后一轮在这台机器上（`qwen3.5:9b-q4_K_M`）新作品的第一条消息用了 129.0 秒，修改用了 57.2 秒。提示词较长，Ollama 需要 8k 以上的上下文窗口，而 OpenAI 兼容接口设不了它。9B 模型的音乐判断偏弱（见 S11）。
 
 ## S08｜桌面边界：桥、IPC、守卫、CSP、凭据、环境变量
 
-**桥** `window.museDesktop`（`electron/preload.cjs`；与 `src/types.ts` 的 `DesktopAPI`、`main.cjs` 注册的通道三方一致，`tests/preload.test.cjs` 检查）。13 个方法、13 个通道：
+**桥** `window.museDesktop`（`electron/preload.cjs`；与 `src/types.ts` 的 `DesktopAPI`、`main.cjs` 注册的通道三方一致，`tests/preload.test.cjs` 检查）。14 个方法、14 个通道：
 
 | 方法 | 通道 | 说明 |
 | --- | --- | --- |
-| `getSettings()` | `muse:get-settings` | `{ providers, llm, dataPath, version }`；只有状态，没有密钥。坏的条目按服务标为 `damaged`，不会让整个调用失败 |
+| `getSettings()` | `muse:get-settings` | `{ providers, llm, dataPath, version, pendingResult }`；只有状态，没有密钥。坏的条目按服务标为 `damaged`，不会让整个调用失败。`pendingResult` 是 `{ provider }` 或 `null`：主进程是否还持有一份没取回的付费结果 |
 | `saveProviderCredentials(provider, credentials)` | `muse:save-provider` | 保存一家音乐服务的凭据（不发任何请求） |
 | `deleteProviderCredentials(provider)` | `muse:delete-provider` | 删除一家，不影响其他 |
-| `generateMusic({ provider, prompt, duration, model? })` | `muse:generate-music` | 返回 `{ audio: ArrayBuffer, mimeType }`；一次一个；凭据在拿到锁之后才读 |
+| `generateMusic({ provider, prompt, duration, model?, discardPending? })` | `muse:generate-music` | 返回 `{ audio: ArrayBuffer, mimeType }`；一次一个；凭据在拿到锁之后才读。主进程还持有没取回的结果时拒绝（什么都不发），除非 `discardPending` 严格等于 `true` |
 | `cancelGeneration()` | `muse:cancel-generation` | 停止等待（也用于停止重新下载） |
-| `retryLastDownload(provider)` | `muse:retry-download` | 重新取回上一次已生成但没下载下来的结果；不提交、不计费 |
+| `retryLastDownload(provider)` | `muse:retry-download` | 取回主进程持有的那份结果：文件没下到的再下载，任务没等到的继续查询再下载；不提交、不计费 |
+| `discardPendingResult(provider)` | `muse:discard-pending` | 不发新请求地放弃那份结果；放弃了返回 `true`，本来就没有返回 `false`；有任务在跑时拒绝 |
 | `setUnsavedWork(boolean)` | `muse:set-unsaved-work` | 渲染层手里有只存在于本次运行的付费成果 → 关闭前询问 |
 | `saveAudio({ name, data, format })` | `muse:save-audio` | 系统保存对话框；`format` 为 `wav` / `mp3` / `m4a` / `flac` / `json`；数据上限 256 MB；文件名经过清理 |
 | `openExternal(url)` | `muse:open-external` | 只打开 `EXTERNAL_URLS` 白名单里逐字匹配的官方页面 |
@@ -475,15 +495,15 @@ object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'
 - 每一项用 Windows safeStorage（DPAPI）单独加密；系统加密不可用时拒绝保存。密钥只写不读：`getSettings` 只返回 `configured`、`damaged` 和非秘密的 `model` / `workspaceId` / `billingMode`（大模型：`kind` / `preset` / `model` / `baseUrl`）。
 - 读取宽松、写入严格：每一项单独打开，一项坏了不影响其他；本版本不认识的服务 id 和顶层键在每次保存时原样保留。`llm` 放在 `providers` 之外，是因为 0.2 遇到不认识的服务 id 会拒绝整个文件。
 - V1 文件在第一次保存时升级。旧密钥解不开（换了 Windows 账户、恢复的配置）时保存照常进行：旧文件先逐字节复制为 `music-credentials.v1-<内容哈希前 12 位>.bak`，新文件里不带那把密钥。复制不成就什么都不写。
-- 整个文件读不了（损坏、更高版本）时 `getSettings` 不失败，但保存和删除被拒绝，文件不会被覆盖；没有自动重置。
+- 整个文件不成其为凭据文件（零字节、截断、不是 JSON、形状不对）时 `getSettings` 不失败、各服务显示为未配置；**第一次保存或删除**时，坏文件被逐字节复制为 `music-credentials.damaged-<UTC 时间>.bak`（不覆盖已有的副本；副本写不出来就什么都不写），凭据从空白重新开始，主进程弹出一次原生提示说明副本的名字、之前保存的密钥需要重新填写。有两种文件永远不会被替换：从磁盘上读不出来的（权限等），和更高格式版本写的——这时保存和删除仍然被拒绝。
 - 写入是「临时文件 + 改名」，并且串行。密钥的统一格式：10–4096 个不含空格的可打印 ASCII。文件读取上限 1 MiB。
 
 **网络**（`net-fetch.cjs`）：
 
 - `createNetFetch(net)`：主进程的普通请求走 Chromium 网络栈，遵守 Windows 系统代理 / PAC；不带 Cookie、不写缓存；被取消或超限的响应体会真正中止下载；`redirect` 缺省是 `error`，需要跟随重定向的调用方自己逐跳处理。
-- `createBillingFetch(getSession)`：只接受 `POST` 且 `redirect: "error"`；每次请求前对专用内存会话（分区 `muse-billing`）`closeAllConnections()`，并等上一个提交放开连接；连接关不掉就什么都不发。`main.cjs` 全局加 `disable-quic`。`scripts/desktop-smoke.cjs` 每次运行都重复这个实验：在计费通道上，被重置或关闭的提交只到达服务一次并报告为未确认；同样的断连在普通通道上到达两次。
+- `createBillingFetch(getSession)`：只接受 `POST` 且 `redirect: "error"`；每次请求前对专用内存会话（分区 `muse-billing`）`closeAllConnections()`，并等上一个提交放开连接；连接关不掉就什么都不发。关闭连接这一步与取消信号和 5 秒的上限赛跑（它不回答时不会把任务锁和计费队列一直占着），请求发出之前的每一种失败都带着「没有发出」的标记（`wasNotSent`）。`main.cjs` 全局加 `disable-quic`。`scripts/desktop-smoke.cjs` 每次运行都重复这个实验：在计费通道上，被重置或关闭的提交只到达服务一次并报告为未确认；同样的断连在普通通道上到达两次。
 
-**关闭确认**（`close-guard.cjs`）：云端生成进行中（「云端音乐还在生成」：继续等待 / 仍然关闭），或渲染层报告有未保存的付费成果（「有一首付费生成的音乐还没有保存」：返回应用 / 仍然关闭）时，关闭窗口和退出应用都先询问；默认和 Esc 都是留下。页面重新加载时标志清零。
+**关闭确认**（`close-guard.cjs`）：四种理由，关闭窗口和退出应用都先询问，默认和 Esc 都是留下——①主进程持有一份已生成但文件没取回的结果（「有一首已经生成的音乐还没有取回」：返回应用 / 仍然关闭）；②主进程持有一个已提交但没等到结果的任务（「有一个已经提交的生成任务还没有取回」）；③云端生成进行中（「云端音乐还在生成」：继续等待 / 仍然关闭）；④渲染层报告有未保存的付费成果（「有一首付费生成的音乐还没有保存」）。前两种读的是主进程自己的状态，不管页面报告了什么、忘了什么都会问；页面重新加载时只有第四种的标志清零。
 
 **外链白名单**（`music-service.cjs` 的 `EXTERNAL_URLS`）：四家音乐服务的文档和控制台页面、各大模型预设的密钥页面、Ollama 的下载和模型库页面；逐字匹配。
 
@@ -507,43 +527,44 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 
 | 命令 | 结果 |
 | --- | --- |
-| `npm run test:all` | 退出码 0，216 秒（构建两次 + 以下前六项） |
-| `npm test` | TypeScript 748 / 748，0 跳过，约 53 秒；CommonJS 219 / 219，0 跳过，约 1.4 秒 |
-| `npm run test:web` | 27 步通过，72.5 秒 |
-| `npm run desktop:smoke` | 通过，约 24 秒 |
-| `npm run test:ui`（= `test:desktop`） | 14 步通过，约 17.5 秒 |
-| `npm run test:cloud` | 21 步通过，约 32 秒，0 个真实外部请求 |
-| `npm run test:packaged`（在 `npm run dist` 之后） | 23 步通过，26.3 秒 |
-| `npm run typecheck` | 227 个文件，0 个错误 |
+| `npm run test:all` | 退出码 0，308 秒（构建两次 + 以下前六项） |
+| `npm test` | TypeScript 796 / 796，0 跳过，约 62 秒；CommonJS 252 / 252，0 跳过，约 1.3 秒 |
+| `npm run test:web` | 27 步通过，87.7 秒 |
+| `npm run desktop:smoke` | 通过，约 46 秒 |
+| `npm run test:ui`（= `test:desktop`） | 14 步通过，17.6 秒 |
+| `npm run test:cloud` | 23 步通过，77.4 秒，0 个真实外部请求 |
+| `npm run test:packaged`（在 `npm run dist` 之后） | 23 步通过，27.3 秒 |
+| `npm run typecheck` | 233 个文件，0 个错误 |
 | `npm run format:check` | 全部符合 Prettier |
-| `node scripts/cloud-workflow.cjs --ollama` | 25 步通过，192.9 秒（真实的本机 Ollama） |
+| `node scripts/cloud-workflow.cjs --ollama` | 27 步通过，264.9 秒（真实的本机 Ollama） |
 
-打包阶段在最后一次修改测试辅助文件之后又单独重跑了 `npm test`、`test:ui`、`test:cloud`、`desktop:smoke`、类型检查和排版检查（都通过），但没有重跑 `test:web`（它不加载那个辅助文件）和整套 `test:all`。详细记录在 `docs/QA.md`；各套件的结果 JSON 在 `test-results/`。
+顺序是：集成后的代码上先跑一遍 `test:all` 和 Ollama 阶段 → `npm run dist` → 发行程序冒烟和对打包程序的桌面冒烟 → 写完发布记录和文档后，再完整跑一遍 `test:all`、`test:packaged` 和排版检查（上表是这最后一遍的数字；Ollama 阶段只在打包前跑了一次，之后产品代码没有再改）。详细记录在 `docs/QA.md`；各套件的结果 JSON 在 `test-results/`。
 
-### 单元测试：`tests/*.test.ts`（34 个文件，748 项）
+### 单元测试：`tests/*.test.ts`（35 个文件，796 项）
 
-下表的数量是在当前代码上逐个文件单独运行得到的，合计与最后一轮的总数一致。
+下表的数量是用一个按文件计数的报告器在当前代码上整套运行得到的，合计与最后一轮的总数一致。
 
 | 文件 | 项 | 覆盖 |
 | --- | --- | --- |
-| `agent-rules` | 39 | 离线规则：大表格的新作品与修改提示词、数字与维度的绑定、否定、固定项、听不懂时的回答、14 种乐器的叫法、每张灵感卡片应得的风格、两个性质测试 |
-| `agent-brain` | 45 | 大模型方案的校验与夹回、越界和原型污染、回退及其提示语的形状（扫描主进程的全部错误消息）、固定项、推子和小漂移的保护、云端提示词、预设与主进程一致 |
-| `app-core` | 42 | 内核端到端（引擎、桥、存储、播放器、时钟全用替身）：任务锁、取消、草稿与作品分离、v0.2 审计 APP-01…20 的回归 |
-| `app-safety` | 32 | 计费与数据安全：付费确认、大模型失败后的询问、保存失败后的保留与重试、「重新下载」、关闭风险、多标签页、撤销删除、旋律承诺（CORE、RB、UX-01/03/10、MAIN-02） |
-| `app-logic` | 28 | 内核的纯决策：草稿、固定项、方案、对话、版本、可选项、快捷键 |
+| `agent-rules` | 49 | 离线规则：大表格的新作品与修改提示词、数字的含义（方向、目标、上下限、总长、时间位置、被否定和被抱怨的值）、否定矩阵（8 种说法 × 15 个动作）、固定项、听不懂时的回答、14 种乐器的叫法、每张灵感卡片应得的风格、同风格不重复换风格、回复逐项完整且每项都有标签、夹回范围时的说明、关于旋律的每一种句子；**复核语料 725 条**（`tests/fixtures/agent-corpus.ts`：644 条修改、81 条新作品里断言 76 条）；安全指标（735 例里没有改错方向、改错维度、没人要的换风格和新旋律）；两个性质测试 |
+| `agent-brain` | 49 | 大模型方案的校验与夹回、越界和原型污染、回退及其提示语的形状（扫描主进程的全部错误消息）、固定项、推子和小漂移的保护、**回复契约**（回复由应用写、`modelNote` 什么时候保留、标签里的 id 换成名字）、用户明说的要求强制生效、云端提示词、预设与主进程一致 |
+| `app-core` | 44 | 内核端到端（引擎、桥、存储、播放器、时钟全用替身）：任务锁、取消、草稿与作品分离、v0.2 审计 APP-01…20 的回归、服务不接受的时长在付费确认前询问（FQ-04）、读不懂的删除记录不执行（ND-3） |
+| `app-safety` | 48 | 计费与数据安全：付费确认、大模型失败后的询问、保存失败后的保留与重试、**没取回的付费结果**（横幅、三种提问、放弃、重新加载后恢复、主进程的报告、下载中取消；FQ-01）、取消后才到达又没存上的结果、没应用的修改跨重启（FQ-05）、撤销重新打开作品（FQ-14）、模型说明（FQ-02）、关闭风险、多标签页、撤销删除、旋律承诺（CORE、RB、UX-01/03/10、MAIN-02、NEW-01/02/06/07、FQ-11/15/16） |
+| `app-logic` | 28 | 内核的纯决策：草稿、固定项、方案、对话、版本、可选项、快捷键、会话记录的解析（ND-3）、等待文字（FQ-11） |
 | `app-reducer` | 19 | reducer：什么可以改什么 |
 | `app-services` | 14 | `services/generation.ts` 与 `exporter.ts`（替身引擎、桥、解码器）：导出选项、重复、淡入淡出、格式识别 |
-| `ui-logic` | 52 | 界面背后的纯逻辑：文案统一（UX-11）、时间轴与和弦标注、焦点、提示框、建议按钮、应用自带的每条示例都兑现它的承诺 |
-| `storage` | 29 | 严格校验、导入导出、引擎缺省、更新版本与非工程数据的说明 |
+| `ui-logic` | 59 | 界面背后的纯逻辑：文案统一（UX-11，含作曲器自己写的文字）、时间轴与和弦标注（FQ-07）、焦点、提示框的位置（FQ-16）、询问出现后的 500 ms（NEW-09）、密钥前缀提醒（FQ-15）、建议按钮、「换一版旋律」如实说和弦也重写了（FQ-08）、应用自带的每条示例都兑现它的承诺 |
+| `storage` | 30 | 严格校验、导入导出、引擎缺省、对话里的模型说明、更新版本与非工程数据的说明 |
 | `storage-idb` | 17 | 真实的 IndexedDB 语义（fake-indexeddb）：逐条读取、按字段更新、损坏记录、各种失败的中文说明 |
 | `platform` | 16 | 桌面 / 网页 / iframe 的识别、文件名清理、保存与外链 |
 | `player-clock` | 20 | 播放器的走带算术 |
 | `player-engine` | 31 | `PlayerEngine` 对着脚本化的 Web Audio：创建、调度、停止、上报 |
 | `catalog` | 2 | 清单 JSON 与 `catalog.ts` 的字面量一致 |
-| `music-core` | 33 | 作曲器：每个风格定义格式正确、有效性、确定性、长度规划、和声、旋律统计、编排提示 |
+| `music-core` | 34 | 作曲器：每个风格定义格式正确、有效性、确定性、长度规划（循环对齐：速度只动 ±3 %，否则长度取整小节）、和声、旋律统计、编排提示 |
 | `music-styles` | 36 | 22 个风格各自的身份（乐器、鼓组、律动、音阶、和声），以及风格 × 主奏 × 曲式的通用有效性 |
-| `music-continuity` | 13 | 修改后旋律保留多少；`melodyContinuity()` 的每个答案对照实际的 Score |
-| `music-review` | 11 | 作曲评审的回归（MUS-02…11）：贝斯单声部、没有空段落、没有对斜关系、结尾守调式、五声副旋律、rubato、渐强到位、和弦拼写、副属解决、编曲说明如实 |
+| `music-continuity` | 14 | 修改后旋律保留多少；`melodyContinuity()` 的四种答案对照实际的 Score |
+| `music-quality` | 4 | 删减或填密后的旋律保持声部进行、先删装饰音；2500 组随机设置都得到通过校验的 Score；其他声部都关掉时主旋律不留长休止 |
+| `music-review` | 13 | 作曲评审的回归（MUS-02…11）：贝斯单声部、没有空段落、没有对斜关系（含音阶里的小三度对和弦的大三度）、结尾守调式、五声副旋律、rubato、渐强到位、和弦拼写、副属解决、编曲说明如实 |
 | `dsp` | 16 | DSP 工具箱：滤波器响应、包络、延迟线、弦、模态、FFT；以及 Node 24.18 的 V8 问题检查 |
 | `voices-core` | 15 | 音色库完整、示范音色的契约、测量工具本身 |
 | `voices-keys` | 31 | 键盘与拨弦 13 个音色的契约和各自的可测特征 |
@@ -561,7 +582,7 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 | `style-mix-cinematic-atmos` | 25 | 电影 / 氛围组六个风格 |
 | `examples` | 6 | `examples/` 里的文件：0.2 工程仍能作为引擎 1 作品打开；引擎 2 示例正是应用导出的样子，WAV 正是引擎渲染的结果 |
 
-### 单元测试：`tests/*.test.cjs`（20 个文件，219 项，主进程）
+### 单元测试：`tests/*.test.cjs`（21 个文件，252 项，主进程）
 
 | 文件 | 项 | 覆盖 |
 | --- | --- | --- |
@@ -571,48 +592,52 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 | `provider-volcengine` | 10 | 火山的请求体、V4 签名（固定时间和虚构凭证的期望值）、轮询、CDN 白名单 |
 | `provider-volcengine-retry` | 10 | F02 / F04：容错的轮询、提交后每个失败都带任务编号、错误码与请求编号 |
 | `music-robustness` | 8 | F14（先上锁再读凭据）、F04（错误码）、F15（阿里云只从 OSS 桶下载）、大模型密钥页在白名单里 |
-| `music-paid-result` | 15 | MAIN-01（计费请求只走 `submitFetch`，轮询和下载从不走）、MAIN-02（下载重试、说明音乐已生成并带编号、可重新下载而不重新提交） |
-| `net-fetch` | 18 | 网络封装对着假的 `net`：无 Cookie 无缓存、请求头、重定向模式、中止；计费通道的关闭连接、排队、只收 POST；`main.cjs` 的接线 |
-| `key-store` | 14 | F03（逐项隔离）、F07（未知键保留）、大模型设置的加密与隔离、MAIN-06（解不开的 V1 密钥备份后放行）、F16（统一的密钥长度） |
+| `music-paid-result` | 15 | MAIN-01（计费请求只走 `submitFetch`，轮询和下载从不走）、MAIN-02（下载重试、说明音乐已生成并带编号、可重新下载而不重新提交；持有结果时新的生成被拒绝） |
+| `music-pending-result` | 13 | FQ-01（主进程报告它持有什么、拒绝新的付费请求、`discardPending` 的时机、明确放弃）、FQ-03（火山任务在查询失败 / 超时 / 取消后保留，续查有界，结束后转成可重下的文件或最终失败）、ND-1（卡在发送之前的提交不会占住服务，并报告为没有发出） |
+| `net-fetch` | 22 | 网络封装对着假的 `net`：无 Cookie 无缓存、请求头、重定向模式、中止；计费通道的关闭连接（与取消和 5 秒上限赛跑）、排队、只收 POST、「没有发出」的标记；`main.cjs` 的接线 |
+| `key-store` | 22 | F03（逐项隔离）、F07（未知键保留）、大模型设置的加密与隔离、MAIN-06（解不开的 V1 密钥备份后放行）、F16（统一的密钥长度）、损坏的凭据文件（读取不改动任何东西、第一次保存或删除时隔离并重新开始、更高版本的文件仍然拒绝） |
 | `ipc-guard` | 6 | F01（按文件路径比较，盘符大小写无关）、开发地址、只有安全的错误过桥 |
-| `preload` | 6 | F06（去掉 IPC 错误前缀）；桥、通道、`DesktopAPI` 三方一致 |
+| `preload` | 7 | F06（去掉 IPC 错误前缀）；桥、通道、`DesktopAPI` 三方一致（14 个方法）；`discardPendingResult` 与 `discardPending` 在契约里 |
 | `csp` | 3 | F18：两处 CSP 逐字相同 |
-| `close-guard` | 7 | MAIN-05 / RB-03：关闭确认的决策逻辑 |
+| `close-guard` | 10 | MAIN-05 / RB-03：关闭确认的决策逻辑；FQ-01：主进程持有的结果无论页面报告什么都会问 |
 | `context-menu` | 4 | MAIN-07：右键菜单模板 |
 | `base-url` | 8 | 接口地址校验表、私有地址分类、调用前的 DNS 复查、MAIN-08（受限端口） |
-| `plan-schema` | 15 | Schema 的形状（与 `RawAgentPlan` 一致）、`validatePlan` / `completePlan` / `validatePlanInput`、罗马数字语法和默认推子与渲染层一致、系统提示词、`buildMessages` |
+| `plan-schema` | 16 | Schema 的形状（与 `RawAgentPlan` 一致）、`validatePlan` / `completePlan` / `validatePlanInput`、罗马数字语法和默认推子与渲染层一致、系统提示词（含这一轮加的几条规则）、`buildMessages` |
 | `agent-service` | 21 | 规划的锁、取消、迟到结果、90 秒 / 240 秒时限、错误净化、八项预热测试 |
 | `agent-anthropic` | 19 | Claude 适配器对着模拟的 `fetch`（真实 SDK 0.132.1）：请求体、请求头屏蔽环境变量、beta 回落、错误映射、拒答与截断 |
-| `agent-openai` | 21 | OpenAI 兼容适配器：请求体、Ollama 的形状、参数降级、重试、去掉思考块、有界读取、连不上本机模型时的三种说明、预热请求 |
+| `agent-openai` | 24 | OpenAI 兼容适配器：请求体、Ollama 的形状、参数降级、重试、去掉思考块、取最后一个通过校验的方案（ND-4，有界）、有界读取、连不上本机模型时的三种说明、预热请求 |
 | `llm-presets` | 1 | 渲染层的预设清单通过主进程的保存校验 |
 
 ### 端到端套件：`scripts/`
 
 | 套件 | 驱动什么 | 最近一次结果 | 结果文件 |
 | --- | --- | --- | --- |
-| `web-smoke.cjs`（`npm run test:web`） | Chromium 里的 `dist-web/`，放在 `/play/yinxu/` 下、嵌在 1000×760 的 iframe 里：创作、播放、键盘、对话修改、声音微调、长渲染不卡界面并可取消、混音、导出、渲染错误的恢复面板、刷新恢复、导入、作品库、删除与撤销、损坏记录、灵感、两个标签页、保存失败的横幅与重试、1366×768 窗口、390×780 触屏；另用替身桥在浏览器里跑桌面渲染层的付费流程。任何控制台错误、CSP 违规或静态文件以外的请求都算失败 | 27 步，72.5 秒 | `test-results/web-smoke.json` |
-| `desktop-smoke.cjs`（`npm run desktop:smoke`） | 真实 Electron + 临时数据目录：隔离的 preload、13 个桥方法、设置的形状、中文错误不带前缀、音乐与大模型凭据的真实 safeStorage 增删、经 Chromium 网络栈向本机模拟模型规划、连不上本机模型的三种说明、受限端口、损坏条目互不影响、小写盘符启动；**计费请求不重发的实验**（把 ElevenLabs 和腾讯云的域名映射到本机的替身服务，HTTP/1.1 + TLS 与 HTTP/2，重置与关闭各一次）；右键菜单；三种关闭确认 | 通过，约 24 秒；对打包后的 `Muse BGM.exe` 也通过 | 无（只有终端输出） |
-| `ui-smoke.cjs`（`npm run test:ui` / `test:desktop`） | 真实 Electron 的本地全流程：固定风格与时长生成 → 播放与键盘 → 对话修改（同一种子）与「没有变化就不生成」→ 声音微调 → 混音保存、独奏不保存 → 经系统保存路径导出混音 / ×2 / 单轨 / 工程 → 作品库 → `Ctrl+N`、取消 120 秒的渲染 → 删除与撤销、重启恢复 → 音乐服务与大模型设置 → 0.2 工程在旧引擎上打开并升级成引擎 2 的新版本 | 14 步，约 17.5 秒；0 个渲染层错误，0 个外发请求 | `test-results/ui-smoke-results.json` |
-| `cloud-workflow.cjs`（`npm run test:cloud`） | 真实的界面、preload、IPC、适配器、解码、存储和导出，只把主进程的网络换成本机模拟（`MUSE_NETWORK=node` + 替换 `globalThis.fetch`）：没有凭据时拒绝；**腾讯 / 火山 / 阿里**三家的凭据保存和各一次完整生成（先保存再解码、显示真实时长、原始文件逐字节不变）；付费确认；HTTP 401；等待中取消；阿里云「已生成但下载一直失败 → 重新下载」；不支持的时长；无法解码的音频；云端作品的修改；Claude（模拟）规划与修改；模型失败回退；规划中取消；OpenAI 兼容接口（模拟 DeepSeek）；模型 + 云端引擎 | 21 步，约 32 秒；未知请求 0、Chromium 外发请求 0 | `test-results/cloud-workflow-results.json` |
-| `cloud-workflow.cjs --ollama` / `--ollama-cold` | 上面的 21 步，再加真实的本机 Ollama：经设置表单配置、一次新作品、一次修改、核对只访问了本机。`--ollama-cold` 先让 Ollama 卸载模型 | 25 步，192.9 秒（`qwen3.5:9b-q4_K_M`）；结果只留在 `.scratch/package/` | 可选阶段，不在 `test:all` 里 |
-| `packaged-smoke.cjs`（`npm run test:packaged`） | 发行物：先核对 `app.asar`（`dist/`、`electron/`、`package.json` 与工作区一致；依赖里没有多余文件；SDK 的脚本一个不少；`SHA256SUMS.txt` 和发布说明里的校验值就是这两个 EXE 的），再对 `release/win-unpacked/Muse BGM.exe` 和便携版 EXE 各跑 11 步：版本、桥、CSP 生效、Worker 里作曲并播放、对话修改、导出 WAV、真实 safeStorage 存删凭据、包内 Claude SDK 完成一次模拟规划、整个进程重启后作品还在、没有请求离开本机 | 23 步，26.3 秒 | `test-results/packaged-smoke-results.json` |
+| `web-smoke.cjs`（`npm run test:web`） | Chromium 里的 `dist-web/`，放在 `/play/yinxu/` 下、嵌在 1000×760 的 iframe 里：创作、播放、键盘、对话修改、声音微调（没应用的修改在重新加载后还在）、长渲染不卡界面并可取消、混音、导出、渲染错误的恢复面板、刷新恢复、导入、作品库、删除与撤销（撤销正开着的作品会重新打开它）、损坏记录、灵感、两个标签页、保存失败的横幅与重试、1366×768 窗口（风格按钮只占一个 Tab 位、和弦名不重叠也不漏、提示框不挡住它说明的那一行、待应用的小条）、390×780 触屏。**另用一个模拟主进程的替身桥在浏览器里跑桌面渲染层的付费流程**：连点和按住回车不会误确认、火山 15 秒的问题排在付费确认之前、没取回的付费结果的整条路（每个页面的横幅、三种提问、重新加载后恢复、一次失败再一次成功的重新下载且付费次数不变、确认后的放弃）。任何控制台错误、CSP 违规或静态文件以外的请求都算失败 | 27 步，87.7 秒 | `test-results/web-smoke.json` |
+| `desktop-smoke.cjs`（`npm run desktop:smoke`） | 真实 Electron + 临时数据目录：隔离的 preload、14 个桥方法、设置的形状（含 `pendingResult`）、中文错误不带前缀、音乐与大模型凭据的真实 safeStorage 增删、经 Chromium 网络栈向本机模拟模型规划、连不上本机模型的三种说明、受限端口、损坏条目互不影响、零字节的凭据文件在第一次保存时被隔离并只提示一次、小写盘符启动；**计费请求不重发的实验**（把 ElevenLabs 和腾讯云的域名映射到本机的替身服务，HTTP/1.1 + TLS 与 HTTP/2，重置与关闭各一次）；**发不出去的提交**（让真实计费会话的 `closeAllConnections()` 永不回答：取消立即结束、5 秒后自行放弃，都报告为没有发出，之后的生成照常）；**真实网络路径上的没取回结果**（阿里云：被报告、关闭时询问、新的生成被拒绝、放弃、取回）；右键菜单；三种关闭确认 | 通过，约 46 秒；对打包后的 `Muse BGM.exe` 也通过（45 秒） | 无（只有终端输出） |
+| `ui-smoke.cjs`（`npm run test:ui` / `test:desktop`） | 真实 Electron 的本地全流程：固定风格与时长生成 → 播放与键盘 → 对话修改（同一种子）与「没有变化就不生成」→ 声音微调 → 混音保存、独奏不保存 → 经系统保存路径导出混音 / ×2 / 单轨 / 工程 → 作品库 → `Ctrl+N`、取消 120 秒的渲染 → 删除与撤销、重启恢复 → 音乐服务与大模型设置 → 0.2 工程在旧引擎上打开并升级成引擎 2 的新版本 | 14 步，17.6 秒；0 个渲染层错误，0 个外发请求 | `test-results/ui-smoke-results.json` |
+| `cloud-workflow.cjs`（`npm run test:cloud`） | 真实的界面、preload、IPC、适配器、解码、存储和导出，只把主进程的网络换成本机模拟（`MUSE_NETWORK=node` + 替换 `globalThis.fetch`）：没有凭据时拒绝；**腾讯 / 火山 / 阿里**三家的凭据保存和各一次完整生成（先保存再解码、显示真实时长、原始文件逐字节不变）；付费确认；HTTP 401；等待中取消；阿里云「已生成但下载一直失败 → 横幅 → 重新下载」；**主进程持有的结果**（被报告、不管页面说什么关闭时都问、不经询问不会被替换）；**火山五次状态查询失败后任务保留，「重新下载」续查并取回，没有新的提交**；火山的 15 秒在界面上不可选、主进程也拒绝；无法解码的音频；云端作品的修改；Claude（模拟）规划与修改（回复由应用写，模型的话是「模型说明」）；模型失败回退；规划中取消；OpenAI 兼容接口（模拟 DeepSeek）；模型 + 云端引擎 | 23 步，77.4 秒；未知请求 0、Chromium 外发请求 0；全程 13 个计费 POST（腾讯 6、阿里 5、火山 2） | `test-results/cloud-workflow-results.json` |
+| `cloud-workflow.cjs --ollama` / `--ollama-cold` | 上面的 23 步，再加真实的本机 Ollama：经设置表单配置、一次新作品、一次修改、核对只访问了本机。`--ollama-cold` 先让 Ollama 卸载模型 | 27 步，264.9 秒（`qwen3.5:9b-q4_K_M`；新作品 129.0 秒，修改 57.2 秒） | 可选阶段，不在 `test:all` 里；这次的结果 JSON 只留在草稿区 |
+| `packaged-smoke.cjs`（`npm run test:packaged`） | 发行物：先核对 `app.asar`（`dist/`、`electron/`、`package.json` 与工作区一致；依赖里没有多余文件；SDK 的脚本一个不少；`SHA256SUMS.txt` 和发布说明里的校验值就是这两个 EXE 的），再对 `release/win-unpacked/Muse BGM.exe` 和便携版 EXE 各跑 11 步：版本、桥（14 个方法）、CSP 生效、Worker 里作曲并播放、对话修改、导出 WAV、真实 safeStorage 存删凭据、包内 Claude SDK 完成一次模拟规划、整个进程重启后作品还在、没有请求离开本机 | 23 步，27.3 秒 | `test-results/packaged-smoke-results.json` |
 
 **什么是模拟的**：
 
 - 四家音乐服务的全部网络往来（固定的 3 秒音频夹具，而请求的是 15 / 30 秒——所以「显示真实时长」是真的被检查了）。
 - Claude 和其他托管模型的全部往来（固定的方案夹具；Claude 适配器的单元测试用真实 SDK 加模拟 `fetch`）。
-- Electron 套件里的系统保存对话框、关闭确认框、右键菜单和 `shell.openExternal` 被主进程钩子换成记录器。
+- Electron 套件里的系统保存对话框、关闭确认框、凭据文件被隔离的提示框、右键菜单和 `shell.openExternal` 被主进程钩子换成记录器。
 - 内核测试里的引擎、桥、存储、播放器和时钟；`player-engine` 里的 Web Audio。
+- 网页套件里跑桌面渲染层付费流程的那个桥（它模拟主进程持有结果、拒绝和放弃的行为）。
 
 **什么是真的**：真实的 Electron 进程和打包后的程序、Windows safeStorage、IndexedDB（套件里是真实浏览器的，单元测试里是 fake-indexeddb）、本地引擎的全部渲染和测量、Worker、计费通道实验里的 TLS / HTTP/2 连接（对本机的替身服务）、可选阶段里的本机 Ollama。
 
 **没有覆盖的**：
 
 - 任何真实付费音乐账号；任何真实的 Anthropic 或其他托管大模型密钥。
-- ElevenLabs 没有界面层的端到端生成（只有单元测试和计费通道实验）。
+- ElevenLabs 没有界面层的端到端生成（只有单元测试和计费通道实验；第四轮的验收者用自己的夹具手工跑通过一次，没有留在套件里）。
+- 火山引擎的续查没有遇到过真实的 `QuerySong`；「请求没有发出」的自然触发条件（网络服务丢掉回答）没有复现，套件是在真实的计费会话上人为让关闭连接不回答。
 - NSIS 安装包本身（安装、快捷方式、卸载）。
 - Chromium 以外的浏览器、真实手机和触屏硬件、屏幕阅读器、输入法组字、强制颜色模式。
 - 真实的 Windows 系统代理、Windows 10、macOS / Linux。
+- 原生对话框本身（关闭确认、凭据文件被隔离的提示）：套件只记录了它们会以什么内容弹出。
 - 听感。套件里的「没有爆音」来自增益自动化记录和输出探针，不是耳朵。
 - `test:all` 不含 `test:packaged` 和 Ollama 阶段。
 
@@ -621,7 +646,10 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 - Electron 套件读 `dist/`（网页套件读 `dist-web/`），先构建。它们使用临时数据目录，并统计、拒绝一切真实外部请求。
 - `npm test` 带 `--no-maglev-escape-analysis`：Node 24.18 的 V8 在高负载下会让同一个对象字面量产生的两个对象共用数字字段（`tests/helpers/spectrum.ts` 有说明，`tests/fixtures/literal-aliasing.check.ts` 是复现）。带采样循环的测试辅助函数应当返回数字，而不是新的对象字面量。
 - 少数测试检查源文件的接线（哪个通道接哪个处理器）。它们通过 `tests/helpers/source-shape.cjs` 去掉排版再比较，重新排版不会让它们失败，改了代码的意思才会。
-- 音频测试较重：`audio-quality`、`music-review`、`style-mix-*`、`engine` 单独运行各要 40–55 秒，并行后整套约 1 分钟。
+- 音频测试较重：`audio-quality`、`music-review`、`music-continuity`、`style-mix-*`、`engine` 单独运行各要 40–55 秒，并行后整套约 1 分钟。
+- 网页套件里新作品的旋律种子每次运行都不同。依赖具体曲子的断言（比如和弦条上哪些名字印得出来）要按布局算法自己的余量来写，并且不要依赖播放头的位置——这一轮修掉过一次这样的偶发失败（`web-smoke.cjs` 的 `chordFacts`）。
+- 界面上的每个询问出现后 500 ms 内不接受点击和回车：Playwright 的 `click()` 会自己等遮挡消失，程序化的 `.click()` 和 Esc 不受影响。
+- 内核测试的替身桥默认**没有** `discardPendingResult`（代表一个缺这个调用的桥，页面要能应付）；需要它的测试自己装上。
 - 便携版只能靠手工打开的两个调试端口来驱动；`tests/helpers/electron-harness.cjs` 会先等主模块就绪再注入钩子。
 
 ## S10｜环境、命令、打包、发布、网页版
@@ -657,16 +685,16 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 - `Muse-BGM-Portable-<版本>-x64.exe`——单文件，每次启动先自解压到临时目录。
 - 两者都没有代码签名，首次运行会有 SmartScreen 提示。
 
-当前的发行物（2026-10-09 09:42 从当前代码打出，`npm run dist` 退出码 0，102 秒）：
+当前的发行物（2026-10-09 14:17 从当前工作区的代码打出，`npm run dist` 退出码 0，129 秒）：
 
 | 文件 | 字节 | SHA-256 |
 | --- | --- | --- |
-| `release/Muse-BGM-Setup-0.3.0-x64.exe` | 81,941,632 | `cdd4d116f19031f26cb9b98546e72bf38d42852294804a73c5dd9c66c22a691b` |
-| `release/Muse-BGM-Portable-0.3.0-x64.exe` | 81,776,241 | `6d350c8d52ba79f49f9b12c16b9b1eea52c9666037359cadea723065a6e848f5` |
+| `release/Muse-BGM-Setup-0.3.0-x64.exe` | 81,973,608 | `efcb42d6adeab27fc3166e2c3262b30c3b99db170069c4e728ef9a47cea78597` |
+| `release/Muse-BGM-Portable-0.3.0-x64.exe` | 81,808,209 | `3bd2ac6593c1755391a64e314ea59b2502b1db99bc0992d623ddad0534c1962a` |
 
-`release/` 里还有 `win-unpacked/`（318,242,140 字节，安装包装到磁盘上的就是它）、`SHA256SUMS.txt`、`RELEASE-NOTES-0.3.0.md`、`builder-debug.yml`，以及**不要运行、也不要随 0.3.0 上传的** `Muse-BGM-0.1.0-Windows.exe` 和 `Muse-BGM-0.2.0-Windows.exe`（及各自的 `.sha256`）。
+`release/` 里还有 `win-unpacked/`（318,344,222 字节，安装包装到磁盘上的就是它）、`SHA256SUMS.txt`、`RELEASE-NOTES-0.3.0.md`、`builder-debug.yml`，以及**不要运行、也不要随 0.3.0 上传的** `Muse-BGM-0.1.0-Windows.exe` 和 `Muse-BGM-0.2.0-Windows.exe`（及各自的 `.sha256`）。
 
-**包里有什么**：`build.files` 只收 `dist/`、`electron/`、`package.json` 和生产依赖（Claude SDK 及其依赖），并排除依赖里从不运行的文件——源码映射、TypeScript 源码与声明、README、SDK `src/` 下的 `tsconfig.json` 和 `.keep`。`app.asar` 因此是 4,722,660 字节、1156 个条目（1051 个文件）；不过滤时是 13,320,817 字节、3005 个条目。SDK 的 `.js` / `.mjs` 全部保留；`src/internal/qs/LICENSE.md`（随包分发的 qs 代码的许可证）有意保留。
+**包里有什么**：`build.files` 只收 `dist/`、`electron/`、`package.json` 和生产依赖（Claude SDK 及其依赖），并排除依赖里从不运行的文件——源码映射、TypeScript 源码与声明、README、SDK `src/` 下的 `tsconfig.json` 和 `.keep`。`app.asar` 因此是 4,824,742 字节、1156 个条目（1051 个文件）；第一次打包时测过，不过滤的话是 1300 万字节上下、3005 个条目。SDK 的 `.js` / `.mjs` 全部保留；`src/internal/qs/LICENSE.md`（随包分发的 qs 代码的许可证）有意保留。
 
 **重新打包**：
 
@@ -674,7 +702,7 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 npm run test:all        # 可选但建议
 npm run dist            # 约 2 分钟
 # 两个 EXE 的哈希会变：手工重写 release/SHA256SUMS.txt、release/RELEASE-NOTES-<版本>.md
-# 末尾的代码块和它后面的注释、docs/QA.md 与本节的表格
+# 末尾的代码块、docs/QA.md 与本节的表格
 npm run test:packaged   # 校验值没改对会在第一步失败
 ```
 
@@ -682,9 +710,9 @@ npm run test:packaged   # 校验值没改对会在第一步失败
 
 **发布到 GitHub（给仓库主人的步骤；目前什么都没有发布）**：
 
-1. 仓库现在只有本地提交、没有远端。先决定工作区里没提交的改动怎么提交，然后在 GitHub 建仓库（门户那边的占位名是 `chenyihang98-pixel/yinxu`，可以改，改了要同步告诉门户的 `content/tools.json`）并推送。`release/`、`demos/`、`.scratch/` 都被忽略，不会进仓库。
+1. 仓库现在只有本地提交、没有远端。先把工作区里没提交的改动提交掉（`release/` 里的两个 EXE 就是从这份工作区打出来的，标签应当打在包含它们的那个提交上），然后在 GitHub 建仓库（门户那边的占位名是 `chenyihang98-pixel/yinxu`，可以改，改了要同步告诉门户的 `content/tools.json`）并推送。`release/`、`demos/`、`.scratch/` 都被忽略，不会进仓库。
 2. 打标签并创建**非草稿**的 release，标签等于版本号（`v0.3.0`，门户要求它与网页版的版本一致）。上传三个文件：两个 0.3.0 的 EXE 和 `SHA256SUMS.txt`。文件名必须保持 `Muse-BGM-Setup-0.3.0-x64.exe` / `Muse-BGM-Portable-0.3.0-x64.exe`——门户靠 `setup` / `portable` 识别安装版和便携版。
-3. release 的正文用 `release/RELEASE-NOTES-0.3.0.md` 的**全文**，包括末尾 `### SHA-256` 小节的代码块**和它后面那段 HTML 注释**。例如：
+3. release 的正文用 `release/RELEASE-NOTES-0.3.0.md` 的**全文**；它以 `### SHA-256` 小节的代码块结尾，里面是和 `SHA256SUMS.txt` 相同的两行「哈希、两个空格、文件名」。例如：
 
    ```powershell
    gh release create v0.3.0 `
@@ -692,28 +720,30 @@ npm run test:packaged   # 校验值没改对会在第一步失败
      --title "音序 Muse 0.3.0" --notes-file release/RELEASE-NOTES-0.3.0.md
    ```
 
-4. **为什么有那段注释**：门户的 `scripts/sync-releases.mjs` 用一条不分行的正则读正文，「哈希在前、文件名在后」的代码块会被它错配（安装版拿到便携版的哈希，便携版没有哈希）。注释里按「文件名在前、哈希在后」重复了两行，正则才配对正确。这是对着门户仓库的草稿副本验证的，不是线上仓库。更简单的替代：把可见的代码块直接改成「文件名  哈希」并删掉注释，或者把门户的正则改成按行匹配——需要主人决定。改校验值时两处一起改。
-5. 发布后按下面「门户」一节同步下载信息。
+4. 发布后按下面「门户」一节同步下载信息。
 
 **网页版**：`npm run build:web` → `dist-web/`（`index.html` + `assets/` 里带内容哈希的一个主包、一个 CSS、一个 Worker 包）。纯静态、相对路径，可以原样部署到任何静态目录；不发任何网络请求（`web-smoke` 的最后一步核对了只请求静态文件）。作品存在浏览器的 IndexedDB 里，与 Windows 版不共享。云端引擎和大模型在界面上显示为「桌面版可用」，链接到 `https://starwright.xyz/tools/yinxu/#download`（`src/platform.ts` 的 `DOWNLOAD_URL`，`target="_top"`）。
 
 **门户嵌入（starwright.xyz；还没有上线）**：
 
 - 目标：工具页 `https://starwright.xyz/tools/yinxu/`，其中的 iframe 加载 `https://starwright.xyz/play/yinxu/`。桌面上框宽最多 1098 px、高 560–860 px，手机上是 390 / 320 px 通栏。界面按 320 px 起不出现横向滚动来设计（≥ 1100 px 是侧栏加双列；以下是顶栏加单列；720 px 以下风格改为一行横向滚动、弹窗变成全屏；520 px 以下导航只剩图标）；第二轮的截图审计覆盖到 320 px，最后一轮的 `web-smoke` 核对的是 390×780 的触屏和 1000×760 的框架。
-- 门户是另一个私有仓库（`chenyihang98-pixel/ai-creation-platform`）。它的克隆在 `.scratch/site/ai-creation-platform`，分支 `add-yinxu`，**全部改动都没有提交、暂存或推送**；`.scratch/site-kit/site.patch` 可以在 `4aaa7cd` 上重现这些改动，`.scratch/site-kit/NOTES.md` 是完整的工作笔记（改了哪些文件、做过的决定、剩下的步骤、没验证的事项）。这些都在被忽略的草稿区里，需要的话先另存。
-- 剩下的步骤（详见 NOTES §3）：
-  1. `npm run build:web`，然后在门户仓库里 `npm run import:yinxu`（把 `dist-web/` 灌进 `public/play/yinxu/`，现在那里是空的——所以页面目前还不能部署）、`npm run build`、`npm run preview`，再跑 `verify-embed.cjs` 和 `verify-behaviour.cjs`。
-  2. 截四张 1280×800 的图（封面、创作、我的作品、设置）放进 `.scratch/site-kit/captures/`（这个文件夹还不存在，图也还没有截），`npm run import:assets -- yinxu`。
-  3. GitHub release 存在之后，在 `content/tools.json` 的 `yinxu` 项里补上 `github` 和 `releasesUrl`，换掉「Windows 版待发布」的标记，`npm run sync:releases`。
-  4. 填 `tests.unit` / `tests.workflow` 等待定的数字，核对页面上引用的按钮文字和「已验证」的每一句（NOTES §3.4）。
-- NOTES 是在 0.3 的网页版还不存在时写的：v0.3 的网页版在门户页面的真实框架里还**没有验证过**（`web-smoke` 用的是自己的替身父页面）；门户的发布同步脚本没有对着 GitHub 跑过；Cloudflare Pages 的构建没有跑过。
+- 门户是另一个私有仓库（`chenyihang98-pixel/ai-creation-platform`）。它的克隆在 `.scratch/site/ai-creation-platform`，分支 `add-yinxu`（基于 `4aaa7cd`），**全部改动都没有提交、暂存或推送**；`.scratch/site-kit/` 里有 `site.patch` 和 `site-untracked.tar.gz`（在 `4aaa7cd` 的全新克隆上重现这些改动）、交接笔记 `NOTES.md`、四张截图和验证脚本。这些都在被忽略的草稿区里，需要的话先另存。
+- 第四轮里门户那边做到了哪一步（来自那一轮的报告，这次没有重跑）：导入了当时的 v0.3.0 网页版，按最终的应用和 `docs/QA.md` 重写了页面，`verify-embed.cjs`（10 / 10）和 `verify-behaviour.cjs`（33 / 33）在导入的真实构建上通过；发布说明里校验值的读取改成了按行解析（所以发布说明不再需要任何额外的隐藏内容）；`downloads` 仍为空、页面标着「Windows 版待发布」。
+- **这一轮之后那份导入已经过时**：克隆里 `public/play/yinxu/assets/` 是上一轮的构建（`index-DGjv9PHy.js` 等），而现在的 `dist-web/` 是 `index-DcAQ4BEN.js`、`index-DrdnUZdD.css`、`worker-BrbxvWFD.js`；页面上的测试数字（967 = 748 + 219，云端 21 步）也是上一轮的，现在是 1048 = 796 + 252、云端 23 步（网页 27、界面 14、发行程序 23 不变）。
+- 剩下的步骤（详见 NOTES）：
+  1. 在门户仓库里重新 `npm run import:yinxu`（把现在的 `dist-web/` 灌进 `public/play/yinxu/`）、更新 `content/tools.json` 里 `yinxu` 的测试数字、`npm run build`、`npm run preview`，再跑 `verify-embed.cjs` 和 `verify-behaviour.cjs`。
+  2. GitHub release 存在之后，在 `content/tools.json` 的 `yinxu` 项里补上 `github` 和 `releasesUrl`，换掉「Windows 版待发布」的标记，`npm run sync:releases`（它没有对着真实的 release 跑过）。
+  3. 决定安装版是否仍然作为首选下载：它从未运行过，被测试的是便携版和 `win-unpacked`。
+  4. 提交、推送分支、合并；Cloudflare Pages 的真实构建和响应头没有验证过。
+- 已知的嵌入问题：作品生成完成时应用调用 `scrollIntoView`（`src/ui/studio/PlayerCard.tsx`、`StudioPage.tsx`、`shell/BottomBar.tsx`），在同源的 iframe 里它会把**门户页面**也一起滚动。门户的克隆里加了一个只对同源框架有效的补丁（`keepPageStill()`）；应用这边没有改（应当改成只滚动自己的滚动容器），见 S11。
+- 在门户页面上线之前，网页版里所有「桌面版可用 · 下载 Windows 版」的链接（`https://starwright.xyz/tools/yinxu/#download`）都是 404（FQ-12）：先上线页面，再发布网页版。
 
 ## S11｜已知限制、风险与下一步
 
 **第一组：只有仓库主人能做的验证（先做）**
 
-1. **听一遍 `demos/`**（22 段，`npm run demos` 可重新生成）。没有任何人听过引擎的输出。各份报告点名要先用耳朵核对的：鼓总线压缩和降低的限制器上限会不会「抽吸」；钢琴的击弦声；变暗后的古筝、竹笛、弦乐；鼓的截断；各声部的饱和量；马林巴、颤音琴、电钢琴做主奏时 1–4 kHz 偏弱（电平对了，但可能显得软）；混响和延迟的回送量（都是没听过就定下的常数）。
-2. **一次最便宜的真实云端生成**：建议腾讯云 TokenHub，选最短的时长；看鉴权、音质、实际时长、「我的作品」里的保存和导出，再到服务商控制台核对只有一次调用。四家的鉴权、配额、音质和账单都只在模拟服务上验证过；服务商错误响应的形状来自文档而不是真实账号。
+1. **听一遍 `demos/`**（22 段，`npm run demos` 可重新生成）。没有任何人听过引擎的输出。各份报告点名要先用耳朵核对的：鼓总线压缩和降低的限制器上限会不会「抽吸」；钢琴的击弦声；变暗后的古筝、竹笛、弦乐；鼓的截断；各声部的饱和量；马林巴、颤音琴、电钢琴做主奏时 1–4 kHz 偏弱（电平对了，但可能显得软）；混响和延迟的回送量（都是没听过就定下的常数）；**摇滚能量的主奏比第二轮评审定下的平衡靠前**（见第 17 条）；换到远调之后个别折回八度的音（第 16 条）。
+2. **一次最便宜的真实云端生成**：建议腾讯云 TokenHub，选最短的时长；看鉴权、音质、实际时长、「我的作品」里的保存和导出，再到服务商控制台核对只有一次调用。四家的鉴权、配额、音质和账单都只在模拟服务上验证过；服务商错误响应的形状来自文档而不是真实账号。有火山或阿里的账号时，顺便看一次「重新下载」（火山的续查从没遇到过真实的 `QuerySong`）。
 3. **一次真实的托管大模型规划**（Claude 或任一 OpenAI 兼容服务）：结构化输出的 Schema 只在 Ollama 的 `json_schema` 路径上真实跑过；Claude 的 beta 回落、各预设的地址和密钥页链接都没有对着真实服务验证。
 4. **运行一次安装包**：安装、快捷方式「音序 Muse」、卸载后数据保留、安装路径都没有测过。
 
@@ -721,34 +751,47 @@ npm run test:packaged   # 校验值没改对会在第一步失败
 
 5. **旧程序会损坏 0.3 的作品库**（LEFT-01）：0.2 的 EXE 保存任何东西都会把记录改写成它自己的格式（引擎 1，丢掉编排、版本关系和对话），遇到新风格时它的整个列表打不开。目前只靠文档和启动脚本避免。更彻底的办法是把数据库升到版本 2，让旧程序打不开（要同时改 `tests/storage-idb.test.ts`），并把旧 EXE 移出 `release/`。
 6. **`MUSE_NETWORK=node` 下没有计费连接隔离**：Node 的 `fetch` 不走专用会话，也没有在复用连接上验证过它不重发。只用于排障和测试。
-7. **「重新下载」只在本次运行内有效**：结果地址只在主进程内存里，下一次云端请求开始或重启后就没有了（关闭前会询问）。它只挂在那条常驻提示上，关掉提示就等于放弃。还有一个界面上到不了的边角：新的云端请求在主进程拿到锁之前被拒绝时，渲染层已经撤回了提示，而主进程其实还留着结果。
-8. **阿里云的下载域名规则依据的是文档**：如果 Fun-Music 返回了非 OSS 的地址，付费生成之后下载会被拒绝（消息里带请求编号）。火山 `Text` 的长度上限也没有核实过。
-9. **软删除的窗口**：进程在 8 秒撤销窗口内被强杀时，被删的作品可能回来（localStorage 是懒写盘的）。
-10. **云端作品的音频和元数据在同一条记录里**（数据库没升版本的代价）：改名、收藏会重写整条记录，包括音频。
-11. **凭据文件整个读不了时**没有自动重置：保存和删除都被拒绝，要用户自己处理那个文件。
-12. **两个 EXE 都没有签名**；只在一台直连网络的 Windows 11 电脑上测试过，真实的系统代理和 Windows 10 没有验证。
+7. **没取回的付费结果只在主进程的内存里，而且只有一个位置**：退出应用后就没有了（关闭前一定会询问）。用户确认「放弃它，继续发送」之后旧结果就放弃了，即使新的请求随后失败。火山的续查沿用提交时的凭据：这期间轮换过 AK / SK 的话续查会失败，只能放弃。这一整套只对着模拟的服务跑过。
+8. **需要仓库主人确认的一个决定**：火山的任务在**用户自己取消等待**之后也被保留（查询被拒绝、状态未知时同样保留），比最初要求的「连续查询失败」和「超时」两种情况宽。好处是已经提交、可能已经计费的任务不会丢；代价是「取消 → 马上再生成」要先确认放弃上一次的任务。想改回去，只需动 `electron/music-service.cjs` 里 `generate()` 的 catch 块中的一个条件。
+9. **时长的问题还有一条路径排在付费确认之后**（FQ-04）：大模型定出了离线规则没有预料到的、服务不接受的时长时，时长的询问出现在付费确认之后（仍然在任何请求发出之前）。要把它也提前，就得在问付费之前先让大模型规划——本机模型那一两分钟的等待会排到付费问题前面。
+10. **阿里云的下载域名规则依据的是文档**：如果 Fun-Music 返回了非 OSS 的地址，付费生成之后下载会被拒绝（消息里带请求编号）。火山 `Text` 的长度上限也没有核实过。
+11. **软删除的窗口**：进程在 8 秒撤销窗口内被强杀时，被删的作品可能回来（localStorage 是懒写盘的）。
+12. **云端作品的音频和元数据在同一条记录里**（数据库没升版本的代价）：改名、收藏会重写整条记录，包括音频。
+13. **凭据文件**：损坏的文件现在会在第一次保存或删除时被另存、凭据从空白重新开始（S08）；从磁盘上读不出来的文件和更高格式版本的文件仍然让保存和删除被拒绝，要用户自己处理。那条说明副本名字的原生提示只在测试里被记录过，没有真的显示过。
+14. **「没有发出请求」的自然触发条件没有复现**（ND-1）：套件是在真实的计费会话上人为让关闭连接这一步不回答；网络服务真的丢掉回答的情形没有造出来。
+15. **两个 EXE 都没有签名**；只在一台直连网络的 Windows 11 电脑上测试过，真实的系统代理和 Windows 10 没有验证。
 
 **第三组：产品边界**
 
-13. **本地作曲**：没有人声；只有 4/4；不能只改某一段；副旋律是导音线而不是第二条曲调；循环片段对齐到整小节会移动一些默认值（30 秒的循环实际在 28.6–32.7 秒之间）；rubato 风格（伤感抒情、国风古韵、浪漫温馨）里事件相对和弦条最多偏约 0.1 秒；干的风格的完整结尾末尾有一两秒数字静音。
-14. **混音指标没有全部达到评审的目标**：峰值因数整体在 11.7–17.1 dB，舞曲和摇滚没有压到评审想要的 8–11 dB（再压限制器就会明显工作）；个别极端设置（如可爱俏皮 50 BPM 循环）在第二轮测得离目标 0.25 LU。这些都在质量门槛之内。
-15. **制作人**：给没有贝斯或和声的编排说加上贝斯或和声，仍然得到「这样改完，听起来会和现在这一版完全一样，所以没有生成新版本。」（只有鼓会真的加）；没有鼓的编排仍然被推荐「加点沙锤」而不是「加上鼓」；光说「降到 90」会反问指的是哪个参数；主进程给大模型的系统提示词里还是弯引号（它的回复入库前会被统一）。
-16. **本机小模型**：9B 模型即使方案合法，判断也偏弱——每次都写段落计划且小节数约等于秒数、在新作品里乱动推子、修改时让情绪能量漂移；这些都在渲染层被中和了，结果是它的段落计划几乎从不生效。冷启动要一两分钟，更慢的机器或更大的模型可能超过 240 秒。
-17. **云端**：每次都是整首重新生成，没有分轨，不保留旋律；时长和循环只是提示词里的目标（火山除外，它有时长参数）；WAV 导出是解码后重采样的。
-18. **性能与内存**：120 秒的重风格在 Electron 里可能超过 8 秒；一次 120 秒的渲染峰值约 300 MB，新旧结果同时存在时更高；每次打开本地作品都要重新渲染（没有分轨缓存）；主包约 933 kB，引擎代码在主包和 Worker 包里各有一份。
-19. **界面**：只在 Chromium 里渲染过；没有跑过屏幕阅读器；`field-sizing` 等较新的 CSS 在其他浏览器上会退化；强制颜色和减少动态效果的规则写了但没有在那些设置下渲染过。
-20. **没应用的「声音微调」修改不跨重启保存**（当前作品和输入框文字会）；引擎选择器的手动选择也不跨重启。
-21. **播放**：从头播放的 2 ms 斜坡是有意保留的；引擎 1 作品的试听没有复现 0.2 在峰值超过 0.96 时的整体缩放，推子推得很高时可能在输出端削波（导出不受影响）。
+16. **本地作曲**：没有人声；只有 4/4；不能只改某一段；副旋律是导音线而不是第二条曲调；循环片段对齐到整小节会移动一些默认值（22 个默认预设的 30 秒循环实际在 28.2–32.7 秒之间，S06）；rubato 风格（伤感抒情、国风古韵、浪漫温馨）里事件相对和弦条最多偏约 0.1 秒；干的风格的完整结尾末尾有一两秒数字静音。以下几条来自这一轮作曲器修复时的测量，集成时没有重测：换调后折回八度的音在各风格里占 0–0.7 %（7 个风格完全没有；最多的是嘻哈律动的降 E 小调 4.2 %、摇滚能量的 F 小调 4 %，单首最多 12 %），每个都是正确的音级、差一个八度；提示了另一个调式的和弦进行时仍有少量三全音和保持着的避开音；64 BPM 的爵士里个别摇摆的经过音会压在和弦上；悬疑紧张保留八分音符长的小三度经过音；很慢的速度下短尾声可能从比副歌末音低一个八度以上的地方开始。
+17. **混音指标没有全部达到评审的目标**：峰值因数整体在 11.7–17.1 dB，舞曲和摇滚没有压到评审想要的 8–11 dB（再压限制器就会明显工作）；个别极端设置（如可爱俏皮 50 BPM 循环）在第二轮测得离目标 0.25 LU。**摇滚能量的平衡在这一轮移动了**：作曲器的修复改了它的旋律，主奏增益已经从 0.64 降到 0.60（按修复时五个种子的平均，各分轨回到评审时的 0.1 LU 以内），但单看种子 1234、30 秒的循环仍是旋律 −20.2、和声 −24.1、贝斯 −24.0、鼓 −21.0 LUFS（评审时定的是 −21.0 / −23.5 / −23.3 / −20.6），也就是主奏靠前约 0.8 LU、其余三条低 0.4–0.7 LU；再往下拉会让鼓盖过旋律、别的种子偏到另一边。作曲器修复时还测到另外四个风格在同一种子的完整结尾形式下各有一条分轨离评审表 0.73–0.82 LU（复古电子的旋律、国风古韵的和声与鼓、治愈木吉他的贝斯、氛围冥想的旋律），别的种子偏向相反，所以没有按这一个种子去调。这些都在质量门槛和混音测试的窗口之内，没有人听过。
+18. **制作人**：
+    - 大模型改了一个用户没有提到的参数、而且超过了漂移门槛时，应用仍然照做（例如说「慢一点」，模型顺手换了调和主奏）；回复和标签会如实写出这些改动（NEW-11）。
+    - 针对某一处的音量或加声部的要求按整首处理并注明（「第二段鼓太吵」「30 秒之后加鼓」→「…已按整首处理」）；只在某一段关掉声部的要求会拒绝。前者是现有测试定下的约定，验收时更希望一律拒绝——是个产品决定。
+    - 复核语料里五条新作品的说法没有读对，记录在测试里但不断言：「两分钟，D 大调，钢琴，慢，循环」（得到 100 BPM）、「dark, slow, minimal piano, lots of reverb」和「极简的钢琴，只有几个音」（乐器前的形容词被当成在形容乐器）、「birthday party tune, bells, 20 seconds, fast」（party 压过了 birthday）、「instrumental hip hop, 90bpm, heavy bass」（heavy 不算音量词）。
+    - 错别字只认「节凑」和「bmp」；别的写错了就什么都不改并如实回答。
+    - 给没有贝斯的编排说「加上贝斯」，回答是「贝斯本来就是打开的」，贝斯并不会回来（只有鼓会真的加）；没有鼓的编排仍然被推荐「加点沙锤」而不是「加上鼓」；光说「降到 90」会反问指的是哪个参数。
+    - 「旋律稀疏一点」之后回复说「这是一段新的旋律」，其实多半还是同一条旋律变稀了（S06 的已知边界）。
+    - 标题里偶尔残留的修饰词（AGENT-13）和云端提示词里过时的速度形容词（AGENT-07）没有动；主进程给大模型的系统提示词里还是弯引号（界面上显示的文字入库前会被统一）。
+19. **本机小模型**：9B 模型即使方案合法，判断也偏弱——常写出放不进时长的段落计划、在新作品里乱动推子、修改时让情绪能量漂移；这些都在渲染层被中和了，结果是它的段落计划几乎从不生效。最后一轮新作品的第一条消息用了 129 秒、修改用了 57 秒；更慢的机器或更大的模型可能超过 240 秒。
+20. **云端**：每次都是整首重新生成，没有分轨，不保留旋律；时长和循环只是提示词里的目标（火山除外，它有时长参数）；WAV 导出是解码后重采样的。
+21. **性能与内存**：120 秒的重风格在 Electron 里可能超过 8 秒；一次 120 秒的渲染工作内存峰值 300–400 MB（默认的氛围冥想循环实测 399 MB），加上页面里新旧两份各 176 MB 的分轨，手机浏览器很可能撑不住（S06；没有在真实手机上测过）；每次打开本地作品都要重新渲染（没有分轨缓存）；主包约 1005 kB，引擎代码在主包和 Worker 包里各有一份。
+22. **界面**：只在 Chromium 里渲染过；没有跑过屏幕阅读器；`field-sizing` 等较新的 CSS 在其他浏览器上会退化；强制颜色和减少动态效果的规则写了但没有在那些设置下渲染过。提示（toast）在它存在的 4 秒里仍可能压在走带或手机宽度的底栏上（FQ-16 只修了导出提示的叠加和提示框的遮挡）。和弦条上，正在播放的和弦的高亮盖住了相邻的名字时，再后面那个和弦即使放得下也不会补印名字。
+23. **嵌入时会滚动宿主页面**：作品生成完成时的 `scrollIntoView` 在同源 iframe 里会把外层页面一起滚动（S10「门户嵌入」）。应用里没有改，门户那边有一个补丁。
+24. **引擎选择器的手动选择不跨重启**（没应用的「声音微调」修改、当前作品和输入框文字都会）。
+25. **播放**：从头播放的 2 ms 斜坡是有意保留的；引擎 1 作品的试听没有复现 0.2 在峰值超过 0.96 时的整体缩放，推子推得很高时可能在输出端削波（导出不受影响）。
 
 **第四组：工程杂项**
 
-22. `key-store.cjs` 里的 `saveKey` / `deleteKey` / `getKey` / `hasKey` / `getStatuses` / `getLlmStatus` 现在只有测试在用；`src/audio/fx.ts` 等处还有没人导入的导出类型；`clamp` 等小函数有多份相同的副本。
-23. 打包还能再瘦：`json-schema-to-ts`、`@babel/runtime`、`ts-algebra`（437 个文件，约 274 KB，SDK 只为类型用它们）、SDK 的 `.mjs` 那一半（284 个文件，1.2 MB，应用加载的是 CommonJS）和 `bin/` 都随包但从不加载；去掉它们要动声明的依赖，所以没动。
-24. 校验值文件、发布说明和文档里的哈希表都是手写的，重新打包后要一起改。
-25. 便携版的冒烟依赖两个调试端口和 NSIS 包装器透传命令行开关，也依赖 Electron 默认认 `--inspect` 的 fuse；失败时可能在临时目录留下配置文件夹。
-26. `test-results/` 里混有 0.2 时期的截图和结果；系统临时目录里有几个早先留下的 `muse-*` 文件夹。
-27. Prettier 不排版词典和风格定义；`npm test` 依赖一个绕开 V8 问题的开关（S09）。
-28. 实现简报和界面规格只存在于被忽略的 `.scratch/`（`BRIEF.md`、`UI-SPEC.md`）；它们的要点已经写进本文，原文不保证留存。
+26. `key-store.cjs` 里的 `saveKey` / `deleteKey` / `getKey` / `hasKey` / `getStatuses` / `getLlmStatus` 现在只有测试在用；`src/audio/fx.ts` 等处还有没人导入的导出类型；`clamp` 等小函数有多份相同的副本。
+27. 打包还能再瘦：`json-schema-to-ts`、`@babel/runtime`、`ts-algebra`（SDK 只为类型用它们）、SDK 的 `.mjs` 那一半（应用加载的是 CommonJS）和 `bin/` 都随包但从不加载；去掉它们要动声明的依赖，所以没动。
+28. 校验值文件、发布说明和文档里的哈希表都是手写的，重新打包后要一起改（`npm run test:packaged` 会在前两者对不上时失败）。
+29. 便携版的冒烟依赖两个调试端口和 NSIS 包装器透传命令行开关，也依赖 Electron 默认认 `--inspect` 的 fuse；失败时可能在临时目录留下配置文件夹。
+30. `test-results/` 里混有 0.2 时期的截图和结果；系统临时目录里有几个早先留下的 `muse-*` 文件夹。
+31. Prettier 不排版词典和风格定义；`npm test` 依赖一个绕开 V8 问题的开关（S09）。
+32. 实现简报和界面规格只存在于被忽略的 `.scratch/`（`BRIEF.md`、`UI-SPEC.md`）；它们的要点已经写进本文，原文不保证留存。各轮评审、验收和修复的报告也只在那里。
+33. 大模型回答里找方案的提取器是有上限的（按解析过的字符数设预算）：方案后面再跟着几千个像 JSON 的小括号组时会找不到，于是按「没有按约定返回方案」回退到离线规则。
+34. 渲染层保留了「桥上没有 `discardPendingResult`」时的退路（改用 `discardPending` 标志随请求告诉主进程），真实的主进程永远有这个方法；内核测试的替身桥默认走的就是这条退路。
 
 ## S12｜维护本文
 

@@ -364,7 +364,11 @@ test("preview line: confident, unsure, pinned, empty", () => {
   );
   const pinned = planPreview("asdf", { mood: "jazz", duration: 60 });
   assert.ok(pinned && !pinned.unsure);
-  assert.match(pinned.line, /^将创作：爵士小馆 · .* · 60 秒 · 循环片段$/);
+  // the pinned style and length (a loop may be fitted to whole bars: then both are named)
+  assert.match(
+    pinned.line,
+    /^将创作：爵士小馆 · .* · (?:60 秒|[\d.]+ 秒（设定 60 秒）) · 循环片段$/,
+  );
   assert.equal(
     isUnsure({
       brain: "llm",
@@ -603,11 +607,28 @@ test("a Latin service name is set off from the Chinese around it, a Chinese one 
     phaseText("cloud", { ...job, provider: "elevenlabs" }),
     "ElevenLabs Music 正在创作，通常需要几十秒到几分钟",
   );
-  // waiting for a language model says that one on this computer can take a minute or two (its limit is 240 s)
+  // FQ-11: only a model on this computer can take a minute or two (its limit
+  // is 240 s); a hosted one is not announced as a local model
   assert.equal(
-    phaseText("planning", { ...job, provider: "local", brain: "llm" }),
+    phaseText("planning", {
+      ...job,
+      provider: "local",
+      brain: "llm",
+      llm: "ollama",
+    }),
     "制作人（大模型）正在理解你的想法，本机模型可能需要一两分钟",
   );
+  for (const llm of ["anthropic", "openai", undefined] as const)
+    assert.equal(
+      phaseText("planning", {
+        ...job,
+        provider: "local",
+        brain: "llm",
+        ...(llm ? { llm } : {}),
+      }),
+      "制作人（大模型）正在理解你的想法，通常几秒到一分钟",
+      `${llm}: no mention of a local model`,
+    );
   assert.equal(
     phaseText("planning", { ...job, provider: "local" }),
     "制作人正在理解你的想法",
@@ -890,19 +911,23 @@ test("session: small, tolerant of anything stored, never throws", () => {
     ),
     EMPTY_SESSION,
   );
+  const NOW = 1_800_000_000_000;
   const noted = {
     lastProjectId: "abc",
     composerText: "海边",
     brain: "llm" as const,
     pendingRemovals: [
-      { id: "gone-1", expiresAt: 1_800_000_000_000 },
+      { id: "gone-1", expiresAt: NOW + 8000 },
       { id: "gone-2", expiresAt: 0 },
     ],
-    pendingMixes: [
-      { id: "abc", volumes: { drums: 0.54 }, at: 1_800_000_000_000 },
+    pendingMixes: [{ id: "abc", volumes: { drums: 0.54 }, at: NOW }],
+    parked: [
+      { id: "abc", draft: { bpm: 96, loop: false }, text: "下次继续" },
+      { id: "def", text: "只写了一句" },
     ],
+    pendingOrder: null,
   };
-  assert.deepEqual(parseSession(serializeSession(noted)), noted);
+  assert.deepEqual(parseSession(serializeSession(noted, NOW), NOW), noted);
   assert.equal(
     parseSession(JSON.stringify({ composerText: "x".repeat(5000) }))
       .composerText.length,
@@ -929,22 +954,52 @@ test("session: small, tolerant of anything stored, never throws", () => {
       { id: "b", expiresAt: 0 },
     ],
   );
+  // ND-3: a note that does not say readably when it is due is ignored — it is
+  // never turned into "due now" (v0.3.0 deleted the work at the next start).
   assert.deepEqual(
     parseSession(
       JSON.stringify({
         pendingRemovals: [
           { id: "a", expiresAt: "soon" },
+          { id: "a2", expiresAt: "2099-01-01T00:00:00Z" },
+          { id: "a3", expiresAt: null },
+          { id: "a4", expiresAt: -1 },
+          { id: "a5" },
+          { id: "a6", expiresAt: 1e300 },
+          { id: "a7", expiresAt: NOW + 366 * 24 * 3600 * 1000 },
+          { id: "a8", expiresAt: Number.NaN },
           { id: 5 },
           { expiresAt: 3 },
           [],
           { id: "b", expiresAt: 12 },
+          { id: "c", expiresAt: NOW + 8000 },
         ],
       }),
+      NOW,
     ).pendingRemovals,
     [
-      { id: "a", expiresAt: 0 },
       { id: "b", expiresAt: 12 },
+      { id: "c", expiresAt: NOW + 8000 },
     ],
+  );
+  // Fader notes dated beyond what a Date can hold, or far in the future, are not ours.
+  assert.deepEqual(
+    parseSession(
+      JSON.stringify({
+        pendingMixes: [
+          { id: "m1", volumes: { drums: 0.5 }, at: 1e300 },
+          {
+            id: "m2",
+            volumes: { drums: 0.5 },
+            at: NOW + 366 * 24 * 3600 * 1000,
+          },
+          { id: "m3", volumes: { drums: 0.5 }, at: -5 },
+          { id: "m4", volumes: { drums: 0.5 }, at: NOW - 1000 },
+        ],
+      }),
+      NOW,
+    ).pendingMixes,
+    [{ id: "m4", volumes: { drums: 0.5 }, at: NOW - 1000 }],
   );
   // Fader notes: only real tracks and finite levels, clamped; a note without any is dropped.
   assert.deepEqual(
@@ -989,6 +1044,8 @@ test("session: small, tolerant of anything stored, never throws", () => {
     brain: "rules",
     pendingRemovals: [],
     pendingMixes: [],
+    parked: [],
+    pendingOrder: null,
   });
   assert.ok(map.has(SESSION_KEY));
   assert.equal(store.read().lastProjectId, "p");

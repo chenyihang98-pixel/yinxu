@@ -154,6 +154,27 @@ export function engineProblem(
   };
 }
 
+/** The lengths a service accepts in seconds, or null when it takes any. */
+export function durationRange(
+  provider: Provider,
+): readonly [number, number] | null {
+  if (provider === "local") return null;
+  return cloudProviderInfo(provider)?.duration ?? null;
+}
+
+/**
+ * The nearest length `provider` accepts when `seconds` is not one; null when
+ * the length is fine as it is.
+ */
+export function fittingDuration(
+  provider: Provider,
+  seconds: number,
+): number | null {
+  const range = durationRange(provider);
+  if (!range || (seconds >= range[0] && seconds <= range[1])) return null;
+  return seconds < range[0] ? range[0] : range[1];
+}
+
 /**
  * Limits a service enforces, checked against the configuration that will
  * actually be generated (after the producer has planned), before any paid
@@ -188,13 +209,16 @@ export const ENGINE_STARTING = "正在启动作曲引擎";
 
 export function phaseText(
   stage: JobStage,
-  job: Pick<Job, "kind" | "provider" | "brain">,
+  job: Pick<Job, "kind" | "provider" | "brain" | "llm">,
 ): string {
   switch (stage) {
     case "planning":
-      return job.brain === "llm"
+      if (job.brain !== "llm") return "制作人正在理解你的想法";
+      // How long to expect depends on where the model runs: only a model on
+      // this computer takes minutes (it may have to be loaded first).
+      return job.llm === "ollama"
         ? "制作人（大模型）正在理解你的想法，本机模型可能需要一两分钟"
-        : "制作人正在理解你的想法";
+        : "制作人（大模型）正在理解你的想法，通常几秒到一分钟";
     case "asking":
       return "等待你的选择";
     case "rendering":

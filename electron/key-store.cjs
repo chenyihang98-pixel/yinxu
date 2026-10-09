@@ -31,8 +31,23 @@ const {
  *   userData/music-credentials.v1-<hash>.bak
  * and the unreadable key is left out of the new file. ElevenLabs then shows as
  * not configured, and the copy is there for whoever can still open it.
+ *
+ * A file that is no store at all (zero bytes, cut off, not JSON, the wrong
+ * shape) can never be read again, so it must not block saving for ever either.
+ * The first save or removal copies it, byte for byte, to
+ *   userData/music-credentials.damaged-<UTC time>.bak
+ * (an existing copy is never overwritten), starts again from an empty store and
+ * reports the copy's name through `onQuarantine`, so the user is told that the
+ * keys saved earlier have to be entered again. Reading never changes anything.
+ * Two kinds of file are never replaced: one that cannot be read from disk, and
+ * one written by a later format version.
  */
 const MAX_FILE_CHARS = 1024 * 1024;
+const UNREADABLE = "无法读取服务凭据，请保留原数据目录并检查文件权限。";
+const DAMAGED =
+  "无法读取服务凭据：凭据文件已损坏。请在设置中重新填写并保存密钥。";
+const DAMAGED_BACKUP = /^music-credentials\.damaged-[0-9TZ-]+\.bak$/;
+const MAX_BACKUP_NAMES = 50;
 const STATUS_FIELDS = ["model", "workspaceId", "billingMode"];
 const SECRET_FIELDS = {
   elevenlabs: ["apiKey"],
@@ -50,32 +65,104 @@ const statusText = (value) =>
   typeof value === "string" &&
   /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(value);
 
-function createKeyStore(dataPath, safeStorage) {
+function createKeyStore(
+  dataPath,
+  safeStorage,
+  { now = () => new Date(), onQuarantine } = {},
+) {
   const target = path.join(dataPath, "music-credentials.json");
   let mutation = Promise.resolve();
 
-  async function read() {
+  /**
+   * What is on disk: {value} for a store this build understands (no file is an
+   * empty store), {damaged: true} for content that is no store of any version.
+   * Throws for a file that cannot be read, or that a later version wrote.
+   */
+  async function load() {
     let raw;
     try {
       raw = await fs.readFile(target, "utf8");
     } catch (e) {
-      if (e.code === "ENOENT") return { version: 2, providers: {} };
-      throw new MusicError(
-        "无法读取服务凭据，请保留原数据目录并检查文件权限。",
-      );
+      if (e.code === "ENOENT") return { value: { version: 2, providers: {} } };
+      throw new MusicError(UNREADABLE);
     }
+    let value;
     try {
       if (raw.length > MAX_FILE_CHARS) throw new Error();
-      const value = JSON.parse(raw);
-      if (!isRecord(value)) throw new Error();
+      value = JSON.parse(raw);
+    } catch {
+      return { damaged: true };
+    }
+    if (isRecord(value)) {
       if (value.version === 1 && encryptedString(value.encryptedApiKey))
-        return value;
-      if (value.version !== 2 || !isRecord(value.providers)) throw new Error();
-      return value;
+        return { value };
+      if (value.version === 2 && isRecord(value.providers)) return { value };
+      // Not damage: an older build must leave a newer one's data alone.
+      if (Number.isInteger(value.version) && value.version > 2)
+        throw new MusicError(UNREADABLE);
+    }
+    return { damaged: true };
+  }
+  async function read() {
+    const loaded = await load();
+    if (loaded.damaged) throw new MusicError(DAMAGED);
+    return loaded.value;
+  }
+  /**
+   * Copy the damaged file aside and return the copy's name. An identical copy
+   * from an earlier attempt is reused; no existing file is ever written to. If
+   * no copy can be made the caller must not write: it would destroy the only one.
+   */
+  async function quarantineDamaged() {
+    try {
+      const bytes = await fs.readFile(target);
+      for (const name of await fs.readdir(dataPath)) {
+        if (!DAMAGED_BACKUP.test(name)) continue;
+        const earlier = await fs
+          .readFile(path.join(dataPath, name))
+          .catch(() => null);
+        if (earlier && earlier.equals(bytes)) return name;
+      }
+      const stamp = now()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace(/\.\d+Z$/, "Z");
+      for (let copy = 1; copy <= MAX_BACKUP_NAMES; copy++) {
+        const name = `music-credentials.damaged-${stamp}${copy > 1 ? `-${copy}` : ""}.bak`;
+        try {
+          // "wx": fails rather than writes when the name is taken.
+          await fs.writeFile(path.join(dataPath, name), bytes, {
+            flag: "wx",
+            mode: 0o600,
+          });
+          return name;
+        } catch (e) {
+          if (e.code !== "EEXIST") throw e;
+        }
+      }
+      throw new Error("no free backup name");
     } catch {
       throw new MusicError(
-        "无法读取服务凭据，请保留原数据目录并检查文件权限。",
+        "凭据文件已损坏，而且无法在数据目录中为它留下备份，所以这次没有保存。请检查数据目录是否可写后重试。",
       );
+    }
+  }
+  /** The store a save or removal starts from; `quarantined` names the copy when a damaged file was set aside. */
+  async function writable() {
+    const loaded = await load();
+    if (!loaded.damaged) return { value: loaded.value, quarantined: null };
+    return {
+      value: { version: 2, providers: {} },
+      quarantined: await quarantineDamaged(),
+    };
+  }
+  /** Once the new file is in place. Telling the user must never fail what they asked for. */
+  function announce(backupName) {
+    if (!backupName || typeof onQuarantine !== "function") return;
+    try {
+      onQuarantine({ backupName });
+    } catch {
+      /* the save itself went through */
     }
   }
   function assertEncryption() {
@@ -280,9 +367,11 @@ function createKeyStore(dataPath, safeStorage) {
       return serialize(async () => {
         const credentials = normalizeCredentials(provider, input);
         assertEncryption();
-        const value = await v2(await read());
+        const { value: stored, quarantined } = await writable();
+        const value = await v2(stored);
         value.providers[provider] = { encryptedCredentials: seal(credentials) };
         await write(value);
+        announce(quarantined);
       });
     },
     saveKey(key) {
@@ -291,7 +380,13 @@ function createKeyStore(dataPath, safeStorage) {
     deleteCredentials(provider) {
       return serialize(async () => {
         validateProvider(provider);
-        const stored = await read();
+        const { value: stored, quarantined } = await writable();
+        if (quarantined) {
+          // Nothing of the damaged file could be read, so nothing is left to remove: start clean.
+          await write(stored);
+          announce(quarantined);
+          return;
+        }
         if (stored.version === 1 && provider !== "elevenlabs") return;
         if (stored.version === 1) {
           const {
@@ -345,14 +440,21 @@ function createKeyStore(dataPath, safeStorage) {
       return serialize(async () => {
         const settings = normalizeLlmSettings(input);
         assertEncryption();
-        const value = await v2(await read());
+        const { value: stored, quarantined } = await writable();
+        const value = await v2(stored);
         value.llm = { encryptedSettings: seal(settings) };
         await write(value);
+        announce(quarantined);
       });
     },
     deleteLlmSettings() {
       return serialize(async () => {
-        const stored = await read();
+        const { value: stored, quarantined } = await writable();
+        if (quarantined) {
+          await write(stored);
+          announce(quarantined);
+          return;
+        }
         if (stored.llm === undefined) return;
         delete stored.llm;
         await write(stored);

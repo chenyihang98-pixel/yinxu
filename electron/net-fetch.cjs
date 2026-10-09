@@ -22,6 +22,24 @@ const { Readable } = require("node:stream");
 
 /** In-memory session partition that carries nothing but billable submissions. */
 const BILLING_PARTITION = "muse-billing";
+/** How long closing the pooled connections may take before a submission is called off unsent. */
+const CLOSE_TIMEOUT_MS = 5000;
+
+/**
+ * Rejections of the billing path that happened before the request was handed to
+ * the network: the service received nothing, so nothing can have been billed.
+ * Kept beside the errors instead of on them, so an abort stays the caller's own
+ * AbortError and a failure keeps its class and message.
+ */
+const unsent = new WeakSet();
+function markNotSent(error) {
+  if (error && typeof error === "object") unsent.add(error);
+  return error;
+}
+/** True when `error` came from the billing path and the request never left this computer. */
+function wasNotSent(error) {
+  return Boolean(error) && typeof error === "object" && unsent.has(error);
+}
 
 const DROPPED_HEADERS = new Set([
   "host",
@@ -283,6 +301,36 @@ function createNetFetch(net) {
   };
 }
 
+/** The promise's outcome, or a rejection as soon as `signal` aborts or `milliseconds` have passed. */
+function settledWithin(promise, milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const finish = (settle, value) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      settle(value);
+    };
+    const onAbort = () => finish(reject, signal.reason);
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    timer = setTimeout(
+      () =>
+        finish(
+          reject,
+          new Error("The connections could not be closed in time"),
+        ),
+      milliseconds,
+    );
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
+}
+
 /**
  * fetch() for a request that costs money every time the server receives it
  * (the generation POST of each music service).
@@ -303,14 +351,32 @@ function createNetFetch(net) {
  * retried over TCP even on a new connection).
  *
  * Only POST with redirect "error" is accepted: a billable request is never
- * re-issued for a redirect either. If the connections cannot be closed, nothing
- * is sent.
+ * re-issued for a redirect either. If the connections cannot be closed - the
+ * call fails, or has not answered after `closeTimeoutMs` (a promise that never
+ * settled was the one stage neither cancel nor the job's time limit could end) -
+ * nothing is sent. Every rejection from before the request went out satisfies
+ * wasNotSent(), so the caller can say that nothing was billed.
+ *
+ * A close that was given up on needs no care afterwards: the next submission
+ * issues its own closeAllConnections() and waits for it, and one session answers
+ * these calls in order, so the earlier one has either landed by then or never
+ * will (its network service is gone).
  */
-function createBillingFetch(getSession) {
+function createBillingFetch(
+  getSession,
+  { closeTimeoutMs = CLOSE_TIMEOUT_MS } = {},
+) {
   if (typeof getSession !== "function")
     throw new TypeError("A session provider is required");
+  // setTimeout would turn anything else into "at once" (or never fire).
+  if (
+    !Number.isFinite(closeTimeoutMs) ||
+    closeTimeoutMs <= 0 ||
+    closeTimeoutMs > 2 ** 31 - 1
+  )
+    throw new TypeError("closeTimeoutMs must be a positive number");
   let last = Promise.resolve();
-  return async function billingFetch(input, init = {}) {
+  async function submit(input, init, onSend) {
     const url = requestUrl(input);
     const method = String(init.method || "GET").toUpperCase();
     if (method !== "POST")
@@ -362,8 +428,13 @@ function createBillingFetch(getSession) {
         typeof session.closeAllConnections !== "function"
       )
         throw new TypeError("The billing session is not available");
-      await session.closeAllConnections();
+      await settledWithin(
+        session.closeAllConnections(),
+        closeTimeoutMs,
+        controller.signal,
+      );
       if (controller.signal.aborted) throw controller.signal.reason;
+      onSend();
       response = await session.fetch(url.href, {
         method,
         headers,
@@ -381,7 +452,23 @@ function createBillingFetch(getSession) {
       throw error;
     }
     return guardResponse(response, () => controller.abort(), finish);
+  }
+  return async function billingFetch(input, init = {}) {
+    let sent = false;
+    try {
+      return await submit(input, init, () => {
+        sent = true;
+      });
+    } catch (error) {
+      throw sent ? error : markNotSent(error);
+    }
   };
 }
 
-module.exports = { createNetFetch, createBillingFetch, BILLING_PARTITION };
+module.exports = {
+  createNetFetch,
+  createBillingFetch,
+  wasNotSent,
+  BILLING_PARTITION,
+  CLOSE_TIMEOUT_MS,
+};

@@ -47,6 +47,23 @@ export const MODEL_NAME_SHAPES: Readonly<Record<string, string>> = {
   ollama: "qwen2.5:7b",
 };
 
+/**
+ * What an API key of a service starts with, where the service says so. A key
+ * that looks different is not refused — vendors change their formats — but
+ * the form says that it does not look like one.
+ */
+const KEY_PREFIXES: Readonly<Record<string, string>> = {
+  anthropic: "sk-ant-",
+};
+
+/** A line for under the key field when the typed key does not look right; "" otherwise. */
+export function keyShapeWarning(presetId: string, apiKey: string): string {
+  const prefix = KEY_PREFIXES[presetId];
+  const key = apiKey.trim();
+  if (!prefix || !key || key.startsWith(prefix)) return "";
+  return `这个密钥不是以 ${prefix} 开头，看起来不像这家服务商的 API Key。仍然可以保存；如果随后连接失败，请先检查它。`;
+}
+
 /** Where the model name comes from, per kind of service. */
 export function modelNameHint(preset: { id: string; kind: string }): string {
   if (preset.id === "doubao")

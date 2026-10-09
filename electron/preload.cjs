@@ -31,8 +31,11 @@ contextBridge.exposeInMainWorld(
       invoke("muse:delete-provider", provider),
     generateMusic: (input) => invoke("muse:generate-music", input),
     cancelGeneration: () => invoke("muse:cancel-generation"),
-    // Downloads the last finished result of that service again (nothing is submitted, nothing billed).
+    // Collects the paid result of that service the main process still holds (nothing is submitted, nothing billed).
     retryLastDownload: (provider) => invoke("muse:retry-download", provider),
+    // Gives that result up for good; resolves to whether there was one.
+    discardPendingResult: (provider) =>
+      invoke("muse:discard-pending", provider),
     // true while the page holds a paid result that is not stored yet: closing the window then asks first.
     setUnsavedWork: (value) => invoke("muse:set-unsaved-work", value === true),
     saveAudio: (input) => invoke("muse:save-audio", input),

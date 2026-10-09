@@ -164,6 +164,94 @@ function describeArrangement(
   return out;
 }
 
+/** What a change line is about, so two lists of changes can be compared by subject. */
+export type ChangeField =
+  | "mood"
+  | "bpm"
+  | "key"
+  | "instrument"
+  | "duration"
+  | "energy"
+  | "complexity"
+  | "reverb"
+  | "loop"
+  | `vol:${TrackName}`
+  | "arrangement"
+  | "seed"
+  | "engine";
+export interface ChangeLine {
+  field: ChangeField;
+  text: string;
+}
+
+/** The parameters as the inspector and the mixer name them. */
+export const FIELD_LABELS: Record<ChangeField, string> = {
+  mood: "风格",
+  bpm: "速度",
+  key: "调性",
+  instrument: "主奏乐器",
+  duration: "时长",
+  energy: AMOUNT_LABELS.energy,
+  complexity: AMOUNT_LABELS.complexity,
+  reverb: AMOUNT_LABELS.reverb,
+  loop: "结构",
+  "vol:melody": `${TRACK_LABELS.melody}音量`,
+  "vol:chords": `${TRACK_LABELS.chords}音量`,
+  "vol:bass": `${TRACK_LABELS.bass}音量`,
+  "vol:drums": `${TRACK_LABELS.drums}音量`,
+  arrangement: "编曲",
+  seed: "旋律",
+  engine: "引擎",
+};
+
+/**
+ * Every audible difference between two configurations, one line each, in the
+ * order a listener would notice them, with the parameter it belongs to.
+ */
+export function changeLines(
+  before: MusicConfig,
+  after: MusicConfig,
+): ChangeLine[] {
+  const out: ChangeLine[] = [];
+  const push = (field: ChangeField, text: string) => out.push({ field, text });
+  if (before.mood !== after.mood)
+    push("mood", `风格改为「${styleLabel(after.mood)}」`);
+  if (before.bpm !== after.bpm)
+    push("bpm", `速度 ${before.bpm} → ${after.bpm} BPM`);
+  if (before.key !== after.key)
+    push("key", `调性 ${keyLabel(before.key)} → ${keyLabel(after.key)}`);
+  if (before.instrument !== after.instrument)
+    push("instrument", `主奏乐器换成${instrumentLabel(after.instrument)}`);
+  if (before.duration !== after.duration)
+    push("duration", `时长 ${before.duration} → ${after.duration} 秒`);
+  for (const field of ["energy", "complexity", "reverb"] as const)
+    if (Math.abs(before[field] - after[field]) > 1e-6)
+      push(
+        field,
+        `${AMOUNT_LABELS[field]} ${percent(before[field])} → ${percent(after[field])}`,
+      );
+  if (before.loop !== after.loop)
+    push("loop", after.loop ? "结构改为循环片段" : "结构改为完整结尾");
+  for (const track of TRACK_ORDER) {
+    const from = before.volumes[track];
+    const to = after.volumes[track];
+    if (Math.abs(from - to) <= 1e-6) continue;
+    push(
+      `vol:${track}`,
+      to === 0
+        ? `关闭${TRACK_LABELS[track]}`
+        : from === 0
+          ? `恢复${TRACK_LABELS[track]}`
+          : `${TRACK_LABELS[track]}音量 ${percent(from)} → ${percent(to)}`,
+    );
+  }
+  for (const text of describeArrangement(before.arrangement, after.arrangement))
+    push("arrangement", text);
+  if (before.seed !== after.seed) push("seed", "换一组新的旋律");
+  if (before.engine !== after.engine) push("engine", "改用新版引擎");
+  return out;
+}
+
 /**
  * Short Chinese phrases for every audible difference between two
  * configurations, in the order a listener would notice them. Returns [] when
@@ -173,40 +261,98 @@ export function describeChanges(
   before: MusicConfig,
   after: MusicConfig,
 ): string[] {
-  const out: string[] = [];
-  if (before.mood !== after.mood)
-    out.push(`风格改为「${styleLabel(after.mood)}」`);
-  if (before.bpm !== after.bpm)
-    out.push(`速度 ${before.bpm} → ${after.bpm} BPM`);
-  if (before.key !== after.key)
-    out.push(`调性 ${keyLabel(before.key)} → ${keyLabel(after.key)}`);
-  if (before.instrument !== after.instrument)
-    out.push(`主奏乐器换成${instrumentLabel(after.instrument)}`);
-  if (before.duration !== after.duration)
-    out.push(`时长 ${before.duration} → ${after.duration} 秒`);
-  for (const field of ["energy", "complexity", "reverb"] as const)
-    if (Math.abs(before[field] - after[field]) > 1e-6)
-      out.push(
-        `${AMOUNT_LABELS[field]} ${percent(before[field])} → ${percent(after[field])}`,
-      );
-  if (before.loop !== after.loop)
-    out.push(after.loop ? "结构改为循环片段" : "结构改为完整结尾");
-  for (const track of TRACK_ORDER) {
-    const from = before.volumes[track];
-    const to = after.volumes[track];
-    if (Math.abs(from - to) <= 1e-6) continue;
-    out.push(
-      to === 0
-        ? `关闭${TRACK_LABELS[track]}`
-        : from === 0
-          ? `恢复${TRACK_LABELS[track]}`
-          : `${TRACK_LABELS[track]}音量 ${percent(from)} → ${percent(to)}`,
-    );
-  }
-  out.push(...describeArrangement(before.arrangement, after.arrangement));
-  if (before.seed !== after.seed) out.push("换一组新的旋律");
-  if (before.engine !== after.engine) out.push("改用新版引擎");
-  return out;
+  return changeLines(before, after).map((line) => line.text);
+}
+
+/** How many reasoning chips the thread keeps (src/state/session.ts). */
+export const CHIP_SLOTS = 8;
+
+/** How long one chip may be before the thread cuts it (src/state/session.ts). */
+export const CHIP_CHARS = 160;
+
+/**
+ * Put `lines` into at most `slots` chips: the last chip takes what is left
+ * over, and says how many more there are when even that does not fit.
+ */
+export function packChips(lines: string[], slots: number): string[] {
+  const room = Math.max(1, slots);
+  if (lines.length <= room) return lines;
+  const rest = lines.slice(room - 1);
+  let last = rest[0];
+  let taken = 1;
+  while (
+    taken < rest.length &&
+    [...`${last}，${rest[taken]}`].length <= CHIP_CHARS - 12
+  )
+    last += `，${rest[taken++]}`;
+  if (taken < rest.length) last += `，另有 ${rest.length - taken} 项`;
+  return [...lines.slice(0, room - 1), last];
+}
+
+export interface Telling {
+  /** every change, as describeChanges has it */
+  changes: string[];
+  /** which parameters changed */
+  fields: Set<ChangeField>;
+  /** "好的：…。" with every change in it and the sentence about the tune; "" when nothing changed */
+  reply: string;
+  /** the same changes as chips, what was asked for first */
+  chips: string[];
+}
+
+/**
+ * The reply and the chips of a refinement, written from the difference
+ * between two configurations and from nothing else — whoever planned it.
+ *
+ * When the style changed, `baseline` is the new style's own preset laid over
+ * the old piece: what differs from it is what was asked for on top of the
+ * restyle and is named first, in full; what merely came with the style
+ * (tempo, key, lead, the three sliders) is named in one clause, so a restyle
+ * can never crowd the user's own changes out of the reply.
+ */
+export function tellChanges(
+  before: MusicConfig,
+  after: MusicConfig,
+  options: {
+    baseline?: MusicConfig;
+    provider?: Provider;
+    heard?: MusicConfig;
+  } = {},
+): Telling {
+  const lines = changeLines(before, after);
+  const fields = new Set(lines.map((line) => line.field));
+  const changes = lines.map((line) => line.text);
+  if (!lines.length) return { changes, fields, reply: "", chips: [] };
+  const restyled = before.mood !== after.mood && !!options.baseline;
+  const own = restyled
+    ? new Set(
+        changeLines(options.baseline as MusicConfig, after).map(
+          (line) => line.field,
+        ),
+      )
+    : undefined;
+  const style = lines.filter((line) => line.field === "mood");
+  const asked = lines.filter(
+    (line) => line.field !== "mood" && (!own || own.has(line.field)),
+  );
+  const came = lines.filter(
+    (line) => line.field !== "mood" && !!own && !own.has(line.field),
+  );
+  const cameLabels = [...new Set(came.map((line) => FIELD_LABELS[line.field]))];
+  const tune = melodyNote(options.heard ?? before, after, options.provider);
+  const reply =
+    `好的：${[...style, ...asked].map((line) => line.text).join("，")}` +
+    (cameLabels.length ? `；${cameLabels.join("、")}随风格调整` : "") +
+    `。${tune}`;
+  const chips = [
+    ...style.map((line) =>
+      cameLabels.length
+        ? `${line.text}（${cameLabels.join("、")}随风格）`
+        : line.text,
+    ),
+    ...asked.map((line) => line.text),
+  ];
+  return { changes, fields, reply, chips: restyled ? chips : changes };
 }
 
 /**
@@ -257,22 +403,45 @@ export const CLOUD_MELODY_NOTE =
 
 /**
  * The sentence about the tune in the reply to a refinement: what the change
- * does to the melody, by the composer's own account (melodyContinuity). ""
- * when the change list already says that the melody is new.
+ * does to the melody, by the composer's own account (melodyContinuity):
+ * unchanged, the same motifs played anew, the same rhythm on rewritten
+ * pitches (another mode), or a new tune. Another take (a new seed) rewrites
+ * melody and chord progression while tempo, key and instruments stay.
  */
 export function melodyNote(
   before: MusicConfig,
   after: MusicConfig,
   provider: Provider = "local",
 ): string {
-  if (before.seed !== after.seed) return "";
   if (provider !== "local") return CLOUD_MELODY_NOTE;
-  const kind = melodyContinuity(before, after);
-  return kind === "identical"
-    ? "旋律保持不变。"
-    : kind === "adapted"
-      ? "旋律动机不变，会按新的设置重新演绎。"
-      : "这是一段新的旋律。";
+  if (before.seed !== after.seed) {
+    // another take rewrites the harmony as well: the chords are drawn from the seed too
+    const kept =
+      before.mood === after.mood &&
+      before.bpm === after.bpm &&
+      before.key === after.key &&
+      before.instrument === after.instrument;
+    return kept
+      ? "旋律与和弦走向都会重写，速度、调性和乐器保持不变。"
+      : "旋律与和弦走向都会重写。";
+  }
+  // a kind this build does not know yet says nothing rather than something untrue
+  const kind: string = melodyContinuity(before, after);
+  switch (kind) {
+    case "identical":
+      return "旋律保持不变。";
+    case "adapted":
+      return "旋律动机不变，会按新的设置重新演绎。";
+    case "rhythm":
+      // the same rhythm on other pitches: another mode, or another register or progression
+      return parseKey(before.key).minor !== parseKey(after.key).minor
+        ? "节奏型保持，音高会按新的调式重写。"
+        : "节奏型保持，音高会按新的设置重写。";
+    case "new":
+      return "这是一段新的旋律。";
+    default:
+      return "";
+  }
 }
 
 /* ---------- cloud prompt ---------- */

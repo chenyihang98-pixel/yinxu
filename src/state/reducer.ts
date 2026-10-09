@@ -47,11 +47,13 @@ import type {
   LoadedAudio,
   ModalId,
   Page,
+  PendingResult,
   Pins,
   SaveState,
   SettingsState,
   SettingsTab,
   StorageUsage,
+  StrayResult,
   StudioState,
   Toast,
   TurnNote,
@@ -131,6 +133,10 @@ export type AppAction =
       stored?: boolean;
     }
   | { type: "studio/exporting"; exporting: boolean }
+  /** a paid result is waiting to be fetched (or no longer is) */
+  | { type: "studio/pending"; pending: PendingResult | null }
+  /** the paid results that exist only in this window, besides the loaded work */
+  | { type: "studio/strays"; strays: StrayResult[] }
   | { type: "studio/peaks"; id: string; peaks: number[] }
   | { type: "mix/volume"; track: TrackName; value: number }
   | { type: "mix/mute"; track: TrackName; fallback: number }
@@ -230,6 +236,8 @@ export function initialState(options: {
       job: null,
       exporting: false,
       lastLoad: null,
+      pending: null,
+      strays: [],
     },
     library: {
       status: "loading",
@@ -246,6 +254,7 @@ export function initialState(options: {
       llm: { configured: false },
       dataPath: "",
       version: options.version,
+      pendingResult: null,
     },
   };
 }
@@ -434,6 +443,12 @@ function studioReducer(state: AppState, action: AppAction): AppState {
     }
     case "studio/exporting":
       return { ...state, studio: { ...studio, exporting: action.exporting } };
+    case "studio/pending":
+      return studio.pending === action.pending
+        ? state
+        : { ...state, studio: { ...studio, pending: action.pending } };
+    case "studio/strays":
+      return { ...state, studio: { ...studio, strays: action.strays } };
     case "studio/peaks":
       return studio.project?.id === action.id && studio.audio
         ? {
@@ -604,6 +619,18 @@ function libraryReducer(state: AppState, action: AppAction): AppState {
   }
 }
 
+/** The service the shell says it holds a result of; anything else is "none". */
+function heldProvider(value: unknown): CloudProvider | null {
+  const provider =
+    value && typeof value === "object"
+      ? (value as { provider?: unknown }).provider
+      : null;
+  return typeof provider === "string" &&
+    Object.hasOwn(EMPTY_PROVIDER_STATUSES, provider)
+    ? (provider as CloudProvider)
+    : null;
+}
+
 function settingsReducer(
   settings: SettingsState,
   action: AppAction,
@@ -625,6 +652,7 @@ function settingsReducer(
           typeof source.version === "string" && source.version
             ? source.version
             : settings.version,
+        pendingResult: heldProvider(source.pendingResult),
       };
     }
     case "settings/failed":

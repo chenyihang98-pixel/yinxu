@@ -369,7 +369,9 @@
 }
 
 .page-lede {
-  max-width: 640px;
+  /* room for the longest lede on one line; where it wraps, no last line of a character or two */
+  text-wrap: pretty;
+  max-width: 720px;
   margin-top: 6px;
   color: var(--muted);
   font-size: var(--t-14);
@@ -899,26 +901,56 @@
   font-size: var(--t-13);
 }
 
-/* ---------- unsaved result: on every page until it is saved or exported ---------- */
-.unsaved-banner {
+/* ---------- paid or unsaved results: on every page until they are dealt with ---------- */
+.shell-banners {
+  display: flex;
   flex: none;
-  align-items: center;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: var(--s-2);
   margin: var(--s-3) var(--s-4) 0;
 }
 
-.unsaved-banner > svg {
-  flex: none;
-  margin-top: 0;
+.shell-banner {
+  align-items: center;
+  flex-wrap: wrap;
 }
 
-.unsaved-banner .grow {
+/* with the first line of the text, however many lines there are */
+.shell-banner > svg {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.shell-banner .grow {
   flex: 1 1 260px;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.unsaved-actions {
+.shell-banner-lead {
+  margin-right: 0.35em;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.shell-banner-actions {
   display: inline-flex;
   flex-wrap: wrap;
   gap: var(--s-2);
+}
+
+@media (max-width: 719px) {
+  .shell-banners {
+    margin: var(--s-2) var(--s-3) 0;
+  }
+
+  /* the text takes the row, the buttons the next one */
+  .shell-banner .grow {
+    flex-basis: calc(100% - 28px);
+  }
+
+  .shell-banner-actions {
+    margin-left: 24px;
+  }
 }

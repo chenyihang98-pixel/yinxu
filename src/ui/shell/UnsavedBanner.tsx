@@ -22,7 +22,7 @@ export const UnsavedBanner = memo(function UnsavedBanner(props: {
   const original = paid && !!project.audioBlob;
   return (
     <div
-      className="unsaved-banner notice notice-danger"
+      className="shell-banner unsaved-banner notice notice-danger"
       role="alert"
       data-testid="unsaved-banner"
       data-paid={paid || undefined}
@@ -37,7 +37,7 @@ export const UnsavedBanner = memo(function UnsavedBanner(props: {
             )
           : `《${project.title}》还没有保存到「我的作品」，现在只存在于当前窗口。请先导出，或重试保存。`}
       </span>
-      <span className="unsaved-actions">
+      <span className="shell-banner-actions unsaved-actions">
         <Button
           size="sm"
           data-testid="retry-save"

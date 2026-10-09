@@ -351,27 +351,38 @@ a.link-btn {
   color: var(--danger);
 }
 
-button.badge {
-  position: relative;
+/*
+ * A badge you can press (a version tag): the pill stays 20 px tall, the
+ * button around it is a full target — 28 px, 40 px for touch — in both
+ * directions.
+ */
+.badge-btn {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  min-width: var(--hit);
+  height: var(--hit);
+  margin: calc((20px - var(--hit)) / 2) 0;
+  border-radius: var(--r-sm);
   cursor: pointer;
+}
+
+.badge-btn .badge {
   transition:
     background-color var(--fast) var(--ease),
     border-color var(--fast) var(--ease);
 }
 
-/* the pill stays 20 px tall; its hit area is 28 px (40 px for touch) */
-button.badge::after {
-  position: absolute;
-  inset: calc((20px - var(--hit)) / 2) min(0px, calc((28px - var(--hit)) / 2));
-  content: "";
-}
-
-button.badge:hover:not(:disabled) {
+.badge-btn:hover:not(:disabled) .badge {
   border-color: var(--accent);
   background: var(--accent-soft-2);
 }
 
-button.badge:disabled {
+.badge-btn:disabled {
+  cursor: default;
+}
+
+.badge-btn:disabled .badge {
   color: var(--disabled);
   border-color: var(--border);
   background: transparent;
@@ -709,6 +720,11 @@ button.badge:disabled {
   line-height: 1.5;
 }
 
+/* a hint that asks for a second look (not an error: the form can be saved) */
+.field-warning {
+  color: var(--warn);
+}
+
 /* ---------- progress ---------- */
 .progress {
   position: relative;
@@ -826,7 +842,9 @@ button.badge:disabled {
   line-height: 1.55;
 }
 
-.notice svg {
+/* the notice's own icon — never an icon inside a button it contains */
+.notice > svg {
+  flex: none;
   margin-top: 2px;
   color: var(--muted);
 }
@@ -837,7 +855,7 @@ button.badge:disabled {
   color: #f1d9ae;
 }
 
-.notice-warn svg {
+.notice-warn > svg {
   color: var(--warn);
 }
 
@@ -847,7 +865,7 @@ button.badge:disabled {
   color: #f8c9c9;
 }
 
-.notice-danger svg {
+.notice-danger > svg {
   color: var(--danger);
 }
 
@@ -857,7 +875,7 @@ button.badge:disabled {
   color: var(--text);
 }
 
-.notice-accent svg {
+.notice-accent > svg {
   color: var(--accent);
 }
 

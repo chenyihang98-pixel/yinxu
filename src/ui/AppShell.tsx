@@ -18,6 +18,7 @@ import { SettingsModal } from "./modals/SettingsModal";
 import { TooltipLayer } from "./primitives/Tooltip";
 import { BottomBar } from "./shell/BottomBar";
 import { CoreDialog } from "./shell/CoreDialog";
+import { PendingBanner, StrayBanner } from "./shell/ResultBanners";
 import { ShellNav } from "./shell/ShellNav";
 import { Toasts } from "./shell/Toasts";
 import { UnsavedBanner } from "./shell/UnsavedBanner";
@@ -44,6 +45,11 @@ export function AppShell() {
       ? project
       : null;
   const barShown = job !== null || mini !== null;
+  // What was paid for (or made) and is not safe yet, on every page.
+  const banners =
+    studio.pending !== null ||
+    studio.strays.length > 0 ||
+    (studio.unsaved && project !== null);
 
   const title = project?.title;
   useEffect(() => {
@@ -75,12 +81,27 @@ export function AppShell() {
           actions={actions}
         />
         <div className="shell-main">
-          {studio.unsaved && project && (
-            <UnsavedBanner
-              project={project}
-              exporting={studio.exporting}
-              actions={actions}
-            />
+          {banners && (
+            <div className="shell-banners">
+              {studio.pending && (
+                <PendingBanner
+                  pending={studio.pending}
+                  downloading={job?.stage === "downloading"}
+                  locked={job !== null || ui.dialog !== null}
+                  actions={actions}
+                />
+              )}
+              {studio.strays.map((stray) => (
+                <StrayBanner key={stray.id} stray={stray} actions={actions} />
+              ))}
+              {studio.unsaved && project && (
+                <UnsavedBanner
+                  project={project}
+                  exporting={studio.exporting}
+                  actions={actions}
+                />
+              )}
+            </div>
           )}
           <main ref={main} className="page-host" tabIndex={-1}>
             {ui.page === "studio" && <StudioPage />}

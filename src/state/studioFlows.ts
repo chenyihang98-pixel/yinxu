@@ -20,13 +20,19 @@
  *    retried once automatically, can be retried by hand, and is not left
  *    without a question.
  *  - A result the service finished but whose file did not arrive is not
- *    asked for again with a second paid request: 重新下载 fetches it.
+ *    asked for again with a second paid request: 重新下载 fetches it. The
+ *    offer is a banner that stays until the result is here or the user has
+ *    knowingly given it up; whatever would replace or forget it asks first,
+ *    and a reload of the page brings the offer back.
+ *  - A length the selected service does not take is settled before the paid
+ *    question is put, never after it.
  *  - A stored work is only ever changed field by field (Kernel.patch), so a
  *    tab that read the library earlier cannot undo what another tab did.
  */
 import { buildCloudPrompt } from "../agent/cloudPrompt";
-import type { AgentPlan, AgentTurn, BrainKind } from "../agent/types";
+import type { AgentPlan, AgentTurn, BrainKind, LlmKind } from "../agent/types";
 import { REFERENCE_VOLUMES } from "../audio/render-types";
+import { DEFAULT_CONFIG, DEFAULT_VOLUMES } from "../music/defaults";
 import { TRACKS } from "../music/score";
 import type { PlayerSource } from "../player/usePlayer";
 import { providerName } from "../providers";
@@ -76,9 +82,10 @@ import {
   activeBrain,
   brainOptions,
   cancelText,
-  configProblem,
+  durationRange,
   engineOptions,
   engineProblem,
+  fittingDuration,
   phaseText,
 } from "./options";
 import {
@@ -91,11 +98,14 @@ import {
   pinsOnlyText,
   planFromDraft,
   planVariation,
+  predictedDuration,
   truthfulTiming,
   withAskedDrums,
+  withDuration,
   withStylePrompt,
 } from "./plan";
 import { canApplyDraft, isUnsaved } from "./selectors";
+import type { ParkedNote, PendingOrderNote } from "./session";
 import type {
   AppActions,
   Draft,
@@ -103,6 +113,7 @@ import type {
   JobStage,
   LoadEvent,
   LoadedAudio,
+  PendingResult,
   Pins,
   SaveState,
   StemsAudio,
@@ -121,8 +132,10 @@ const SAVE_TOAST = "save-failed";
 const NOTE_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 /** Toast key: the one "your text was replaced" notice. */
 const TEXT_TOAST = "composer-replaced";
-/** Toast key: the offer to fetch a finished cloud result again. */
-const DOWNLOAD_TOAST = "download-again";
+/** Toast key: the one "exported" notice, however many files were saved in a row. */
+const EXPORT_TOAST = "exported";
+/** What the banner adds to the reason a paid result is still waiting. */
+const DOWNLOAD_HINT = "也可以点「重新下载」再取一次，不会再次计费。";
 /**
  * How the main process starts its message when a cloud result exists on the
  * service but its file did not arrive (electron/music-service.cjs,
@@ -133,6 +146,12 @@ const DOWNLOAD_STOPPED =
   /^(?:音乐已生成，但下载失败|已取消下载。|下载等待超过)/;
 /** The main process no longer holds the result (another request replaced it). */
 const DOWNLOAD_GONE = /^没有等待重新下载的音乐/;
+/**
+ * The main process refused a new paid request because it still holds a paid
+ * result that was never collected (electron/music-service.cjs,
+ * pendingRefusal). Nothing was sent.
+ */
+const PENDING_REFUSED = /^还有一首已经付费的音乐没有取回/;
 
 /** The raw exception behind an engine failure belongs in the console, never on screen. */
 function logDetail(error: unknown): void {
@@ -146,6 +165,8 @@ interface Running {
   kind: JobKind;
   provider: Provider;
   brain: BrainKind;
+  /** brain "llm": where the model runs (the wait is worded by it) */
+  llm?: LlmKind;
   abort: AbortController;
   cancelled: boolean;
   /** the user's own composer text, to give back when the job is cancelled or fails */
@@ -180,6 +201,8 @@ interface CloudOrder {
   direct: boolean;
   /** composer text that was handed back when the download failed */
   typed: string | null;
+  /** why the file is not here yet, as the main process put it; "" when unknown */
+  reason: string;
 }
 
 type Intent =
@@ -193,6 +216,36 @@ interface Pass {
   paid?: Provider;
   /** leaving this unsaved work was accepted */
   unsaved?: string;
+  /** going on while a paid result is still waiting to be fetched was accepted */
+  pending?: true;
+  /** the length agreed on instead of one this service does not take */
+  duration?: { provider: Provider; seconds: number };
+}
+
+/** A waiting order as the session remembers it (see session.ts). */
+function orderNote(order: CloudOrder): PendingOrderNote {
+  const { plan, note } = order;
+  return {
+    provider: order.provider,
+    order: {
+      title: order.base?.title ?? plan.title,
+      config: plan.config,
+      reply: plan.reply,
+      reasoning: plan.reasoning,
+      tags: plan.tags,
+      brain: plan.brain,
+      ...(plan.modelNote ? { modelNote: plan.modelNote } : {}),
+      prompt: order.prompt,
+      ...(order.model ? { model: order.model } : {}),
+      ...(order.base ? { baseId: order.base.id } : {}),
+      mine: order.mine,
+      ...(note.model ? { planModel: note.model } : {}),
+      ...(note.fallbackReason ? { fallbackReason: note.fallbackReason } : {}),
+      direct: order.direct,
+      ...(order.typed ? { typed: order.typed } : {}),
+      reason: order.reason,
+    },
+  };
 }
 
 function toSource(audio: LoadedAudio): PlayerSource {
@@ -229,6 +282,12 @@ export class StudioFlows {
     { draft?: Partial<Draft>; text?: string }
   >();
   /**
+   * Every work this tab has had loaded or has parked something for: for
+   * these, what this tab knows replaces what the remembered session holds
+   * (also when that is "nothing left unfinished").
+   */
+  private readonly touched = new Set<string>();
+  /**
    * 循环试听 as the user last set it, per structure. Unset: a 循环片段 is
    * auditioned as a loop, a piece with a 完整结尾 plays to its end.
    */
@@ -253,12 +312,53 @@ export class StudioFlows {
   /**
    * The cloud request whose result exists on the service but was not
    * downloaded. The main process keeps how to fetch it (in memory, until the
-   * next request); this is what to do with it once it arrives.
+   * next request); this is what to do with it once it arrives. It is shown
+   * as `studio.pending` and written into the session, so a reload of the
+   * page can take it up again.
    */
   private undelivered: CloudOrder | null = null;
+  /** the service whose waiting result the user gave up: not offered again */
+  private discarded: CloudProvider | null = null;
+  /**
+   * Whether this run has compared notes with the main process yet
+   * (`syncPending`). Until then the session's note about a waiting result is
+   * left exactly as the last run wrote it.
+   */
+  private pendingKnown = false;
 
   constructor(kernel: Kernel) {
     this.kernel = kernel;
+    kernel.sessionExtras = () => this.sessionExtras();
+  }
+
+  /** What this tab adds to the remembered session; see Kernel.sessionExtras. */
+  private sessionExtras(): ReturnType<Kernel["sessionExtras"]> {
+    const { project, draft } = this.kernel.state.studio;
+    const parked: ParkedNote[] = [];
+    for (const [id, kept] of this.parked) parked.push({ id, ...kept });
+    if (project) {
+      // The loaded work: its unapplied edits as they are right now. (The
+      // words typed for it are the composer text, remembered on its own.)
+      const fields = changedFields(draft, project.config);
+      if (fields.length)
+        parked.push({
+          id: project.id,
+          draft: Object.fromEntries(
+            fields.map((field) => [field, draft[field]]),
+          ) as Partial<Draft>,
+        });
+    }
+    return {
+      parked,
+      touched: this.touched,
+      pendingOrder: !this.pendingKnown
+        ? undefined
+        : this.undelivered
+          ? orderNote(this.undelivered)
+          : this.discarded
+            ? { provider: this.discarded, discarded: true }
+            : null,
+    };
   }
 
   /** Player failures arrive here as ready-to-show text. */
@@ -387,10 +487,17 @@ export class StudioFlows {
       this.restoreEngine();
       after();
     };
-    if (this.needsQuestion()) {
-      void this.settleUnsaved().then((agreed) => {
-        if (agreed && !this.running) leave();
-      });
+    // A paid result that still has to be fetched belongs to what is on
+    // screen now: leaving a loaded work while it waits asks first.
+    const waiting =
+      this.undelivered !== null && !!this.kernel.state.studio.project;
+    if (waiting || this.needsQuestion()) {
+      void (async () => {
+        if (waiting && (await this.settlePending(false)) !== "proceed") return;
+        if (this.running || this.kernel.questioning) return;
+        if (this.needsQuestion() && !(await this.settleUnsaved())) return;
+        if (!this.running && !this.kernel.questioning) leave();
+      })();
       return false;
     }
     leave();
@@ -475,22 +582,53 @@ export class StudioFlows {
       fields.map((field) => [field, draft[field]]),
     ) as Partial<Draft>;
     const text = withText ? composerText : "";
+    this.touched.add(project.id);
+    // set again even when it was there: the latest work goes to the end
+    this.parked.delete(project.id);
     if (fields.length || text.trim())
       this.parked.set(project.id, {
         ...(fields.length ? { draft: edits } : {}),
         ...(text.trim() ? { text } : {}),
       });
-    else this.parked.delete(project.id);
+  }
+
+  /**
+   * What was left unfinished on a work that is being loaded: from this run,
+   * or — after a reload or a restart — from the remembered session. Taken
+   * once; from here on the loaded work's own draft is what gets remembered.
+   */
+  private takeParked(
+    id: string,
+  ): { draft?: Partial<Draft>; text?: string } | undefined {
+    const kept =
+      this.parked.get(id) ??
+      (this.touched.has(id)
+        ? undefined
+        : this.kernel.deps.session
+            .read()
+            .parked.find((note) => note.id === id));
+    this.parked.delete(id);
+    this.touched.add(id);
+    return kept;
+  }
+
+  /** A work is gone for good: nothing is kept for it any more. */
+  forget(id: string): void {
+    this.parked.delete(id);
+    this.touched.add(id);
   }
 
   /* ---------------- inspector ---------------- */
 
   readonly setDraft: AppActions["setDraft"] = (field, value) => {
     this.kernel.dispatch({ type: "draft/set", field, value });
+    // Unapplied edits are remembered with the session, like unsent words.
+    if (this.kernel.state.studio.project) this.kernel.touchSession();
   };
 
   readonly resetDraft: AppActions["resetDraft"] = (field) => {
     this.kernel.dispatch({ type: "draft/reset", ...(field ? { field } : {}) });
+    if (this.kernel.state.studio.project) this.kernel.touchSession();
   };
 
   /* ---------------- questions ---------------- */
@@ -579,6 +717,79 @@ export class StudioFlows {
     return true;
   }
 
+  /**
+   * A paid result is still waiting to be fetched, and the user is about to
+   * do something else. `destroys`: that something is a new cloud request —
+   * the main process then drops the waiting result for good. Resolves
+   * "proceed" (go on), "stay" (do nothing) or "download" (the download was
+   * started instead).
+   */
+  private async settlePending(
+    destroys: boolean,
+  ): Promise<"proceed" | "stay" | "download"> {
+    const order = this.undelivered;
+    if (!order) return "proceed";
+    const name = providerName(order.provider);
+    const { choice } = await this.kernel.ask({
+      kind: "pending",
+      title: "还有一首付费生成的音乐没有取回",
+      body: [
+        joinText(
+          name,
+          "已经生成并计费的音乐还没有下载下来。「重新下载」不会再次计费。",
+        ),
+        destroys
+          ? "发送新的生成请求后，它就无法再取回了。建议先重新下载。"
+          : "它只保留到下一次云端生成或关闭应用为止。可以先重新下载，也可以稍后在页面上方的提示里取回。",
+      ],
+      choices: [
+        { id: "stay", label: "取消" },
+        { id: "download", label: "重新下载", variant: "primary" },
+        destroys
+          ? { id: "proceed", label: "放弃它，继续发送", variant: "danger" }
+          : { id: "proceed", label: "稍后再取，继续" },
+      ],
+      cancel: "stay",
+    });
+    if (choice === "download") {
+      void this.fetchAgain();
+      return "download";
+    }
+    return choice === "proceed" ? "proceed" : "stay";
+  }
+
+  /**
+   * The selected service does not take the length that is about to be asked
+   * for: offer the nearest one it does take, before anything is confirmed
+   * or sent. Resolves true when the user agreed to `fitting`.
+   */
+  private async confirmDuration(
+    provider: CloudProvider,
+    asked: number,
+    fitting: number,
+  ): Promise<boolean> {
+    const name = providerName(provider);
+    const range = durationRange(provider);
+    const { choice } = await this.kernel.ask({
+      kind: "duration",
+      title: joinText(name, "不支持这个时长"),
+      body: [
+        joinText(
+          name,
+          range ? `支持 ${range[0]}–${range[1]} 秒，` : "不支持这个时长，",
+          `这次的时长是 ${asked} 秒。`,
+        ),
+        `可以改为 ${fitting} 秒再生成；或者取消，调整时长或换一个生成引擎。还没有发送任何请求。`,
+      ],
+      choices: [
+        { id: "cancel", label: "取消" },
+        { id: "fit", label: `改为 ${fitting} 秒`, variant: "primary" },
+      ],
+      cancel: "cancel",
+    });
+    return choice === "fit";
+  }
+
   /* ---------------- jobs ---------------- */
 
   private begin(
@@ -594,11 +805,15 @@ export class StudioFlows {
     } = {},
   ): Running | null {
     if (this.running) return null;
+    // where the language model runs decides how long a wait to announce
+    const llm =
+      brain === "llm" ? this.kernel.state.settings.llm.kind : undefined;
     const running: Running = {
       id: ++this.jobSeq,
       kind,
       provider,
       brain,
+      ...(llm ? { llm } : {}),
       abort: new AbortController(),
       cancelled: false,
       restoreText: options.restoreText || null,
@@ -613,6 +828,7 @@ export class StudioFlows {
         kind,
         provider,
         brain,
+        ...(llm ? { llm } : {}),
         stage,
         phase: phaseText(stage, running),
         progress: options.progress ?? null,
@@ -726,10 +942,10 @@ export class StudioFlows {
     // wait with it, and what was left on the incoming work comes back.
     let returned = 0;
     let returnedText = "";
-    if (!generated && outgoing?.id !== project.id) {
+    if (generated) this.touched.add(project.id);
+    else if (outgoing?.id !== project.id) {
       if (outgoing) this.park(false);
-      const kept = this.parked.get(project.id);
-      this.parked.delete(project.id);
+      const kept = this.takeParked(project.id);
       if (kept?.draft) {
         carry = kept.draft;
         returned = changedFields(
@@ -893,6 +1109,52 @@ export class StudioFlows {
       if (!(await this.settleUnsaved())) return false;
       return this.generate(intent, { ...pass, unsaved: base.id });
     }
+    // A paid result that is still waiting to be fetched: a new cloud request
+    // would make the main process drop it, and any new version takes the
+    // place it was meant for. Not without a question.
+    if (this.undelivered && !pass.pending) {
+      if ((await this.settlePending(provider !== "local")) !== "proceed")
+        return false;
+      return this.generate(intent, { ...pass, pending: true });
+    }
+    // A length the selected service does not take is settled now — before
+    // the paid question, not after it. What a message will ask for is read
+    // by the offline rules (instant and free); the plan is checked again
+    // once the producer has made it.
+    if (provider !== "local" && pass.duration?.provider !== provider) {
+      const asked =
+        intent.kind === "draft"
+          ? studio.draft.duration
+          : intent.kind === "variation"
+            ? (base?.config.duration ?? 0)
+            : predictedDuration({
+                text,
+                project: base,
+                pins: studio.pins,
+                provider,
+              });
+      const fitting = fittingDuration(provider, asked);
+      if (fitting !== null) {
+        if (!(await this.confirmDuration(provider, asked, fitting)))
+          return false;
+        // What was agreed is put where it can be seen: the inspector's
+        // draft, or the new-piece composer's 时长.
+        if (intent.kind === "draft") {
+          this.setDraft("duration", fitting);
+          if (!canApplyDraft(this.kernel.state.studio)) {
+            this.kernel.toast(
+              `时长已改为 ${fitting} 秒，和当前版本一样，没有别的修改需要应用。`,
+            );
+            return false;
+          }
+        } else if (intent.kind === "message" && !base)
+          this.setPin("duration", fitting);
+        return this.generate(intent, {
+          ...pass,
+          duration: { provider, seconds: fitting },
+        });
+      }
+    }
     // A cloud engine is a paid request: never without the user's yes. State
     // is read again afterwards — the dialog was open for as long as they liked.
     if (
@@ -919,6 +1181,9 @@ export class StudioFlows {
     // an earlier one continues the shared thread, but the producer is told
     // only the part that led to the work it is actually changing.
     const newest = base ? lineage(base, projects).latest.id === base.id : true;
+    /** the length the user agreed to for this service, if one was settled */
+    const agreed =
+      pass.duration?.provider === provider ? pass.duration.seconds : undefined;
     const request =
       intent.kind === "message"
         ? buildAgentRequest({
@@ -928,14 +1193,22 @@ export class StudioFlows {
             pins: studio.pins,
             provider,
             nextSeed,
+            ...(agreed !== undefined ? { duration: agreed } : {}),
           })
+        : null;
+    const varied =
+      intent.kind === "variation" && base
+        ? planVariation(base, nextSeed, provider)
         : null;
     const direct =
       intent.kind === "draft" && base
         ? planFromDraft(base, studio.draft, provider)
-        : intent.kind === "variation" && base
-          ? planVariation(base, nextSeed, provider)
-          : null;
+        : varied && base && agreed !== undefined
+          ? {
+              ...varied,
+              plan: withDuration(varied.plan, agreed, provider, base.config),
+            }
+          : varied;
     const startVolumes = base ? { ...base.config.volumes } : null;
     const mine = userTurn(
       deps.newId(),
@@ -1037,8 +1310,24 @@ export class StudioFlows {
         return false;
       }
 
-      const limit = configProblem(provider, plan.config);
-      if (limit) throw new Error(limit.message);
+      // The plan's own length is checked once more: a language model may
+      // have chosen one the rules did not foresee. Nothing has been sent.
+      const refit = fittingDuration(provider, plan.config.duration);
+      if (provider !== "local" && refit !== null) {
+        this.stage(job, "asking", { cancellable: false });
+        const fits = await this.confirmDuration(
+          provider,
+          plan.config.duration,
+          refit,
+        );
+        if (!this.alive(job)) return false;
+        if (!fits) {
+          this.giveBackText(job);
+          this.kernel.toast("已取消，没有发送生成请求。");
+          return false;
+        }
+        plan = withDuration(plan, refit, provider, base?.config);
+      }
 
       const revision = nextRevisionIn(base, projects);
       if (base && !newest)
@@ -1110,8 +1399,31 @@ export class StudioFlows {
       const bridge = deps.desktop;
       if (!bridge) throw new Error("云端生成只在 Windows 桌面版中可用。");
       // A new request replaces a result that was still waiting to be
-      // fetched: the main process drops it when this one takes its lock.
-      this.forgetDownload();
+      // fetched (the user was asked before the job started). The main
+      // process refuses a new paid request while it holds one, so it is
+      // told first — or, where the bridge in this window lacks the call,
+      // with the request itself (discardPending).
+      let replaces = this.discarded !== null;
+      const displaced = this.undelivered;
+      if (displaced) {
+        const told = await this.discardInShell(displaced.provider);
+        if (!this.alive(job)) return false;
+        if (told === "failed") {
+          // nothing was sent, and the waiting result is still there
+          this.giveBackText(job);
+          this.kernel.toast(
+            "还没能放弃上一首没有取回的音乐，这次没有发出新的生成请求。请稍后再试。",
+            "error",
+          );
+          return false;
+        }
+        replaces ||= told === "unsupported";
+        this.forgetDownload();
+      }
+      this.discarded = null;
+      const send: DesktopAPI["generateMusic"] = replaces
+        ? (input) => bridge.generateMusic({ ...input, discardPending: true })
+        : bridge.generateMusic;
       order = {
         provider,
         plan,
@@ -1123,9 +1435,10 @@ export class StudioFlows {
         note,
         direct: !request,
         typed,
+        reason: "",
       };
       this.stage(job, "cloud");
-      return await this.receive(job, order, bridge.generateMusic, {
+      return await this.receive(job, order, send, {
         reply,
         id,
         revision,
@@ -1137,10 +1450,18 @@ export class StudioFlows {
       // would be a second paid request — offer to fetch it instead, also
       // when it was the user who stopped waiting.
       const stopped = errorText(error, "");
+      // The main process refused at the door: it holds an earlier paid
+      // result this page did not know of. Nothing was sent.
+      const refused = PENDING_REFUSED.test(stopped);
+      // The main process's wording says that the result exists — or the
+      // main process itself does (DesktopSettings.pendingResult): it may
+      // also hold a submitted task whose result was never collected.
       const fetchable =
         order !== null &&
+        !refused &&
         !!deps.desktop?.retryLastDownload &&
-        DOWNLOAD_STOPPED.test(stopped);
+        (DOWNLOAD_STOPPED.test(stopped) ||
+          (await this.shellHolds(order.provider)) === true);
       if (this.alive(job)) {
         const message = errorText(
           error,
@@ -1161,10 +1482,17 @@ export class StudioFlows {
               ),
             ],
           });
-        if (!fetchable) this.kernel.toast(`生成失败：${message}`, "error");
+        if (!fetchable)
+          // a refusal before anything was sent is not a failed generation
+          this.kernel.toast(
+            refused ? message : `生成失败：${message}`,
+            "error",
+          );
         this.giveBackText(job);
       }
       if (order && fetchable) this.offerDownload(order, stopped);
+      // The result that stood in the way gets its banner (back).
+      else if (refused) void this.resync();
       return false;
     } finally {
       this.end(job);
@@ -1275,6 +1603,14 @@ export class StudioFlows {
       stored: result.saved,
       autoplay: shouldAutoplay(made.gestureAt, deps.now()),
       clearPins: !base,
+      // The selector shows the engine that made the loaded work — also when
+      // the result was fetched later, after the page had been reloaded.
+      ...(engineProblem(
+        provider,
+        engineOptions(deps.platform, this.kernel.state.settings),
+      )
+        ? {}
+        : { provider }),
     });
     if (!result.saved) {
       // The only copy is in this window: say so, say what to do first, and
@@ -1294,68 +1630,234 @@ export class StudioFlows {
 
   /**
    * The service finished `order` but its file did not arrive: keep the order
-   * and offer 重新下载 for as long as the notice stays on screen. `reason` is
-   * the main process's own account (it names the task for the console).
+   * and say so in a banner that stays — on every page, and across a reload —
+   * until the result is here or the user has given it up. `reason` is the
+   * main process's own account (it names the task for the console).
    */
   private offerDownload(order: CloudOrder, reason: string): void {
+    order.reason = reason;
     this.undelivered = order;
-    this.kernel.toast(
-      `${reason}也可以点「重新下载」再取一次，不会再次计费。`,
-      "error",
-      { label: "重新下载", run: () => void this.fetchAgain() },
-      undefined,
-      { key: DOWNLOAD_TOAST, sticky: true },
-    );
+    this.discarded = null;
+    this.pendingKnown = true;
+    this.kernel.dispatch({
+      type: "studio/pending",
+      pending: this.pendingView(order),
+    });
+    // remembered at once: a reload must find it
+    this.kernel.writeSession();
     this.kernel.riskChanged();
+  }
+
+  private pendingView(order: CloudOrder): PendingResult {
+    const name = providerName(order.provider);
+    return {
+      provider: order.provider,
+      name,
+      text: order.reason
+        ? order.reason.includes("重新下载")
+          ? order.reason
+          : `${order.reason}${DOWNLOAD_HINT}`
+        : joinText(
+            name,
+            "已经生成并计费的音乐还没有下载下来。点「重新下载」再取一次，不会再次计费。",
+          ),
+    };
   }
 
   private forgetDownload(): void {
     if (!this.undelivered) return;
     this.undelivered = null;
-    this.kernel.withdraw(DOWNLOAD_TOAST);
+    this.kernel.dispatch({ type: "studio/pending", pending: null });
+    this.kernel.writeSession();
     this.kernel.riskChanged();
   }
 
-  /** The offer is still on screen (closing its notice declines it). */
-  private downloadOffered(): boolean {
-    return (
-      this.undelivered !== null &&
-      this.kernel.state.ui.toasts.some((toast) => toast.key === DOWNLOAD_TOAST)
-    );
+  /**
+   * Does the main process hold a result of `provider` that was never
+   * delivered? true / false when it says so, undefined when it does not say
+   * (a shell that does not report it, or the question failed).
+   */
+  private async shellHolds(
+    provider: CloudProvider,
+  ): Promise<boolean | undefined> {
+    try {
+      const settings = await this.kernel.deps.desktop?.getSettings();
+      if (!settings || settings.pendingResult === undefined) return undefined;
+      return settings.pendingResult?.provider === provider;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Tell the main process to let go of the paid result it holds for
+   * `provider` (DesktopAPI.discardPendingResult). "done": it holds none
+   * now. "unsupported": the bridge in this window lacks the call (a
+   * stand-in, or a shell older than the page). "failed": it could not be
+   * told right now.
+   */
+  private async discardInShell(
+    provider: CloudProvider,
+  ): Promise<"done" | "unsupported" | "failed"> {
+    const bridge = this.kernel.deps.desktop;
+    if (typeof bridge?.discardPendingResult !== "function")
+      return "unsupported";
+    try {
+      await bridge.discardPendingResult(provider);
+      return "done";
+    } catch {
+      return "failed";
+    }
+  }
+
+  /** Read what the main process holds again, and take up what it reports. */
+  private async resync(): Promise<void> {
+    const { desktop } = this.kernel.deps;
+    if (!desktop) return;
+    try {
+      this.kernel.dispatch({
+        type: "settings/loaded",
+        settings: await desktop.getSettings(),
+      });
+    } catch {
+      return;
+    }
+    this.syncPending();
+  }
+
+  /**
+   * Compare notes with the main process (after the settings were read, at
+   * start and later): when it holds a paid result this page knows nothing
+   * about — the page was reloaded while the offer stood — the offer is put
+   * back, with what the last run wrote down about the request. A result the
+   * user gave up is not offered again. A live offer is never withdrawn here:
+   * only 重新下载 itself finds out that the result is gone.
+   */
+  syncPending(): void {
+    const held = this.kernel.state.settings.pendingResult;
+    const first = !this.pendingKnown;
+    this.pendingKnown = true;
+    if (this.undelivered || this.running) return;
+    const note = this.kernel.deps.session.read().pendingOrder;
+    if (!held || !this.kernel.deps.desktop?.retryLastDownload) {
+      // Nothing is held any more: a note from an earlier run is history.
+      this.discarded = null;
+      if (first && note) this.kernel.writeSession();
+      return;
+    }
+    if (note?.provider === held && note.discarded) {
+      this.discarded = held;
+      return;
+    }
+    if (this.discarded === held) return;
+    const order =
+      note?.provider === held && note.order
+        ? this.orderFromNote(held, note.order)
+        : this.orderWithoutNote(held);
+    this.offerDownload(order, order.reason);
+  }
+
+  /** The order a previous run of this page wrote down. */
+  private orderFromNote(
+    provider: CloudProvider,
+    kept: NonNullable<PendingOrderNote["order"]>,
+  ): CloudOrder {
+    const projects = this.kernel.state.library.projects;
+    const base =
+      (kept.baseId && projects.find((work) => work.id === kept.baseId)) || null;
+    return {
+      provider,
+      plan: {
+        config: kept.config,
+        title: kept.title,
+        reply: kept.reply,
+        reasoning: kept.reasoning,
+        tags: kept.tags,
+        unchanged: false,
+        brain: kept.brain,
+        cloudPrompt: kept.prompt,
+        ...(kept.modelNote ? { modelNote: kept.modelNote } : {}),
+      },
+      prompt: kept.prompt,
+      model: kept.model,
+      base,
+      thread: base ? lineage(base, projects).thread : [],
+      mine: kept.mine,
+      note: {
+        ...(kept.planModel ? { model: kept.planModel } : {}),
+        ...(kept.fallbackReason ? { fallbackReason: kept.fallbackReason } : {}),
+      },
+      direct: kept.direct,
+      typed: kept.typed ?? null,
+      reason: kept.reason,
+    };
+  }
+
+  /**
+   * The main process holds a result and nothing was written down about the
+   * request (the session could not be written, or was cleared). The audio is
+   * what was paid for: it is filed as a new work under a plain title, and the
+   * producer's turn says that its description was not kept.
+   */
+  private orderWithoutNote(provider: CloudProvider): CloudOrder {
+    const { deps } = this.kernel;
+    const name = providerName(provider);
+    return {
+      provider,
+      plan: {
+        config: {
+          ...DEFAULT_CONFIG,
+          prompt: "",
+          volumes: { ...DEFAULT_VOLUMES },
+        },
+        title: "取回的云端音乐",
+        reply: joinText(
+          "这是",
+          name,
+          "之前已经生成、现在才取回的音乐。当时的描述没有保留下来，上面的风格和参数只是占位，不代表这段音频。",
+        ),
+        reasoning: [],
+        tags: [name],
+        unchanged: false,
+        brain: "rules",
+      },
+      prompt: "",
+      model: undefined,
+      base: null,
+      thread: [],
+      mine: userTurn(deps.newId(), this.kernel.iso(), "重新下载上次生成的音乐"),
+      note: {},
+      direct: true,
+      typed: null,
+      reason: "",
+    };
   }
 
   /**
    * 重新下载: fetch the finished result of the last cloud request again and
    * treat it exactly like a fresh one — stored first, then decoded, then the
    * current work. Nothing is submitted to the service and nothing is billed.
+   * Whenever the download cannot start, or fails again, the offer stays.
    */
   private async fetchAgain(): Promise<boolean> {
     const order = this.undelivered;
     const bridge = this.kernel.deps.desktop;
     if (!order || !bridge) return false;
-    // The click closes the notice; whenever the download cannot start, or
-    // fails again, the offer is put back.
     const waiting = joinText(
       providerName(order.provider),
       "已经生成的音乐还没有下载下来。",
     );
     if (this.running || this.kernel.questioning) {
       this.kernel.toast(BUSY);
-      this.offerDownload(order, waiting);
       return false;
     }
     // The result takes the place of the loaded work, like any new version.
-    if (this.needsQuestion() && !(await this.settleUnsaved())) {
-      this.offerDownload(order, waiting);
-      return false;
-    }
+    if (this.needsQuestion() && !(await this.settleUnsaved())) return false;
+    if (this.undelivered !== order) return false;
     const { deps } = this.kernel;
     const gestureAt = deps.now();
     const job = this.begin("generate", order.provider, "rules", "downloading");
-    if (!job) {
-      this.offerDownload(order, waiting);
-      return false;
-    }
+    if (!job) return false;
     this.kernel.player.unlock();
     try {
       // Versions made since the request keep their numbers.
@@ -1383,20 +1885,84 @@ export class StudioFlows {
       return delivered;
     } catch (error) {
       const message = errorText(error, "下载没有成功，请稍后重试。");
-      if (DOWNLOAD_GONE.test(message)) {
+      // Gone for good: the main process says so in words, or reports that it
+      // holds nothing any more (the task ended without a result).
+      const gone =
+        DOWNLOAD_GONE.test(message) ||
+        (!DOWNLOAD_STOPPED.test(message) &&
+          (await this.shellHolds(order.provider)) === false);
+      if (gone) {
         this.forgetDownload();
         this.kernel.toast(message, "error");
-      } else
+      } else {
         // Cancelled, timed out or failed again: the result is still there.
+        // The banner now tells of this attempt; a notice says how it ended.
+        const cancelled = !this.alive(job);
         this.offerDownload(
           order,
           DOWNLOAD_STOPPED.test(message) ? message : `${waiting}${message}`,
         );
+        if (!cancelled)
+          this.kernel.toast(
+            "这次还是没有下载下来。音乐仍然可以重新下载。",
+            "error",
+          );
+      }
       return false;
     } finally {
       this.end(job);
     }
   }
+
+  readonly downloadPending: AppActions["downloadPending"] = () =>
+    this.fetchAgain();
+
+  /**
+   * 放弃这次结果: the music was made and billed, so nothing goes without a
+   * yes. After it the offer is gone from this app — the main process may
+   * still hold the file until the next request, but it is not shown again.
+   */
+  readonly discardPending: AppActions["discardPending"] = async () => {
+    const order = this.undelivered;
+    if (!order) return false;
+    if (this.running || this.kernel.questioning) {
+      this.kernel.toast(BUSY);
+      return false;
+    }
+    const name = providerName(order.provider);
+    const { choice } = await this.kernel.ask({
+      kind: "discard",
+      title: "放弃这首已经生成的音乐？",
+      body: [
+        joinText(
+          "这首音乐已经由",
+          name,
+          "生成并计费。放弃后，这里不再提供重新下载。",
+        ),
+        "之后想要它，只能到服务商的控制台里查找，或者重新付费生成。",
+      ],
+      choices: [
+        { id: "keep", label: "先留着" },
+        { id: "discard", label: "放弃这次结果", variant: "danger" },
+      ],
+      cancel: "keep",
+    });
+    if (choice !== "discard" || this.undelivered !== order) return false;
+    // The main process lets go of it too: closing no longer asks about it,
+    // and the next paid request is not refused because of it.
+    const told = await this.discardInShell(order.provider);
+    if (this.undelivered !== order) return false;
+    if (told === "failed") {
+      this.kernel.toast("暂时没能放弃这次结果，请稍后再试。", "error");
+      return false;
+    }
+    // A shell that cannot be told keeps the file until the next request;
+    // this page then remembers not to offer it again.
+    this.discarded = told === "unsupported" ? order.provider : null;
+    this.forgetDownload();
+    this.kernel.toast("已放弃这次结果，不会再提示重新下载。");
+    return true;
+  };
 
   /* ---------------- opening ---------------- */
 
@@ -1425,6 +1991,18 @@ export class StudioFlows {
       return false;
     }
     if (this.kernel.questioning) return false;
+    // A paid result is waiting to be fetched: it was meant for what is on
+    // screen now. Opening something else by hand asks first; reopening the
+    // last session's work at start does not (nothing is being left).
+    if (
+      this.undelivered &&
+      options.reason !== "restored" &&
+      studio.project &&
+      studio.project.id !== id
+    ) {
+      if ((await this.settlePending(false)) !== "proceed") return false;
+      if (this.running || this.kernel.questioning) return false;
+    }
     // The work on screen exists only in this window: save it or ask.
     if (this.needsQuestion()) {
       if (!(await this.settleUnsaved())) return false;
@@ -1620,7 +2198,8 @@ export class StudioFlows {
           note.id,
           {
             volumes: note.volumes,
-            updatedAt: new Date(note.at).toISOString(),
+            // never a date in the future, whatever the note says
+            updatedAt: new Date(Math.min(note.at, now)).toISOString(),
           },
           { unlessNewer: true },
         );
@@ -1695,9 +2274,7 @@ export class StudioFlows {
       } catch {
         return; // the notice with 导出原始音频 stays
       }
-      this.strays.delete(id);
-      this.kernel.riskChanged();
-      this.kernel.withdraw(`stray-${id}`);
+      this.dropStray(id);
       this.kernel.dispatch({ type: "library/upsert", project: stray });
       this.kernel.afterSave();
       this.kernel.toast("刚才没能保存的云端结果已保存到「我的作品」。");
@@ -1715,20 +2292,71 @@ export class StudioFlows {
   private keepStray(project: Project, saveError: unknown): void {
     if (!project.audioBlob) return;
     this.strays.set(project.id, project);
+    this.showStrays();
     this.kernel.riskChanged();
+    // The banner carries the two ways out and stays; this only says why.
     this.kernel.toast(
       `云端结果在取消后到达，但没能保存到「我的作品」：${errorText(saveError, WRITE_FAILED)}音频还在当前窗口，请先导出；稍后会自动再试一次保存。`,
       "error",
-      { label: "导出原始音频", run: () => void this.exportStray(project.id) },
       undefined,
-      { key: `stray-${project.id}`, sticky: true },
+      undefined,
+      { key: `stray-${project.id}` },
     );
     this.scheduleRetry(project.id);
   }
 
-  private async exportStray(id: string): Promise<void> {
+  /** `studio.strays` follows the results that are held here. */
+  private showStrays(): void {
+    this.kernel.dispatch({
+      type: "studio/strays",
+      strays: [...this.strays.values()].flatMap((project) =>
+        project.provider === "local"
+          ? []
+          : [
+              {
+                id: project.id,
+                title: project.title,
+                provider: project.provider,
+              },
+            ],
+      ),
+    });
+  }
+
+  /** A stray result is safe (stored, or exported): it needs no banner any more. */
+  private dropStray(id: string): void {
+    this.strays.delete(id);
+    this.showStrays();
+    this.kernel.riskChanged();
+    this.kernel.withdraw(`stray-${id}`);
+  }
+
+  readonly retryStray: AppActions["retryStray"] = async (id) => {
+    const stray = this.strays.get(id);
+    if (!stray) return false;
+    try {
+      await this.kernel.store(stray);
+    } catch (error) {
+      this.kernel.toast(
+        `还是没能保存：${errorText(error, WRITE_FAILED)}`,
+        "error",
+        undefined,
+        undefined,
+        { key: `stray-${id}` },
+      );
+      return false;
+    }
+    if (!this.strays.has(id)) return true;
+    this.dropStray(id);
+    this.kernel.dispatch({ type: "library/upsert", project: stray });
+    this.kernel.afterSave();
+    this.kernel.toast("已保存到「我的作品」");
+    return true;
+  };
+
+  readonly exportStray: AppActions["exportStray"] = async (id) => {
     const project = this.strays.get(id);
-    if (!project) return;
+    if (!project) return false;
     try {
       const result = await exportWork(
         project,
@@ -1736,19 +2364,28 @@ export class StudioFlows {
         { kind: "original" },
         this.kernel.deps.exporter,
       );
-      if (!result.saved) return;
+      if (!result.saved) return false;
       // The user has the bytes: nothing is at risk any more.
-      this.strays.delete(id);
-      this.kernel.riskChanged();
-      this.kernel.withdraw(`stray-${id}`);
-      this.kernel.toast(
-        this.kernel.deps.platform.isDesktop
-          ? "已导出到选定位置"
-          : `已开始下载「${result.name}」`,
-      );
+      this.dropStray(id);
+      this.exportedToast(result.name);
+      return true;
     } catch (error) {
       this.kernel.toast(errorText(error, "导出失败，请重试。"), "error");
+      return false;
     }
+  };
+
+  /** One notice however many files are saved in a row: the latest replaces the last. */
+  private exportedToast(name: string): void {
+    this.kernel.toast(
+      this.kernel.deps.platform.isDesktop
+        ? "已导出到选定位置"
+        : `已开始下载「${name}」`,
+      "info",
+      undefined,
+      undefined,
+      { key: EXPORT_TOAST },
+    );
   }
 
   /** First save of a freshly generated local work. */
@@ -1975,6 +2612,7 @@ export class StudioFlows {
     const work = this.kernel.find(id);
     const current = studio.project?.id === id && !this.running;
     this.unconfirmed.delete(id);
+    this.forget(id);
     if (this.kernel.pendingMixes.has(id)) this.kernel.settleMix(id);
     if (current) {
       this.mixSchedule = IDLE;
@@ -2019,8 +2657,9 @@ export class StudioFlows {
         job.stage === "decoding")
     )
       return "正在生成付费音乐，现在关闭可能仍会计费且得不到结果。";
-    // The address of a finished result lives only in this run of the app.
-    if (job?.stage === "downloading" || this.downloadOffered())
+    // The address of a finished result lives only in this run of the app —
+    // for as long as it has not been fetched or knowingly given up.
+    if (job?.stage === "downloading" || this.undelivered !== null)
       return "云端已经生成的音乐还没有下载下来，现在关闭将无法再取回，重新生成需要再次付费。";
     return null;
   }
@@ -2048,11 +2687,7 @@ export class StudioFlows {
         )
           this.exported.add(project.id);
         this.kernel.riskChanged();
-        this.kernel.toast(
-          this.kernel.deps.platform.isDesktop
-            ? "已导出到选定位置"
-            : `已开始下载「${result.name}」`,
-        );
+        this.exportedToast(result.name);
       }
       return result.saved;
     } catch (error) {

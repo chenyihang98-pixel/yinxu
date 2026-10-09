@@ -53,6 +53,7 @@ const METHODS = {
   generateMusic: ["muse:generate-music", [{ prompt: "p", duration: 30 }]],
   cancelGeneration: ["muse:cancel-generation", []],
   retryLastDownload: ["muse:retry-download", ["aliyun"]],
+  discardPendingResult: ["muse:discard-pending", ["aliyun"]],
   setUnsavedWork: ["muse:set-unsaved-work", [true]],
   saveAudio: ["muse:save-audio", [{ name: "n", format: "wav" }]],
   openExternal: ["muse:open-external", ["https://example.com"]],
@@ -98,7 +99,12 @@ test("bridge methods match DesktopAPI in src/types.ts and the handlers registere
     (match) => match[1],
   );
   // The contract and the bridge list exactly the same methods.
-  assert.deepEqual([...declared].sort(), Object.keys(METHODS).sort());
+  assert.deepEqual(
+    [...declared].sort(),
+    Object.keys(METHODS).sort(),
+    "DesktopAPI and the bridge list the same methods",
+  );
+  assert.equal(new Set(declared).size, declared.length);
   const handled = [
     ...shape(mainSource).matchAll(/trustedHandler\('(muse:[a-z-]+)'/g),
   ].map((match) => match[1]);
@@ -238,6 +244,75 @@ test("MAIN-05: setUnsavedWork sends a strict boolean; MAIN-02: retryLastDownload
     calls,
     [["muse:retry-download", "volcengine"]],
     "no address can be passed across the bridge",
+  );
+});
+
+test("FQ-01: discardPendingResult sends nothing but the service id; main.cjs reports and guards what the music service holds", async () => {
+  const calls = [];
+  const { exposed } = loadBridge(async (...args) => {
+    calls.push(args);
+    return true;
+  });
+  assert.equal(
+    await exposed.museDesktop.discardPendingResult("aliyun", "extra", {
+      all: true,
+    }),
+    true,
+    "resolves to whether a result was given up",
+  );
+  assert.deepEqual(calls, [["muse:discard-pending", "aliyun"]]);
+  // generateMusic passes its input on as it is: discardPending is read by the main process.
+  calls.length = 0;
+  const input = {
+    provider: "tencent",
+    prompt: "p",
+    duration: 30,
+    discardPending: true,
+  };
+  await exposed.museDesktop.generateMusic(input);
+  assert.deepEqual(calls, [["muse:generate-music", input]]);
+
+  assert.ok(
+    wires(
+      mainSource,
+      `trustedHandler("muse:discard-pending", (provider) => music.discardPending(provider))`,
+    ),
+  );
+  assert.ok(
+    wires(
+      mainSource,
+      `trustedHandler("muse:generate-music", (input) => music.generate(input, () => keyStore.getCredentials(input?.provider)))`,
+    ),
+    "the whole input reaches the service, which decides about discardPending",
+  );
+  // The close guard and getSettings read the service's own state.
+  assert.ok(
+    wires(mainSource, `pendingResult: () => music.pendingResult?.kind ?? null`),
+  );
+  assert.ok(wires(mainSource, `const waiting = music.pendingResult;`));
+  assert.ok(
+    wires(
+      mainSource,
+      `pendingResult: waiting ? { provider: waiting.provider } : null`,
+    ),
+    "getSettings().pendingResult is { provider } or null, as DesktopSettings says",
+  );
+  const types = fs.readFileSync(path.join(root, "src", "types.ts"), "utf8");
+  assert.match(
+    types,
+    /pendingResult\?: \{ provider: CloudProvider \} \| null;/,
+    "the contract this answers to",
+  );
+  assert.match(
+    shape(types),
+    /generateMusic\(input:\{[^}]*discardPending\?:boolean;?\}\)/,
+    "the contract names the flag the service reads",
+  );
+  assert.ok(
+    wires(
+      types,
+      `discardPendingResult(provider: CloudProvider): Promise<boolean>;`,
+    ),
   );
 });
 

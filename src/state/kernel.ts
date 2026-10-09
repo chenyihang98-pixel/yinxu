@@ -20,7 +20,13 @@ import { NO_PLAYER } from "./ports";
 import type { CoreDeps, PlayerPort } from "./ports";
 import type { AppAction, AppState } from "./reducer";
 import { initialState, reducer } from "./reducer";
-import type { PendingMixNote, PendingRemovalNote } from "./session";
+import { MAX_PARKED } from "./session";
+import type {
+  ParkedNote,
+  PendingMixNote,
+  PendingOrderNote,
+  PendingRemovalNote,
+} from "./session";
 import { NO_SYNC } from "./sync";
 import type { SyncMessage, TabSync } from "./sync";
 import type { Dialog, Toast } from "./types";
@@ -61,6 +67,19 @@ export class Kernel {
    * store does not show (set by the core, which tells the desktop shell).
    */
   riskChanged: () => void = () => {};
+
+  /**
+   * What the studio adds to the remembered session each time it is written
+   * (set by StudioFlows): the unfinished edits and words of the works this
+   * tab has had open — `touched` names every work it speaks for, also those
+   * with nothing left to remember — and the paid result that still has to
+   * be fetched (undefined: not known yet, keep what is stored).
+   */
+  sessionExtras: () => {
+    parked: ParkedNote[];
+    touched: ReadonlySet<string>;
+    pendingOrder: PendingOrderNote | null | undefined;
+  } = () => ({ parked: [], touched: new Set(), pendingOrder: undefined });
 
   private readonly sync: TabSync;
   private readonly listeners = new Set<() => void>();
@@ -352,9 +371,10 @@ export class Kernel {
 
   /**
    * Remember now: the open work, the composer text, the preferred producer,
-   * and this tab's pending deletions and fader moves. The session is shared
-   * by every tab of the origin, so the two lists are merged with what is
-   * stored: another tab's notes stay, this tab's settled ones go.
+   * this tab's pending deletions and fader moves, what was left unfinished
+   * on the works it had open, and the paid result still to be fetched. The
+   * session is shared by every tab of the origin, so the lists are merged
+   * with what is stored: another tab's notes stay, this tab's settled ones go.
    */
   writeSession(): void {
     if (this.sessionTimer !== null) {
@@ -377,18 +397,31 @@ export class Kernel {
         .map((note) => [note.id, note]),
     );
     for (const [id, note] of this.pendingMixes) mixes.set(id, note);
+    const extras = this.sessionExtras();
+    const parked = new Map(
+      stored.parked
+        .filter((note) => !extras.touched.has(note.id))
+        .map((note) => [note.id, note]),
+    );
+    for (const note of extras.parked) parked.set(note.id, note);
     this.deps.session.write({
       lastProjectId: studio.project?.id ?? this.restoreId,
       composerText: studio.composerText,
       brain: studio.brain,
       pendingRemovals: [...removals.values()],
       pendingMixes: [...mixes.values()],
+      // the most recently touched works are at the end and are the ones kept
+      parked: [...parked.values()].slice(-MAX_PARKED),
+      pendingOrder:
+        extras.pendingOrder === undefined
+          ? stored.pendingOrder
+          : extras.pendingOrder,
     });
     this.settledRemovals.clear();
     this.settledMixes.clear();
   }
 
-  /** The composer text changed: remember it a moment after typing stops. */
+  /** The composer text or an inspector edit changed: remember it a moment after it stops. */
   touchSession(): void {
     this.sessionSchedule = scheduleChange(
       this.deps.now(),

@@ -120,6 +120,12 @@ export interface DesktopSettings {
   llm: LlmStatus;
   dataPath: string;
   version: string;
+  /**
+   * A paid result the main process still holds because fetching it failed
+   * (or a submitted task that has not been collected). While set,
+   * retryLastDownload() can deliver it without a new paid request.
+   */
+  pendingResult?: { provider: CloudProvider } | null;
 }
 
 export interface DesktopAPI {
@@ -129,21 +135,35 @@ export interface DesktopAPI {
     credentials: Record<string, string>,
   ): Promise<void>;
   deleteProviderCredentials(provider: CloudProvider): Promise<void>;
+  /**
+   * One paid request. While the shell still holds a paid result that was
+   * never collected (DesktopSettings.pendingResult) it sends nothing and
+   * rejects, unless `discardPending` is exactly true: then the held result
+   * is dropped at the moment the new billable request goes out.
+   */
   generateMusic(input: {
     provider?: CloudProvider;
     prompt: string;
     duration: number;
     model?: string;
+    discardPending?: boolean;
   }): Promise<{ audio: ArrayBuffer; mimeType: string }>;
   cancelGeneration(): Promise<void>;
   /**
-   * Fetch the last finished result of this service again after its download
-   * failed: nothing is submitted, nothing is billed. Rejects when no result
-   * is waiting (another generation was started since, or the app restarted).
+   * Collect the paid result the shell holds for this service — a finished
+   * file whose download failed, or a submitted task that was never polled
+   * to its end: nothing is submitted, nothing is billed. Rejects when no
+   * result is waiting (it was given up, replaced, or the app restarted).
    */
   retryLastDownload(
     provider: CloudProvider,
   ): Promise<{ audio: ArrayBuffer; mimeType: string }>;
+  /**
+   * Give up the paid result the shell holds for this service without a new
+   * request. Resolves true when one was dropped, false when none was held;
+   * rejects while a generation is running.
+   */
+  discardPendingResult(provider: CloudProvider): Promise<boolean>;
   /**
    * Tell the shell whether closing the window now would lose paid work (a
    * cloud request under way, a paid result that is not stored yet). While
