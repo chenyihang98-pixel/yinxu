@@ -5,10 +5,14 @@ import {
   BookOpen,
   Bot,
   Cloud,
+  Download,
+  Headphones,
   Keyboard,
   MessageSquareText,
+  MousePointerClick,
   PenLine,
   ShieldCheck,
+  Wrench,
 } from "lucide-react";
 import {
   DESCRIPTION_EXAMPLES,
@@ -52,8 +56,78 @@ function Key(props: { keys: string[]; children: ReactNode }) {
   );
 }
 
+/** 简单模式's guide: three steps with pictures, and what to do when it is not right. */
+function SimpleHelp() {
+  const { actions, platform, settings } = useApp();
+  const cloud =
+    platform.isDesktop &&
+    Object.values(settings.providers).some((status) => status.configured);
+  const steps = [
+    {
+      icon: <MousePointerClick size={26} />,
+      title: "点一个场景",
+      text: "比如「咖啡馆」「旅行风景」。也可以用一句话说说想要什么。",
+    },
+    {
+      icon: <Headphones size={26} />,
+      title: "听一听",
+      text: "几秒钟就做好，做好会自动播放。",
+    },
+    {
+      icon: <Download size={26} />,
+      title: "下载音乐",
+      text: platform.isDesktop
+        ? "点「下载音乐」，选个地方保存。"
+        : "点「下载音乐」，文件会直接下载。",
+    },
+  ];
+  return (
+    <Modal
+      size="lg"
+      title="怎么用"
+      icon={<BookOpen size={18} />}
+      testId="help-modal"
+      onClose={actions.closeModal}
+    >
+      <div className="help simple-help">
+        <ol className="help-steps">
+          {steps.map((step, index) => (
+            <li key={step.title} className="help-step">
+              <span className="help-step-art" aria-hidden>
+                {step.icon}
+              </span>
+              <span className="help-step-number" aria-hidden>
+                {index + 1}
+              </span>
+              <strong>{step.title}</strong>
+              <span>{step.text}</span>
+            </li>
+          ))}
+        </ol>
+        <Section icon={<Wrench size={16} />} title="不满意怎么办">
+          <p>
+            点「觉得哪里不对」下面的按钮，比如「快一点」「换个乐器」「去掉鼓」，或者在框里直接说想怎么改。每改一次都会留下上一版，点「撤销」就能回去。整首都不喜欢，就点「换一首」，或者「重新挑」一个场景。
+          </p>
+        </Section>
+        <Section icon={<ShieldCheck size={16} />} title="放心用">
+          <p>
+            音乐就在
+            {platform.isDesktop ? "这台电脑" : "这个浏览器"}
+            上做，不联网、不收费，做好的都在「我的音乐」里。
+            {cloud
+              ? "只有打开「用 AI 服务生成」时，才会按次付费，每次都会先问你。"
+              : ""}
+            {platform.isWeb ? "清除网站数据会删掉它们，重要的请先下载。" : ""}
+          </p>
+        </Section>
+      </div>
+    </Modal>
+  );
+}
+
 export function HelpModal() {
-  const { actions, platform } = useApp();
+  const { actions, platform, ui } = useApp();
+  if (ui.mode === "simple") return <SimpleHelp />;
   return (
     <Modal
       size="lg"

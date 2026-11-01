@@ -65,12 +65,14 @@ export class AppCore {
       notify: this.notify,
       dismissToast: this.dismissToast,
       openLink: this.openLink,
+      setMode: this.setMode,
 
       setComposerText: studio.setComposerText,
       setPin: studio.setPin,
       setProvider: studio.setProvider,
       setBrain: studio.setBrain,
       send: studio.send,
+      startPiece: studio.startPiece,
       pickSuggestion: studio.pickSuggestion,
       answerDialog: kernel.answer,
       newPiece: studio.newPiece,
@@ -154,6 +156,8 @@ export class AppCore {
         this.library.refreshLibrary(),
         this.settings.refreshSettings(),
       ]);
+      // 简单模式: the producer follows what the settings say is usable.
+      this.studio.followSettings();
       const id = kernel.restoreId;
       try {
         if (
@@ -232,6 +236,7 @@ export class AppCore {
   private readonly refreshSettings: AppActions["refreshSettings"] =
     async () => {
       await this.settings.refreshSettings();
+      this.studio.followSettings();
       // Not before start() has read the library and reopened the last work.
       if (this.ready) this.studio.syncPending();
     };
@@ -242,10 +247,28 @@ export class AppCore {
     this.kernel.dispatch({ type: "ui/navigate", page });
   };
 
+  private readonly setMode: AppActions["setMode"] = (mode) => {
+    const { kernel } = this;
+    const next = mode === "pro" ? "pro" : "simple";
+    if (kernel.state.ui.mode === next) return;
+    kernel.dispatch({ type: "ui/mode", mode: next });
+    kernel.deps.mode?.write(next);
+    if (next === "simple") {
+      // 简单模式 has no 灵感 page; everything else stays where it is.
+      if (kernel.state.ui.page === "inspiration")
+        kernel.dispatch({ type: "ui/navigate", page: "studio" });
+      this.studio.enterSimple();
+      kernel.toast("已切换到简单模式。");
+    } else kernel.toast("已切换到专业模式，可在设置里换回简单模式。");
+  };
+
   private readonly openModal: AppActions["openModal"] = (modal, tab) => {
     const { kernel } = this;
     if (modal === "export" && !kernel.state.studio.project) return;
-    kernel.dispatch({ type: "ui/modal", modal, settingsTab: tab });
+    // 简单模式 opens the settings where its own choice lives: 常规.
+    const settingsTab =
+      tab ?? (modal === "settings" && kernel.simple ? "general" : undefined);
+    kernel.dispatch({ type: "ui/modal", modal, settingsTab });
     if (modal === "settings") void this.refreshSettings();
   };
 

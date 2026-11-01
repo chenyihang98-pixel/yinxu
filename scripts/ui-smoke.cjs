@@ -903,6 +903,85 @@ async function main() {
     );
 
     await run.step(
+      "简单模式 smoke: a scene, 慢一点 in plain words, 下载音乐 through the save dialog, back to 专业模式",
+      async () => {
+        await app.openSettings("general");
+        await $("mode-simple").click();
+        await app.closeModal();
+        await $("simple-nav-make").waitFor();
+        assert.equal(await $("nav-studio").count(), 0);
+        // the loaded work is still there; 重新挑 goes to the scenes
+        if (await $("simple-restart").count())
+          await $("simple-restart").click();
+        await $("simple-make").waitFor();
+        assert.equal(await $("scene-card").count(), 12);
+        await page
+          .locator('[data-testid="scene-card"][data-scene="game"]')
+          .click();
+        await page.waitForSelector(
+          '[data-testid="simple-result"][data-revision="1"][data-audio="stems"]',
+          { timeout: 120000 },
+        );
+        await $("simple-progress").waitFor({
+          state: "detached",
+          timeout: 120000,
+        });
+        const id = await $("simple-result").getAttribute("data-project");
+        const made = (await app.records()).find((record) => record.id === id);
+        assert.equal(made.config.mood, "chiptune");
+        assert.equal(made.config.loop, true);
+        assert.equal(made.config.duration, 30);
+        if ((await $("simple-play").getAttribute("aria-pressed")) === "true")
+          await $("simple-play").click();
+        await $("tweak-slower").click();
+        await page.waitForSelector(
+          '[data-testid="simple-result"][data-revision="2"][data-audio="stems"]',
+          { timeout: 120000 },
+        );
+        await $("simple-progress").waitFor({
+          state: "detached",
+          timeout: 120000,
+        });
+        const change = await $("simple-change").innerText();
+        assert.match(change, /^改好了：节奏慢了/);
+        if ((await $("simple-play").getAttribute("aria-pressed")) === "true")
+          await $("simple-play").click();
+        // 下载音乐: straight to the system's save dialog, named by the title
+        const title = await $("simple-title").inputValue();
+        const target = file("simple-download.wav");
+        const dialogs = (await app.state()).dialogs.length;
+        await app.saveTo(target);
+        await $("simple-download").click();
+        const state = await until(
+          app.state,
+          (value) => value.dialogs.length > dialogs,
+          "the save dialog",
+          60000,
+        );
+        assert.equal(
+          path.basename(state.dialogs.at(-1).defaultPath),
+          `${title}.wav`,
+        );
+        await page.waitForSelector(
+          '[data-testid="simple-download"]:not([disabled])',
+          { timeout: 60000 },
+        );
+        const wav = wavInfo(fs.readFileSync(target));
+        assert.equal(wav.sampleRate, 48000);
+        assert.equal(wav.channels, 2);
+        assert.ok(wav.seconds > 25, `${wav.seconds} s`);
+        await app.toast(/^已保存$/);
+        // back to 专业模式: the same work, every version
+        await $("pro-mode-link").click();
+        await $("nav-studio").waitFor();
+        await page.waitForSelector(
+          `[data-testid="player-card"][data-revision="2"]`,
+        );
+        return { change, seconds: +wav.seconds.toFixed(2) };
+      },
+    );
+
+    await run.step(
       "clean: no renderer errors, no request left the machine",
       async () => {
         const state = await app.state();

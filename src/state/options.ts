@@ -125,6 +125,16 @@ export function activeBrain(
     : "rules";
 }
 
+/**
+ * 简单模式 shows no producer selector: the user's own language model plans
+ * whenever it is set up and usable, the offline rules otherwise.
+ */
+export function autoBrain(options: readonly BrainOption[]): BrainKind {
+  return options.some((option) => option.id === "llm" && option.available)
+    ? "llm"
+    : "rules";
+}
+
 export interface Refusal {
   message: string;
   /** open the settings modal on this tab so the user can fix it */

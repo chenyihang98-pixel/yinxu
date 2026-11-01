@@ -12,6 +12,8 @@ import {
 } from "../../src/storage";
 import type { DamagedRecord, ProjectPatch } from "../../src/storage";
 import { AppCore } from "../../src/state/core";
+import { memoryModeStore } from "../../src/state/mode";
+import type { UiMode } from "../../src/state/mode";
 import type { CoreDeps, PlayerPort, StoragePort } from "../../src/state/ports";
 import {
   EMPTY_SESSION,
@@ -600,6 +602,8 @@ export interface Harness {
   decodeGate: { current: Deferred<void> | null };
   renderError: { current: Error | null };
   seeds: number[];
+  /** where the interface mode is remembered */
+  modeStore: { value: UiMode };
 }
 
 export function harness(
@@ -612,6 +616,11 @@ export function harness(
     origin?: SharedOrigin;
     /** share the clock of another tab */
     clock?: FakeClock;
+    /**
+     * The interface the app starts in. Default 专业模式: the suites written
+     * for v0.3 test its behaviour; 简单模式 tests ask for it.
+     */
+    mode?: UiMode;
   } = {},
 ): Harness {
   installAudioBuffer();
@@ -637,6 +646,7 @@ export function harness(
   const decodeGate: Harness["decodeGate"] = { current: null };
   const renderError: Harness["renderError"] = { current: null };
   const seeds: number[] = [];
+  const modeStore = memoryModeStore(options.mode ?? "pro");
   let ids = 0;
   let seed = 1000;
   const state = { decodes: 0 };
@@ -701,6 +711,7 @@ export function harness(
     },
     sync: origin.connect(),
     ...(options.undoMs !== undefined ? { undoMs: options.undoMs } : {}),
+    mode: modeStore,
   };
   const core = new AppCore(deps);
   core.attachPlayer(player);
@@ -724,6 +735,7 @@ export function harness(
     decodeGate,
     renderError,
     seeds,
+    modeStore,
   };
 }
 

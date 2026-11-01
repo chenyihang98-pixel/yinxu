@@ -16,6 +16,7 @@ import {
 } from "./logic";
 import type { Schedule } from "./logic";
 import type { Refusal } from "./options";
+import { plainWords } from "./plain";
 import { NO_PLAYER } from "./ports";
 import type { CoreDeps, PlayerPort } from "./ports";
 import type { AppAction, AppState } from "./reducer";
@@ -111,7 +112,13 @@ export class Kernel {
       version: deps.platform.version,
       composerText: session.composerText,
       brain: session.brain,
+      mode: deps.mode?.read() ?? "simple",
     });
+  }
+
+  /** 简单模式 is shown: the app's messages use its words (plain.ts plainWords). */
+  get simple(): boolean {
+    return this.state.ui.mode === "simple";
   }
 
   /* ---------------- store ---------------- */
@@ -161,7 +168,7 @@ export class Kernel {
       toast: {
         id,
         kind,
-        text,
+        text: this.simple ? plainWords(text) : text,
         ...(action ? { action } : {}),
         ...(options.key ? { key: options.key } : {}),
         ...(options.sticky ? { sticky: true } : {}),
@@ -208,13 +215,20 @@ export class Kernel {
     if (this.asking)
       return Promise.resolve({ choice: dialog.cancel, remember: false });
     const id = ++this.dialogSeq;
+    const shown = this.simple
+      ? {
+          ...dialog,
+          title: plainWords(dialog.title),
+          body: dialog.body.map(plainWords),
+        }
+      : dialog;
     return new Promise((resolve) => {
       this.asking = {
         id,
         choices: dialog.choices.map((choice) => choice.id),
         resolve,
       };
-      this.dispatch({ type: "ui/dialog", dialog: { ...dialog, id } });
+      this.dispatch({ type: "ui/dialog", dialog: { ...shown, id } });
     });
   }
 

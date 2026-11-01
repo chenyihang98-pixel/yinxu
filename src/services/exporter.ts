@@ -147,7 +147,10 @@ export function sniffAudioFormat(data: ArrayBuffer): AudioFormat | null {
 
 /** File name without extension: title, version (from v2 on) and what it is. */
 export function exportName(project: Project, request: ExportRequest): string {
-  const base = `${project.title}${project.revision > 1 ? ` v${project.revision}` : ""}`;
+  const plain =
+    (request.kind === "mix" || request.kind === "original") &&
+    request.plainName === true;
+  const base = `${project.title}${project.revision > 1 && !plain ? ` v${project.revision}` : ""}`;
   switch (request.kind) {
     case "stem":
       return `${base}-${STEM_LABELS[request.track]}`;
@@ -317,7 +320,11 @@ export async function buildExport(
           : 1;
       if (repeats > 1) await breathe();
       return {
-        name: exportName(project, { kind: "mix", repeats }),
+        name: exportName(project, {
+          kind: "mix",
+          repeats,
+          ...(request.plainName ? { plainName: true } : {}),
+        }),
         data: repeatWav(wav, repeats),
         format: "wav",
       };

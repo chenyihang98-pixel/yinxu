@@ -6,6 +6,7 @@
 ## S00｜快速接手：先只读这一节
 
 - **产品**：把一句话变成纯器乐背景音乐，可以试听、用对话继续改、调四条分轨、导出。Windows 桌面版（Electron）和只有本地作曲的静态网页版共用一套渲染层代码。
+- **两种界面**（v0.4 规格 `.scratch/SIMPLE-SPEC.md`，代码已在，尚未打包）：默认的**简单模式**（点场景 → 听 → 下载，一键微调，没有任何术语；`src/ui/simple/`）和原样保留的 v0.3 **专业模式**。两者是同一个内核（`src/state/**`）、同一个作品库和引擎上的两套视图；`UiState.mode` 记在 localStorage `muse-bgm:mode`（S05）。现有的 Playwright / Electron 套件在开始时切到专业模式。
 - **做音乐的两种方式**：①**本地作曲（引擎 2）**：符号作曲器 → Score → 纯 TypeScript 合成器；48 kHz、四分轨、−16 LUFS；离线、免费、确定性；22 种风格、14 种主奏乐器、24 个调。②**云端 AI 音乐服务**（仅桌面版，用户自己的密钥）：腾讯云 TokenHub、火山引擎、阿里云百炼 Fun-Music、ElevenLabs；每次一个付费请求，返回一条混合音轨。
 - **制作人**（把话变成制作方案）：离线规则（永远可用）和可选的大模型（Claude 官方 SDK、OpenAI 兼容接口、本机 Ollama；只从主进程调用；失败时回退到规则并说明原因）。
 - **验证边界（最重要）**：云端音乐服务和托管的大模型只在本机模拟的服务上跑通过，**没有用过任何真实付费账号**；真实的外部调用只有本机 Ollama；ElevenLabs 连模拟的界面全流程也没有。安装包**从未运行过**。只在一台 Windows 11 电脑上、只在 Chromium / Electron 里测过。**没有人听过生成的音频**——响度、平衡、接缝的结论全是测量值。不要把模拟写成真实联调，不要把测量写成「好听」。
@@ -93,6 +94,7 @@ rg --files src electron tests scripts docs   # 文件清单
 
 | 区域 | 已实现 | 边界 |
 | --- | --- | --- |
+| 简单模式（默认） | 「做音乐」：12 张场景卡片（日常 Vlog、咖啡馆、旅行风景、可爱萌宠、学习专注、睡前放松、运动健身、游戏关卡、史诗大片、国风古韵、浪漫温馨、科技产品）点一下就开始生成，「更多风格」10 个按钮，可选的一句话 +「做一首」（句子没说时长就是 1 分钟），长度「自动 · 30 秒 · 1 分钟 · 2 分钟」，最近做的 3 首；结果页：封面、可改的标题、一行人话（「慵懒放松 · 1 分钟 · 可以循环播放」）、大播放键 + 波形 + 时间 + 音量、「下载音乐」（整首，直接保存，文件名 = 标题）、「换一首」、「重新挑」、9 个一键微调（更欢快、更安静、快一点、慢一点、长一点、短一点、换个乐器、去掉鼓 / 加点鼓、做成循环 / 加个结尾，每个都是发给制作人的一句固定的话）、一个「也可以直接说」的输入框、每次修改后的人话说明（「改好了：节奏快了一点，旋律没变。」）+「撤销」、「上一版 / 下一版」；「我的音乐」：每首曲子一张卡片（同一首的多个版本只显示最新一版，「共 3 版」）、搜索、播放 / 下载 / 删除（删除整首的所有版本，8 秒可撤销，付费的先问）、损坏记录照常；帮助是三步图文；设置第一个标签「常规」切换模式，页面角落有「专业模式」链接；桌面版配置了云端服务时多一个「用 AI 服务生成（服务名，按次付费）」开关，默认关 | 不显示 BPM、调、百分比、版本号、引擎、种子、段落、和弦和制作人；付费确认、未保存横幅、待取回横幅、关闭询问、撤销删除、多标签页、会话恢复、错误边界与专业模式完全相同。云端作品在简单模式里的每次修改都是新的付费请求（照常先问）。只在 Chromium / Electron 里看过；没有真人用户测试 |
 | 创作 | 描述（最多 1500 字）+ 可选的风格（「自动」或 22 种）、时长（15 / 30 / 60 / 90 / 120 秒）、结构（循环片段 / 完整结尾）、生成引擎、制作人；输入框下实时显示离线规则的理解 | 选了大模型时预览注明「发送后由大模型重新理解」 |
 | 试听 | 波形、段落带、和弦条；空格播放、← / → 定位 5 秒、`L` 循环试听（循环片段默认开，完整结尾默认关）、`Ctrl+Enter` 发送、`Ctrl+N` 新建、`Ctrl+E` 导出 | 浏览器标签页里拦不住 `Ctrl+N`，帮助里只在桌面版列出 |
 | 对话微调 | 自然语言指令；数字按它周围的词理解（「快 10 bpm」「速度降到 90」「加长 15 秒」「鼓调到 30%」「最多 100 bpm」是上限、「不要 120，要 100」取后者）；否定跟着它的动词（「鼓别关」「别换乐器」什么都不做并锁住那一项）；「快了点」「鼓大了」按抱怨反着改；回复逐项列出实际改动和关于旋律的那句话；听不懂时如实说并给出例子 | 不支持人声、音效、撤销、只改某一段（音量类的要求会按整首处理并注明，只关某一段的鼓会拒绝）、3/4 拍、模仿具体歌手；会说明 |
@@ -100,7 +102,7 @@ rg --files src electron tests scripts docs   # 文件清单
 | 混音台 | 旋律 / 和声 / 贝斯 / 鼓组推子（即时、自动保存）、静音、独奏 | 独奏只影响试听，不影响导出；云端作品没有分轨 |
 | 我的作品 | 改名、收藏、搜索、排序、8 秒可撤销的删除（云端作品要再确认；撤销正开着的那首会把它重新载入创作页）、导入工程 JSON、损坏记录的原始数据和原始音频导出；同一首曲子的各版本共享一条对话 | 全部在本机；没有账号、同步、协作 |
 | 导出 | 混音 WAV（48 kHz / 16 bit；循环片段可重复 ×2 / ×4）、单轨 WAV、工程 JSON；云端作品另有原始音频（MP3 / WAV / M4A / FLAC 原样） | 工程 JSON 不含音频，云端作品不能靠它恢复；云端作品的 WAV 导出是解码后重采样到 48 kHz 的 |
-| 设置（桌面） | AI 音乐服务凭据、制作人大模型、关于（版本、数据目录） | 密钥只写不读；保存成功只代表已保存，不代表已连通 |
+| 设置（桌面） | 常规（简单 / 专业模式，网页版也有）、AI 音乐服务凭据、制作人大模型、关于（版本、数据目录） | 密钥只写不读；保存成功只代表已保存，不代表已连通。简单模式打开设置时停在「常规」，专业模式仍停在上次的标签（初始「AI 音乐服务」） |
 | 桌面 | Windows x64 安装版（NSIS，当前用户）和便携版；默认窗口 1440×940，最小 1060×720 | 没有自动更新、没有代码签名、没有 macOS / Linux 包 |
 | 网页版 | 完整的本地作曲、作品库（浏览器 IndexedDB）、多标签页同步 | 没有云端和大模型；作品只在这个浏览器里 |
 
@@ -235,7 +237,8 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
 | `libraryFlows.ts`、`settingsFlows.ts` | 列表、改名、收藏、软删除、导入、损坏记录、其他标签页的通知；凭据与大模型设置 |
 | `reducer.ts`、`selectors.ts` | 全部渲染层状态和唯一能改它的代码（丢弃过期或已取消任务的结果）；派生视图 |
 | `plan.ts` | 从用户动作到方案：`buildAgentRequest`、`planFromDraft`、`planVariation`、让方案说真话的 `withAskedDrums` / `inaudiblePlan` / `honestPlan` / `truthfulTiming`、`suggestionsFor`、`paidNotice` |
-| `logic.ts`、`options.ts`、`score.ts`、`works.ts`、`format.ts`、`content.ts` | 纯函数：草稿与差异、文案统一（`houseStyle`）、定时常量；可选的引擎和制作人、任务阶段的文字；不渲染音频就读出作品的实际速度和长度；排序、搜索、版本关系；显示用的小工具；应用自带的文字（灵感卡片、示例） |
+| `logic.ts`、`options.ts`、`score.ts`、`works.ts`、`format.ts`、`content.ts` | 纯函数：草稿与差异、文案统一（`houseStyle`）、定时常量；可选的引擎和制作人（含简单模式的 `autoBrain`）、任务阶段的文字；不渲染音频就读出作品的实际速度和长度；排序、搜索、版本关系（含按曲子归组的 `groupPieces`）；显示用的小工具；应用自带的文字（灵感卡片、示例） |
+| `mode.ts`、`plain.ts`、`scenes.ts` | 简单模式的内核部分（都不依赖 React，有单测 `app-simple`）：界面模式的偏好（`UiMode`、`parseMode`、`createModeStore` / `browserModeStore` / `memoryModeStore`，localStorage `muse-bgm:mode`，读写都包 try/catch，读不到就是简单模式）；人话（`styleFeel`、`plainInstrument`、`plainDuration`、`plainSummary`、`newPieceLine`、`plainChanges`、`changeLine`、`plainPhase`、`plainWords`、`NOTHING_CHANGED`）；场景表与一键微调（`SCENES`、`MORE_STYLES`、`LENGTH_CHOICES`、`scenePins`、`sentencePins` / `saysLength`（「做一首」：选了长度用它，没选时句子自己说了长度就交给制作人，否则 1 分钟）、`STYLE_LEADS`、`nextInstrument`、`tweaksFor`、`downloadRequest`） |
 | `session.ts`、`sync.ts` | 跨启动记住的少量信息（localStorage `muse-bgm:session`，含没应用的修改和没取回的付费结果该怎样归档）；标签页之间的通知（BroadcastChannel，退化为 `storage` 事件，键 `muse-bgm:sync`） |
 | `shortcuts.ts`、`useStudio.ts`、`useLibrary.ts`、`useSettings.ts`、`usePlanPreview.ts` | 全局快捷键；薄订阅 hook；输入停顿约 300 ms 后的理解预览 |
 
@@ -243,15 +246,16 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
 
 | 位置 | 职责 |
 | --- | --- |
-| `AppShell.tsx`、`ErrorBoundary.tsx` | 导航、当前页面、底栏、弹窗、提示；根错误边界（渲染失败时仍可导出内存里的作品） |
+| `AppShell.tsx`、`ErrorBoundary.tsx` | 按 `ui.mode` 选一套主体（专业模式：导航、当前页面、底栏，DOM 与 v0.3 相同；简单模式：`simple/SimpleShell`），两者共用弹窗、询问、提示和提示框；根错误边界（渲染失败时仍可导出内存里的作品） |
+| `simple/` | 简单模式：`SimpleShell`（顶栏「做音乐 · 我的音乐」、帮助、设置；与专业模式相同的三种横幅；只在「我的音乐」显示底栏）、`SimpleStudio`（没作品 / 打开中 / 有作品）、`SimpleMakePage`（场景页）、`SimpleResultPage`（结果页，复用 `TitleInput`、`WaveformCanvas`、`TimeText`）、`SimpleLibraryPage`（我的音乐，复用 `DamagedSection`）、`parts`（大进度、失败行与「再试一次」、「专业模式」链接、`PlainLine`） |
 | `shell/` | `ShellNav`（≥1100 px 侧栏，以下为顶栏）、`BottomBar`（任务进度与迷你走带）、`CoreDialog`（付费确认等询问，出现后先挡 500 ms）、`UnsavedBanner`、`ResultBanners`（没取回的付费结果、取消后才到达又没存上的结果——都关不掉）、`Toasts` |
 | `studio/` | `StudioPage`、`ComposerHero`（新作品）、`ComposerOptions`、`StyleChips`、`PlayerCard`、`Waveform`、`Transport`、`ProducerThread`（对话）、`Mixer`、`Inspector`（声音微调） |
 | `library/LibraryPage.tsx`、`inspiration/InspirationPage.tsx` | 我的作品；灵感（22 个风格卡片和场景提示词） |
-| `modals/` | `SettingsModal`（AI 音乐服务 / 制作人大模型 / 关于）、`ExportModal`、`HelpModal` |
+| `modals/` | `SettingsModal`（常规 / AI 音乐服务 / 制作人大模型 / 关于）、`ExportModal`、`HelpModal`（简单模式下是三步图文 +「不满意怎么办」） |
 | `primitives/` | `Button`、`Controls`（滑块、选择、分段、标签）、`Modal`、`Tooltip`、`Art`（标志、封面、小波形） |
 | `hooks/` | 小型 UI hook：`store.ts`、`uiStores.ts`（主走带是否在屏幕上）、`useAutosize.ts`、`useElementWidth.ts`、`useMediaQuery.ts`、`usePlaybackSelector.ts`（按播放头派生值，只在值变化时重渲染）、`useRenderCount.ts`（只在开发构建里计数）、`useStable.ts` |
 | `logic/` | 无 DOM 的界面逻辑：`dialogGuard.ts`（询问出现后的 500 ms 内不接受点击和回车，按住的键永远不算回答）、`focus.ts`、`instruments.ts`（四个混音组里各有哪些乐器）、`timeline.ts`（段落带、和弦条、波形柱）、`tooltip.ts` |
-| `styles/` | `index.css` 依次引入 `tokens` `base` `primitives` `shell` `studio` `library` `inspiration` `modals`；纯 CSS，没有远程字体和图片 |
+| `styles/` | `index.css` 依次引入 `tokens` `base` `primitives` `shell` `studio` `library` `inspiration` `modals` `simple`；纯 CSS，没有远程字体和图片。`simple.css` 只作用于简单模式的类名（正文 15–16 px、主按钮 48–56 px） |
 
 ### `tests/` 与 `scripts/`
 
@@ -278,6 +282,15 @@ index.html → src/main.tsx → App.tsx（AppProvider + AppShell，外面是 Err
 - `listProjects()` 返回 `{ projects, damaged }`：逐条读取，坏记录进入 `damaged`（带原因；`readRawRecord` 导出原始 JSON，`readRawAudio` 导出付费作品的原始音频），不影响其他作品。
 - 其他上限：标题 80 字（界面编辑时 64）、标签 12 个 × 32 字、描述 2000 字、对话保留最近 40 轮（每轮 1500 字）。
 - 已保存的作品只按字段修改：`updateProject(id, patch)` 在一个事务里读-改-写（`title`、`favorite`、`volumes`、`audioDuration`、`updatedAt`），所以一个标签页不会用旧数据覆盖另一个标签页的改动；已删除的记录不会被写回来。
+
+**界面模式**（`src/state/mode.ts`、`core.ts`、`studioFlows.ts`）：简单模式只是另一套视图，不是更弱的应用。
+
+- `UiState.mode`：`"simple"`（默认）或 `"pro"`。初值来自 `CoreDeps.mode`（真实应用是 localStorage `muse-bgm:mode`；读写包 try/catch，读不到、写不进或值不认识都是简单模式；没有传 store 时也是简单模式，内核测试的 `harness()` 默认传专业模式）。`setMode(mode)` 写回偏好并提示一句；切到简单模式时：在「灵感」页就回到创作页，没有作品也没有任务时生成引擎回到本地（`StudioFlows.enterSimple`），制作人跟随设置（`followSettings`：大模型已保存且可用 → `llm`，否则 `rules`；只在设置读到之后；启动和每次刷新设置时也会做）。作品、草稿、作品库、播放都不动。
+- 简单模式用的仍是同一套 `AppActions`（`send(phrase)`、`variation`、`newPiece`、`openProject`、`exportWork`、`removeProject` / `undoRemove`、`cancelJob`、`rename`、`setProvider`、`answerDialog`……），因此作业锁、付费确认、未保存横幅、待取回横幅、关闭询问、撤销删除、多标签页、会话恢复全部照旧。新增的动作只有 `startPiece(pins, { withText })`：场景卡片和「做一首」用它新建作品，只带这一次的固定项（专业模式留下的固定项不会跟着发出去），什么都没做出来时把原来的固定项放回去；有作品时拒绝。
+- 内核里随模式变的只有措辞：简单模式下 `Kernel.toast` 和 `Kernel.ask` 的文字经 `plainWords`（「我的作品」→「我的音乐」、「导出」→「下载音乐」、「创作完成，」→「做好了，」）；大模型回退时只提示「已用内置方式完成。」；制作人答「没有可改的」时提示 `NOTHING_CHANGED`；桌面版导出成功说「已保存」；同一首曲子的几个版本一起删除时，撤销提示用曲名；打开设置时停在「常规」。专业模式的每一句都没变。
+- `StudioState.failure`：最后一次生成失败的原因（取消和拒绝不算）；下一个任务开始、载入或离开作品时清空。简单模式据此显示「这次没做成」和「再试一次」（重做上一个按钮的请求）。
+- `ExportRequest` 的 `mix` / `original` 可以带 `plainName: true`：文件名只用标题（不带 `v3`）。简单模式的「下载音乐」= 本地作品的整首混音 WAV、云端作品的原始音频（`scenes.ts` 的 `downloadRequest`）；`Ctrl+E` 也是它。场景页上 `Ctrl+Enter` 不发送。
+- 人话（`plain.ts`）：改动说明由前后两份设置算出，不用制作人的话；最多 4 项，再多加「等」；除时长外没有数字，没有英文和术语；关于旋律的半句来自作曲器自己的 `melodyContinuity`（云端作品永远是「换了一段新旋律」）。「换个乐器」在 `STYLE_LEADS` 里按固定顺序轮换，发出「换成<目录里的乐器名>」。
 
 **状态规则**（`src/state/types.ts`、`reducer.ts`）：
 
@@ -523,7 +536,22 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 
 ## S09｜测试
 
-**最后一轮的结果**（当前代码，2026-10-09；Windows 11、Node 24.18.0、Electron 41.10.7、20 核）：
+**简单模式这一轮**（2026-11-02，加上简单模式之后的工作区；没有打包，`release/` 里仍是 `a5cb422` 打出的 0.3.0）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `node scripts/typecheck.mjs` | 243 个文件，0 个错误 |
+| `npm run build`、`npm run build:web` | 通过 |
+| `npm test` | TypeScript 815 / 815，0 跳过（新增 `app-simple` 19 项），CommonJS 252 / 252，0 跳过；约 84 秒 |
+| `npm run test:web` | 29 步通过，102.3 秒（新增 2 步：简单模式旅程（含手机上的检查）、付费服务下的简单模式；原有 27 步开始前切到专业模式） |
+| `npm run desktop:smoke` | 通过，约 51 秒 |
+| `npm run test:desktop` | 15 步通过，22.4 秒（新增 1 步简单模式冒烟） |
+| `npm run test:cloud` | 23 步通过，79.2 秒 |
+| `npx prettier --check .` | 全部符合 Prettier |
+
+`npm run test:packaged` 没有跑（需要先 `npm run dist`）；它经同一个 `launchApp` 启动，会先切到专业模式。
+
+**v0.3.0 最后一轮的结果**（2026-10-09；Windows 11、Node 24.18.0、Electron 41.10.7、20 核）：
 
 | 命令 | 结果 |
 | --- | --- |
@@ -540,7 +568,7 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 
 顺序是：集成后的代码上先跑一遍 `test:all` 和 Ollama 阶段 → `npm run dist` → 发行程序冒烟和对打包程序的桌面冒烟 → 写完发布记录和文档后，再完整跑一遍 `test:all`、`test:packaged` 和排版检查（上表是这最后一遍的数字；Ollama 阶段只在打包前跑了一次，之后产品代码没有再改）。详细记录在 `docs/QA.md`；各套件的结果 JSON 在 `test-results/`。
 
-### 单元测试：`tests/*.test.ts`（35 个文件，796 项）
+### 单元测试：`tests/*.test.ts`（36 个文件，815 项）
 
 下表的数量是用一个按文件计数的报告器在当前代码上整套运行得到的，合计与最后一轮的总数一致。
 
@@ -552,6 +580,7 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 | `app-safety` | 48 | 计费与数据安全：付费确认、大模型失败后的询问、保存失败后的保留与重试、**没取回的付费结果**（横幅、三种提问、放弃、重新加载后恢复、主进程的报告、下载中取消；FQ-01）、取消后才到达又没存上的结果、没应用的修改跨重启（FQ-05）、撤销重新打开作品（FQ-14）、模型说明（FQ-02）、关闭风险、多标签页、撤销删除、旋律承诺（CORE、RB、UX-01/03/10、MAIN-02、NEW-01/02/06/07、FQ-11/15/16） |
 | `app-logic` | 28 | 内核的纯决策：草稿、固定项、方案、对话、版本、可选项、快捷键、会话记录的解析（ND-3）、等待文字（FQ-11） |
 | `app-reducer` | 19 | reducer：什么可以改什么 |
+| `app-simple` | 19 | 简单模式：`plainChanges` 的每一种说法（速度幅度、能量、乐器、鼓的有无与大小、其他三组音量、时长、循环、调、丰富度、空间、风格整体、只换旋律、没有变化、最多 4 项加「等」、除时长外不出现数字和术语、写进编曲里的鼓也算）、`plainDuration` / `plainSummary` / `plainPhase` / `plainWords`；12 个场景和 10 个风格按钮经离线规则 + 固定项得到承诺的风格、时长、结构（自动和 30 秒两种长度，标题没有英文）；「换个乐器」在每个风格里按固定顺序轮换、发出的话离线规则听得懂并换成那件乐器；9 个一键微调都会改动作品；模式偏好的读写（存储拒绝、损坏、缺失都回到简单模式）；`autoBrain`；内核：`setMode` 不丢作品、记住选择、简单模式打开设置停在「常规」；`startPiece` 只带这一次的固定项、失败放回、失败原因与清空、取消不算失败、「做一首」带上文字；简单模式的提示措辞、没有可改时的提示、大模型失败只说「已用内置方式完成。」；制作人跟随设置；切到简单模式回到本地引擎、付费确认照旧；`groupPieces` 与整首删除的一个「撤销」 |
 | `app-services` | 14 | `services/generation.ts` 与 `exporter.ts`（替身引擎、桥、解码器）：导出选项、重复、淡入淡出、格式识别 |
 | `ui-logic` | 59 | 界面背后的纯逻辑：文案统一（UX-11，含作曲器自己写的文字）、时间轴与和弦标注（FQ-07）、焦点、提示框的位置（FQ-16）、询问出现后的 500 ms（NEW-09）、密钥前缀提醒（FQ-15）、建议按钮、「换一版旋律」如实说和弦也重写了（FQ-08）、应用自带的每条示例都兑现它的承诺 |
 | `storage` | 30 | 严格校验、导入导出、引擎缺省、对话里的模型说明、更新版本与非工程数据的说明 |
@@ -612,9 +641,9 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 
 | 套件 | 驱动什么 | 最近一次结果 | 结果文件 |
 | --- | --- | --- | --- |
-| `web-smoke.cjs`（`npm run test:web`） | Chromium 里的 `dist-web/`，放在 `/play/yinxu/` 下、嵌在 1000×760 的 iframe 里：创作、播放、键盘、对话修改、声音微调（没应用的修改在重新加载后还在）、长渲染不卡界面并可取消、混音、导出、渲染错误的恢复面板、刷新恢复、导入、作品库、删除与撤销（撤销正开着的作品会重新打开它）、损坏记录、灵感、两个标签页、保存失败的横幅与重试、1366×768 窗口（风格按钮只占一个 Tab 位、和弦名不重叠也不漏、提示框不挡住它说明的那一行、待应用的小条）、390×780 触屏。**另用一个模拟主进程的替身桥在浏览器里跑桌面渲染层的付费流程**：连点和按住回车不会误确认、火山 15 秒的问题排在付费确认之前、没取回的付费结果的整条路（每个页面的横幅、三种提问、重新加载后恢复、一次失败再一次成功的重新下载且付费次数不变、确认后的放弃）。任何控制台错误、CSP 违规或静态文件以外的请求都算失败 | 27 步，87.7 秒 | `test-results/web-smoke.json` |
+| `web-smoke.cjs`（`npm run test:web`） | Chromium 里的 `dist-web/`，放在 `/play/yinxu/` 下、嵌在 1000×760 的 iframe 里：创作、播放、键盘、对话修改、声音微调（没应用的修改在重新加载后还在）、长渲染不卡界面并可取消、混音、导出、渲染错误的恢复面板、刷新恢复、导入、作品库、删除与撤销（撤销正开着的作品会重新打开它）、损坏记录、灵感、两个标签页、保存失败的横幅与重试、1366×768 窗口（风格按钮只占一个 Tab 位、和弦名不重叠也不漏、提示框不挡住它说明的那一行、待应用的小条）、390×780 触屏。**另用一个模拟主进程的替身桥在浏览器里跑桌面渲染层的付费流程**：连点和按住回车不会误确认、火山 15 秒的问题排在付费确认之前、没取回的付费结果的整条路（每个页面的横幅、三种提问、重新加载后恢复、一次失败再一次成功的重新下载且付费次数不变、确认后的放弃）。任何控制台错误、CSP 违规或静态文件以外的请求都算失败。**简单模式**（不设偏好，即默认）：在 iframe 里点「咖啡馆」→ 自动播放并真的起了音源 → 「快一点」→ 人话改动说明（没有数字和术语）→「撤销」→「下载音乐」（文件名 = 标题，48 kHz 立体声 WAV，约 60 秒，有声音）→「我的音乐」（两个版本一张卡片「共 2 版」，播放 / 暂停，整首删除和撤销）→「专业模式」链接、重新加载后仍是专业模式、从「常规」切回；390×780 触屏上用一句自己的话「做一首」（没说时长就是 1 分钟），三页都不横向滚动，主按钮在第一屏且不小于 44 px；桌面渲染层里的 AI 服务开关默认关、场景和微调都先问付费、取消不发、下载原始音频、保存失败的付费结果在简单模式里也有横幅和离开前的询问。以上所有页面都检查没有术语 | 29 步，102.3 秒（原有步骤开始前通过 init script 把偏好设成专业模式） | `test-results/web-smoke.json` |
 | `desktop-smoke.cjs`（`npm run desktop:smoke`） | 真实 Electron + 临时数据目录：隔离的 preload、14 个桥方法、设置的形状（含 `pendingResult`）、中文错误不带前缀、音乐与大模型凭据的真实 safeStorage 增删、经 Chromium 网络栈向本机模拟模型规划、连不上本机模型的三种说明、受限端口、损坏条目互不影响、零字节的凭据文件在第一次保存时被隔离并只提示一次、小写盘符启动；**计费请求不重发的实验**（把 ElevenLabs 和腾讯云的域名映射到本机的替身服务，HTTP/1.1 + TLS 与 HTTP/2，重置与关闭各一次）；**发不出去的提交**（让真实计费会话的 `closeAllConnections()` 永不回答：取消立即结束、5 秒后自行放弃，都报告为没有发出，之后的生成照常）；**真实网络路径上的没取回结果**（阿里云：被报告、关闭时询问、新的生成被拒绝、放弃、取回）；右键菜单；三种关闭确认 | 通过，约 46 秒；对打包后的 `Muse BGM.exe` 也通过（45 秒） | 无（只有终端输出） |
-| `ui-smoke.cjs`（`npm run test:ui` / `test:desktop`） | 真实 Electron 的本地全流程：固定风格与时长生成 → 播放与键盘 → 对话修改（同一种子）与「没有变化就不生成」→ 声音微调 → 混音保存、独奏不保存 → 经系统保存路径导出混音 / ×2 / 单轨 / 工程 → 作品库 → `Ctrl+N`、取消 120 秒的渲染 → 删除与撤销、重启恢复 → 音乐服务与大模型设置 → 0.2 工程在旧引擎上打开并升级成引擎 2 的新版本 | 14 步，17.6 秒；0 个渲染层错误，0 个外发请求 | `test-results/ui-smoke-results.json` |
+| `ui-smoke.cjs`（`npm run test:ui` / `test:desktop`） | 真实 Electron 的本地全流程：固定风格与时长生成 → 播放与键盘 → 对话修改（同一种子）与「没有变化就不生成」→ 声音微调 → 混音保存、独奏不保存 → 经系统保存路径导出混音 / ×2 / 单轨 / 工程 → 作品库 → `Ctrl+N`、取消 120 秒的渲染 → 删除与撤销、重启恢复 → 音乐服务与大模型设置 → 0.2 工程在旧引擎上打开并升级成引擎 2 的新版本 | 15 步，22.4 秒；0 个渲染层错误，0 个外发请求。最后一步是简单模式冒烟：从「常规」切换 → 点「游戏关卡」（30 秒循环）→「慢一点」的人话说明 →「下载音乐」走系统保存框（默认文件名 = 标题，48 kHz WAV，提示「已保存」）→ 切回专业模式还是同一首 | `test-results/ui-smoke-results.json` |
 | `cloud-workflow.cjs`（`npm run test:cloud`） | 真实的界面、preload、IPC、适配器、解码、存储和导出，只把主进程的网络换成本机模拟（`MUSE_NETWORK=node` + 替换 `globalThis.fetch`）：没有凭据时拒绝；**腾讯 / 火山 / 阿里**三家的凭据保存和各一次完整生成（先保存再解码、显示真实时长、原始文件逐字节不变）；付费确认；HTTP 401；等待中取消；阿里云「已生成但下载一直失败 → 横幅 → 重新下载」；**主进程持有的结果**（被报告、不管页面说什么关闭时都问、不经询问不会被替换）；**火山五次状态查询失败后任务保留，「重新下载」续查并取回，没有新的提交**；火山的 15 秒在界面上不可选、主进程也拒绝；无法解码的音频；云端作品的修改；Claude（模拟）规划与修改（回复由应用写，模型的话是「模型说明」）；模型失败回退；规划中取消；OpenAI 兼容接口（模拟 DeepSeek）；模型 + 云端引擎 | 23 步，77.4 秒；未知请求 0、Chromium 外发请求 0；全程 13 个计费 POST（腾讯 6、阿里 5、火山 2） | `test-results/cloud-workflow-results.json` |
 | `cloud-workflow.cjs --ollama` / `--ollama-cold` | 上面的 23 步，再加真实的本机 Ollama：经设置表单配置、一次新作品、一次修改、核对只访问了本机。`--ollama-cold` 先让 Ollama 卸载模型 | 27 步，264.9 秒（`qwen3.5:9b-q4_K_M`；新作品 129.0 秒，修改 57.2 秒） | 可选阶段，不在 `test:all` 里；这次的结果 JSON 只留在草稿区 |
 | `packaged-smoke.cjs`（`npm run test:packaged`） | 发行物：先核对 `app.asar`（`dist/`、`electron/`、`package.json` 与工作区一致；依赖里没有多余文件；SDK 的脚本一个不少；`SHA256SUMS.txt` 和发布说明里的校验值就是这两个 EXE 的），再对 `release/win-unpacked/Muse BGM.exe` 和便携版 EXE 各跑 11 步：版本、桥（14 个方法）、CSP 生效、Worker 里作曲并播放、对话修改、导出 WAV、真实 safeStorage 存删凭据、包内 Claude SDK 完成一次模拟规划、整个进程重启后作品还在、没有请求离开本机 | 23 步，27.3 秒 | `test-results/packaged-smoke-results.json` |
@@ -642,6 +671,9 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 - `test:all` 不含 `test:packaged` 和 Ollama 阶段。
 
 **写测试时注意**：
+
+- 应用默认是简单模式。为 v0.3 写的套件都在专业模式里跑：Electron 套件经 `tests/helpers/electron-harness.cjs` 的 `ensureMode(page, "pro")`（`launchApp` 默认调用；偏好不同时写入 localStorage 再重新加载一次，v0.3.0 的旧程序没有模式，原样不动），`desktop-smoke.cjs` 的 `launch` 也调用它；网页套件给每个上下文加 `proMode` init script（只在偏好为空时写入）。内核测试的 `harness()` 默认 `mode: "pro"`，测简单模式的传 `mode: "simple"`。
+- `tests/agent-openai.test.cjs` 的 ND-4 是一个计时比例（4 倍输入不超过 12 倍耗时，毫秒级）。2026-11-02 这一轮在整套 `npm test` 刚跑完音频测试时失败过两次（单独运行、重跑都通过；它测的 `electron/agent/openai.cjs` 没有改）。再遇到时先单独重跑确认。
 
 - Electron 套件读 `dist/`（网页套件读 `dist-web/`），先构建。它们使用临时数据目录，并统计、拒绝一切真实外部请求。
 - `npm test` 带 `--no-maglev-escape-analysis`：Node 24.18 的 V8 在高负载下会让同一个对象字面量产生的两个对象共用数字字段（`tests/helpers/spectrum.ts` 有说明，`tests/fixtures/literal-aliasing.check.ts` 是复现）。带采样循环的测试辅助函数应当返回数字，而不是新的对象字面量。

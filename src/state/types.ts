@@ -25,6 +25,7 @@ import type { ArrangementSummary } from "../music/score";
 import type { Platform } from "../platform";
 import type { Player } from "../player/usePlayer";
 import type { DamagedRecord } from "../storage";
+import type { UiMode } from "./mode";
 import type {
   CloudProvider,
   MusicConfig,
@@ -40,8 +41,10 @@ import type {
 
 export type Page = "studio" | "library" | "inspiration";
 export type ModalId = "settings" | "export" | "help";
-/** data-testid: settings-tab-<id> */
-export type SettingsTab = "music" | "llm" | "about";
+/** data-testid: settings-tab-<id>; 常规 (general) holds the interface mode */
+export type SettingsTab = "general" | "music" | "llm" | "about";
+
+export type { UiMode };
 
 export interface Toast {
   id: number;
@@ -88,6 +91,11 @@ export interface Dialog {
 }
 
 export interface UiState {
+  /**
+   * 简单模式 (default) or 专业模式: which interface is shown. Both are views
+   * of the same core; remembered on this device (see mode.ts).
+   */
+  mode: UiMode;
   page: Page;
   modal: ModalId | null;
   /** tab to show when the settings modal opens */
@@ -301,6 +309,12 @@ export interface StudioState {
   pending: PendingResult | null;
   /** paid results that exist only in this window and are not the loaded work */
   strays: StrayResult[];
+  /**
+   * Why the last generation failed, ready to show (简单模式 shows it with
+   * 再试一次). Cleared when the next job starts or a work is loaded or left;
+   * a cancelled job or a refusal is not a failure.
+   */
+  failure: string | null;
 }
 
 export interface EngineOption {
@@ -448,9 +462,11 @@ export type ExportRequest =
       repeats?: 1 | 2 | 4;
       /** engine-1 and cloud works that do not loop: 1 s fade in/out */
       fade?: boolean;
+      /** the file is named by the title alone (简单模式 shows no versions) */
+      plainName?: boolean;
     }
   | { kind: "stem"; track: TrackName }
-  | { kind: "original" }
+  | { kind: "original"; plainName?: boolean }
   | { kind: "project" };
 
 export type ActionResult = { ok: true } | { ok: false; message: string };
@@ -493,6 +509,11 @@ export interface AppActions {
   dismissToast(id: number): void;
   /** Open an http(s) page outside the app (desktop: allow-listed pages only). */
   openLink(url: string): void;
+  /**
+   * 简单模式 / 专业模式. Remembered on this device; nothing else changes —
+   * the loaded work, the library and playback stay as they are.
+   */
+  setMode(mode: UiMode): void;
 
   /* ---- composer ---- */
   /** Typing. Touches nothing but the text (and the saved session). */
@@ -517,6 +538,17 @@ export interface AppActions {
    * tick 本次会话不再提示 for that service), see `ui.dialog`.
    */
   send(text?: string): Promise<boolean>;
+  /**
+   * 简单模式: start a new piece at once with exactly these pins (a scene card
+   * sets style, length and structure; 做一首 only a length, if one was
+   * picked) — pins left over from earlier never ride along. With
+   * `withText` the composer's text is sent as the description (cleared and
+   * given back on failure, as with `send()`); without it only the pins
+   * travel. Every question of `send` (paid request, unsaved result, waiting
+   * paid result) is asked the same way. If nothing was made, the pins are
+   * put back as they were. Refused (false) while a work is loaded.
+   */
+  startPiece(pins: Pins, options?: { withText?: boolean }): Promise<boolean>;
   /**
    * A suggestion chip. Local engine: the phrase is sent at once and the
    * composer keeps whatever was typed. Cloud engine: nothing is sent — the

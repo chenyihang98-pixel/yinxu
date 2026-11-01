@@ -184,6 +184,17 @@
   }
 }
 
+/* four tabs on a phone: the words alone, so all of them stay in view */
+@media (max-width: 479px) {
+  .tab {
+    padding: 0 9px;
+  }
+
+  .tab svg {
+    display: none;
+  }
+}
+
 /* settings */
 .settings-pane {
   display: flex;

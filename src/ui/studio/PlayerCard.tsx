@@ -75,7 +75,13 @@ function SaveIndicator(props: {
 }
 
 /** The title reads as text and edits in place; Enter or leaving it saves. */
-function TitleInput(props: { project: Project; actions: AppActions }) {
+export function TitleInput(props: {
+  project: Project;
+  actions: AppActions;
+  /** default work-title */
+  testId?: string;
+  className?: string;
+}) {
   const { project, actions } = props;
   const [title, setTitle] = useState(project.title);
   useEffect(() => setTitle(project.title), [project.id, project.title]);
@@ -90,8 +96,8 @@ function TitleInput(props: { project: Project; actions: AppActions }) {
   };
   return (
     <input
-      className="title-input"
-      data-testid="work-title"
+      className={props.className ?? "title-input"}
+      data-testid={props.testId ?? "work-title"}
       aria-label="作品名称"
       data-tip="点击修改名称"
       maxLength={MAX_TITLE_CHARS}

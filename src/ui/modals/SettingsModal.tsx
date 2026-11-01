@@ -17,6 +17,7 @@ import {
   Monitor,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   TriangleAlert,
 } from "lucide-react";
 import { LLM_PRESETS, llmPreset } from "../../agent/llm-presets";
@@ -35,6 +36,7 @@ import type {
   ActionResult,
   SettingsTab,
   SettingsView,
+  UiMode,
 } from "../../state/types";
 import type { CloudProvider, ProviderStatus } from "../../types";
 import { rovingIndex } from "../logic/focus";
@@ -44,6 +46,11 @@ import { Badge, Field, Select, useFieldId } from "../primitives/Controls";
 import { Modal } from "../primitives/Modal";
 
 const TABS: { id: SettingsTab; label: string; icon: ReactNode }[] = [
+  {
+    id: "general",
+    label: "常规",
+    icon: <SlidersHorizontal size={15} aria-hidden />,
+  },
   { id: "music", label: "AI 音乐服务", icon: <Cloud size={15} aria-hidden /> },
   { id: "llm", label: "制作人大模型", icon: <Bot size={15} aria-hidden /> },
   { id: "about", label: "关于", icon: <Info size={15} aria-hidden /> },
@@ -92,6 +99,56 @@ function FormError(props: { message: string }) {
       <TriangleAlert size={16} aria-hidden />
       <span>{props.message}</span>
     </p>
+  );
+}
+
+/* ---------------- 常规 ---------------- */
+
+const MODES: { id: UiMode; label: string; text: string }[] = [
+  {
+    id: "simple",
+    label: "简单模式（推荐）",
+    text: "点一个场景就出音乐，不用懂任何音乐知识。",
+  },
+  {
+    id: "pro",
+    label: "专业模式",
+    text: "完整的创作工具：和制作人对话、逐项调整声音、单独调整每种乐器的音量、更多下载格式。",
+  },
+];
+
+function GeneralTab() {
+  const { ui, actions } = useApp();
+  return (
+    <div className="settings-pane" data-testid="settings-general">
+      <div
+        className="mode-choice"
+        role="radiogroup"
+        aria-labelledby="mode-choice-title"
+      >
+        <h3 id="mode-choice-title">界面模式</h3>
+        {MODES.map((mode) => (
+          <button
+            key={mode.id}
+            type="button"
+            role="radio"
+            className="mode-option"
+            data-testid={`mode-${mode.id}`}
+            aria-checked={ui.mode === mode.id}
+            onClick={() => actions.setMode(mode.id)}
+          >
+            <span className="mode-dot" aria-hidden />
+            <span className="mode-text">
+              <strong>{mode.label}</strong>
+              <span>{mode.text}</span>
+            </span>
+          </button>
+        ))}
+        <p className="muted">
+          两种模式看到的是同一批作品：切换不会丢掉任何作品，正在听的这首也还在。
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -792,6 +849,7 @@ export function SettingsModal() {
         role="tabpanel"
         aria-labelledby={`settings-tab-${tab}`}
       >
+        {tab === "general" && <GeneralTab />}
         {tab === "music" && <MusicTab />}
         {tab === "llm" && <LlmTab />}
         {tab === "about" && <AboutTab />}

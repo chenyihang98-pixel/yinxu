@@ -333,6 +333,24 @@ function probes() {
   }
 }
 
+/**
+ * The v0.3 interface is 专业模式 now; the app starts in 简单模式. The steps
+ * written for v0.3 run in 专业模式: this sets the remembered preference
+ * before the app reads it — unless a step chose a mode itself.
+ */
+function proMode() {
+  try {
+    if (!localStorage.getItem("muse-bgm:mode"))
+      localStorage.setItem("muse-bgm:mode", "pro");
+  } catch {
+    /* storage refused: the step will notice */
+  }
+}
+
+/** Words 简单模式 never shows (spec §1: no jargon, no English). */
+const JARGON =
+  /BPM|调性|大调|小调|分轨|混响|版本号|v\d|引擎|种子|段落|和弦|推子|制作人|[A-Za-z]{3,}/;
+
 /** Nothing on the page is wider than the viewport, and no control hangs off its side. */
 function layoutProblems() {
   const problems = [];
@@ -511,6 +529,7 @@ async function desktopRenderer(browser, origin) {
     viewport: { width: 1360, height: 900 },
     locale: "zh-CN",
   });
+  await context.addInitScript(proMode);
   await context.addInitScript(standInBridge, {
     mp3Base64: mp3.toString("base64"),
   });
@@ -1223,6 +1242,7 @@ async function reviewWindow(browser, origin, watch) {
     viewport: { width: 1366, height: 768 },
     locale: "zh-CN",
   });
+  await context.addInitScript(proMode);
   await context.addInitScript(probes);
   const page = await context.newPage();
   watch(page);
@@ -1870,6 +1890,382 @@ async function reviewWindow(browser, origin, watch) {
 
 /* ---------------- the run ---------------- */
 
+/* ---------------- 简单模式 (the default) ---------------- */
+
+/** The visible words of a page, minus the two the spec itself writes in Latin letters. */
+function plainText(frame) {
+  return frame.evaluate(() =>
+    (document.querySelector(".app-body")?.innerText ?? "").replace(
+      /Vlog|8-bit/g,
+      "",
+    ),
+  );
+}
+
+/**
+ * 简单模式 as a first visitor meets it, inside the portal's frame: a scene →
+ * music plays → 快一点 → what changed, in plain words → 撤销 → 下载音乐 (a
+ * 48 kHz WAV named by the title) → 我的音乐 (one card for both versions,
+ * plays, deletes with 撤销) → 专业模式 and back. No jargon on any screen.
+ */
+async function simpleJourney(browser, origin, watch, downloads) {
+  const context = await browser.newContext({
+    viewport: { width: FRAME.width + 40, height: FRAME.height + 40 },
+    acceptDownloads: true,
+    locale: "zh-CN",
+  });
+  // no proMode here: a first visit starts in 简单模式
+  await context.addInitScript(probes);
+  const page = await context.newPage();
+  watch(page);
+  await page.goto(`${origin}${PARENT_PATH}`);
+  const frame = await (await page.waitForSelector("iframe#app")).contentFrame();
+  const $ = (id) => frame.locator(`[data-testid="${id}"]`);
+  await $("simple-make").waitFor({ timeout: 30000 });
+  assert.equal(
+    await frame.locator(".app").getAttribute("data-mode"),
+    "simple",
+    "a first visit is 简单模式",
+  );
+  assert.equal(await $("nav-studio").count(), 0, "no 专业模式 navigation");
+  assert.equal(await $("composer-engine").count(), 0, "no engine selector");
+  assert.equal(await $("composer-brain").count(), 0, "no producer selector");
+  assert.equal(await $("scene-card").count(), 12);
+  assert.equal(await $("more-style").count(), 10);
+  assert.match(await $("simple-lede").innerText(), /完全免费、不用联网/);
+  assert.equal(
+    await $("simple-ai-toggle").count(),
+    0,
+    "no AI service on the web",
+  );
+  assert.doesNotMatch(await plainText(frame), JARGON, "make page");
+  assert.deepEqual(await frame.evaluate(layoutProblems), [], "make page");
+
+  // one tap: 咖啡馆 (1 minute, a seamless loop)
+  const starts = await frame.evaluate(() => window.__sourceStarts);
+  await frame.locator('[data-testid="scene-card"][data-scene="cafe"]').click();
+  await frame.waitForSelector(
+    '[data-testid="simple-result"][data-revision="1"][data-audio="stems"]',
+    { timeout: 120000 },
+  );
+  await $("simple-progress").waitFor({ state: "detached", timeout: 120000 });
+  const [first] = await records(frame);
+  assert.equal(first.config.mood, "chill");
+  assert.equal(first.config.loop, true);
+  assert.equal(first.config.duration, 60);
+  // it plays by itself (the tap was the gesture), and the play button pauses it
+  await until(
+    () => $("simple-play").getAttribute("aria-pressed"),
+    (value) => value === "true",
+    "the new piece plays",
+  );
+  await until(
+    () => frame.evaluate(() => window.__sourceStarts),
+    (value) => value > starts,
+    "audio sources started",
+  );
+  await $("simple-play").click();
+  assert.equal(await $("simple-play").getAttribute("aria-pressed"), "false");
+  assert.equal(
+    await $("simple-summary").innerText(),
+    "慵懒放松 · 1 分钟 · 可以循环播放",
+  );
+  assert.match(await $("simple-change").innerText(), /^做好了：慵懒放松/);
+  assert.equal(await $("simple-undo").count(), 0, "nothing to undo yet");
+  assert.doesNotMatch(await plainText(frame), JARGON, "result page");
+  assert.deepEqual(await frame.evaluate(layoutProblems), [], "result page");
+
+  // 快一点: a new version, what changed in plain words
+  await $("tweak-faster").click();
+  await frame.waitForSelector(
+    '[data-testid="simple-result"][data-revision="2"][data-audio="stems"]',
+    { timeout: 120000 },
+  );
+  await $("simple-progress").waitFor({ state: "detached", timeout: 120000 });
+  const change = await $("simple-change").innerText();
+  assert.match(
+    change,
+    /^改好了：节奏快了(?:一点|很多)，旋律(?:没变|大体没变)。/,
+  );
+  assert.doesNotMatch(
+    change.replace(/\d+ (?:分钟|分|秒)/g, ""),
+    /\d|[A-Za-z%]/,
+  );
+  assert.equal(await $("simple-prev").count(), 1, "上一版 is offered");
+  const second = (await records(frame)).find((item) => item.revision === 2);
+  assert.ok(second && second.config.bpm > first.config.bpm);
+  if ((await $("simple-play").getAttribute("aria-pressed")) === "true")
+    await $("simple-play").click();
+
+  // 撤销: the version before, as it was
+  await $("simple-undo").click();
+  await frame.waitForSelector(
+    `[data-testid="simple-result"][data-project="${first.id}"][data-audio="stems"]`,
+    { timeout: 120000 },
+  );
+  await $("simple-progress").waitFor({ state: "detached", timeout: 120000 });
+  assert.equal(await $("simple-change").count(), 0);
+  assert.equal(await $("simple-next").count(), 1, "下一版 leads back");
+
+  // 下载音乐: the whole piece at once, named by its title
+  const title = await $("simple-title").inputValue();
+  const [file] = await Promise.all([
+    page.waitForEvent("download", { timeout: 30000 }),
+    $("simple-download").click(),
+  ]);
+  assert.equal(
+    file.suggestedFilename(),
+    `${title}.wav`,
+    "no version in the name",
+  );
+  const target = path.join(downloads, "simple.wav");
+  await file.saveAs(target);
+  const wav = wavInfo(fs.readFileSync(target));
+  assert.equal(wav.riff, "RIFF");
+  assert.equal(wav.wave, "WAVE");
+  assert.equal(wav.sampleRate, 48000);
+  assert.equal(wav.channels, 2);
+  assert.equal(wav.bits, 16);
+  assert.ok(Math.abs(wav.seconds - 60) < 4, `${wav.seconds} s`);
+  assert.ok(wav.rms > 0.001, `audible: rms ${wav.rms}`);
+
+  // 我的音乐: one card for the piece and both its versions
+  await $("simple-nav-library").click();
+  await $("simple-library").waitFor();
+  assert.equal(await $("simple-card").count(), 1);
+  assert.equal(await $("simple-card-versions").innerText(), "共 2 版");
+  assert.doesNotMatch(await plainText(frame), JARGON, "我的音乐");
+  assert.deepEqual(await frame.evaluate(layoutProblems), [], "我的音乐");
+  await $("simple-card-play").click();
+  await until(
+    () => $("mini-play").getAttribute("aria-pressed"),
+    (value) => value === "true",
+    "it plays from 我的音乐",
+  );
+  await $("simple-card-play").click();
+  await until(
+    () => $("mini-play").getAttribute("aria-pressed"),
+    (value) => value === "false",
+    "and pauses",
+  );
+  // 删除 takes the piece with every version; 撤销 brings it all back
+  await $("simple-card-delete").click();
+  await $("simple-card").waitFor({ state: "detached" });
+  const undo = frame.locator('[data-testid="toast"]', {
+    has: frame.locator('[data-testid="toast-action"]'),
+  });
+  assert.equal(await undo.locator("> span").innerText(), `已删除《${title}》`);
+  await undo.locator('[data-testid="toast-action"]').click();
+  await $("simple-card").waitFor();
+  await until(
+    async () => (await records(frame)).length,
+    (count) => count === 2,
+    "both versions are back",
+  );
+
+  // 专业模式 and back: nothing is lost, the choice is remembered
+  await $("pro-mode-link").click();
+  await $("nav-studio").waitFor();
+  assert.ok(
+    (await frame.locator('[data-testid="toast"] > span').allInnerTexts()).some(
+      (text) => text.includes("可在设置里换回简单模式"),
+    ),
+  );
+  assert.equal(
+    await $("library-card").count(),
+    2,
+    "every version, one card each",
+  );
+  const before = await frame.evaluate(() => window.__csp);
+  await page.reload();
+  const again = await (await page.waitForSelector("iframe#app")).contentFrame();
+  const a$ = (id) => again.locator(`[data-testid="${id}"]`);
+  await a$("nav-studio").waitFor({ timeout: 30000 });
+  await a$("settings-button").click();
+  await a$("settings-tab-general").click();
+  assert.equal(await a$("mode-pro").getAttribute("aria-checked"), "true");
+  await a$("mode-simple").click();
+  await a$("modal-close").click();
+  await again
+    .locator('[data-testid="simple-result"], [data-testid="simple-make"]')
+    .first()
+    .waitFor();
+  const csp = [...before, ...(await again.evaluate(() => window.__csp))];
+  await context.close();
+  return { csp, change, seconds: +wav.seconds.toFixed(2) };
+}
+
+/** 简单模式 on a phone: no sideways scrolling, the main buttons on the first screen. */
+async function simplePhone(browser, origin, watch) {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 780 },
+    locale: "zh-CN",
+    hasTouch: true,
+    isMobile: true,
+  });
+  await context.addInitScript(probes);
+  const phone = await context.newPage();
+  watch(phone);
+  const $ = (id) => phone.locator(`[data-testid="${id}"]`);
+  await phone.goto(`${origin}${APP_PATH}`);
+  await $("simple-make").waitFor({ timeout: 30000 });
+  assert.deepEqual(await phone.evaluate(layoutProblems), [], "make page");
+  // 做一首 with a sentence of one's own: no length named, so one minute
+  await $("simple-input").fill("海边日落，温柔一点");
+  await $("simple-send").tap();
+  await phone.waitForSelector(
+    '[data-testid="simple-result"][data-audio="stems"]',
+    { timeout: 120000 },
+  );
+  await $("simple-progress").waitFor({ state: "detached", timeout: 120000 });
+  const [made] = await records(phone);
+  assert.equal(made.config.prompt, "海边日落，温柔一点");
+  assert.equal(made.config.duration, 60);
+  if ((await $("simple-play").getAttribute("aria-pressed")) === "true")
+    await $("simple-play").tap();
+  for (const id of [
+    "simple-play",
+    "simple-download",
+    "simple-another",
+    "simple-restart",
+  ]) {
+    const box = await $(id).boundingBox();
+    assert.ok(
+      box && box.y >= 0 && box.y + box.height <= 780 && box.height >= 44,
+      `${id} is on the first screen and big enough: ${JSON.stringify(box)}`,
+    );
+  }
+  assert.deepEqual(await phone.evaluate(layoutProblems), [], "result page");
+  await $("simple-nav-library").tap();
+  await $("simple-library").waitFor();
+  assert.deepEqual(await phone.evaluate(layoutProblems), [], "我的音乐");
+  const csp = await phone.evaluate(() => window.__csp);
+  await context.close();
+  return csp;
+}
+
+/**
+ * 简单模式 in the desktop renderer with a stand-in bridge: the AI switch is
+ * off by default; on, a scene is a paid request that is asked first; a tweak
+ * of a paid piece is asked again; 下载音乐 saves the audio as it came.
+ */
+async function simpleCloud(browser, origin) {
+  const mp3 = fs.readFileSync(
+    path.join(ROOT, "tests", "fixtures", "music-3s.mp3"),
+  );
+  const context = await browser.newContext({
+    viewport: { width: 1060, height: 720 },
+    locale: "zh-CN",
+  });
+  await context.addInitScript(standInBridge, {
+    mp3Base64: mp3.toString("base64"),
+  });
+  const page = await context.newPage();
+  const problems = [];
+  page.on("pageerror", (error) => problems.push(String(error?.stack || error)));
+  page.on("console", (message) => {
+    if (message.type() === "error") problems.push(message.text());
+  });
+  const $ = (id) => page.locator(`[data-testid="${id}"]`);
+  const paid = () => page.evaluate(() => window.__paid());
+  await page.goto(`${origin}${DESKTOP_PATH}`);
+  await $("simple-make").waitFor({ timeout: 30000 });
+  await $("simple-ai-toggle").waitFor();
+  assert.equal(
+    await $("simple-ai-toggle").getAttribute("aria-checked"),
+    "false",
+  );
+  assert.match(await $("simple-lede").innerText(), /完全免费/);
+  await $("simple-ai-toggle").click();
+  assert.equal(
+    await $("simple-ai-toggle").getAttribute("aria-checked"),
+    "true",
+  );
+  assert.match(await $("simple-lede").innerText(), /按次付费/);
+  assert.match(
+    await $("simple-ai-toggle").innerText(),
+    /腾讯云 TokenHub，按次付费/,
+  );
+  // a scene is a paid request now: asked first; 取消 sends nothing
+  await page.locator('[data-testid="scene-card"][data-scene="tech"]').click();
+  await $("dialog-paid").waitFor();
+  await sleep(600);
+  await $("dialog-choice-cancel").click();
+  await $("dialog-paid").waitFor({ state: "detached" });
+  assert.equal(await paid(), 0, "nothing was paid for");
+  assert.equal(await $("scene-card").count(), 12, "back on the scenes");
+  await page.locator('[data-testid="scene-card"][data-scene="tech"]').click();
+  await $("dialog-paid").waitFor();
+  await sleep(600);
+  await $("dialog-choice-confirm").click();
+  await page.waitForSelector(
+    '[data-testid="simple-result"][data-audio="mix"]',
+    { timeout: 60000 },
+  );
+  await $("simple-progress").waitFor({ state: "detached", timeout: 60000 });
+  assert.equal(await paid(), 1);
+  assert.match(await $("simple-summary").innerText(), /AI 服务生成/);
+  await $("simple-paid").waitFor();
+  // a tweak of a paid piece is a new paid request: asked again
+  await $("tweak-slower").click();
+  await $("dialog-paid").waitFor();
+  await sleep(600);
+  await $("dialog-choice-cancel").click();
+  await $("dialog-paid").waitFor({ state: "detached" });
+  assert.equal(await paid(), 1, "取消: nothing was sent");
+  // 下载音乐: the bytes exactly as the service sent them, named by the title
+  const title = await $("simple-title").inputValue();
+  await $("simple-download").click();
+  await until(
+    () => page.evaluate(() => window.__saved.length),
+    (count) => count === 1,
+    "the file was handed to the save dialog",
+  );
+  const saved = await page.evaluate(() => window.__saved[0]);
+  assert.deepEqual(saved, { name: title, format: "mp3", bytes: mp3.length });
+  // a paid result whose save fails: the same banner and question as 专业模式
+  await page.evaluate(() => {
+    window.__putFailures = 99;
+  });
+  await $("tweak-slower").click();
+  await $("dialog-paid").waitFor();
+  await sleep(600);
+  await $("dialog-choice-confirm").click();
+  await page.waitForSelector(
+    '[data-testid="simple-result"][data-revision="2"][data-audio="mix"]',
+    { timeout: 60000 },
+  );
+  assert.equal(await paid(), 2);
+  await $("unsaved-banner").waitFor();
+  assert.match(
+    await $("unsaved-banner").innerText(),
+    /付费生成，但还没有保存到「我的音乐」/,
+  );
+  await $("simple-restart").click();
+  await $("dialog-unsaved").waitFor();
+  await page.keyboard.press("Escape");
+  await $("dialog-unsaved").waitFor({ state: "detached" });
+  assert.equal(
+    await $("simple-result").getAttribute("data-revision"),
+    "2",
+    "the paid result stays on screen",
+  );
+  await $("unsaved-export").click();
+  await until(
+    () => page.evaluate(() => window.__saved.length),
+    (count) => count === 2,
+    "the original audio was handed to the save dialog",
+  );
+  await page.evaluate(() => {
+    window.__putFailures = 0;
+  });
+  await $("retry-save").click();
+  await $("unsaved-banner").waitFor({ state: "detached" });
+  await context.close();
+  assert.deepEqual(problems, [], "console errors in the desktop renderer");
+  return { saved: saved.format };
+}
+
 async function main() {
   if (!fs.existsSync(path.join(DIST, "index.html"))) {
     console.error(
@@ -1930,6 +2326,7 @@ async function main() {
       acceptDownloads: true,
       locale: "zh-CN",
     });
+    await context.addInitScript(proMode);
     await context.addInitScript(probes);
     const page = await context.newPage();
     watch(page);
@@ -3602,6 +3999,7 @@ async function main() {
       hasTouch: true,
       isMobile: true,
     });
+    await phoneContext.addInitScript(proMode);
     await phoneContext.addInitScript(probes);
     const phone = await phoneContext.newPage();
     watch(phone);
@@ -3700,9 +4098,35 @@ async function main() {
       "phone-sized screen (390×780, touch): no sideways scrolling, style sheet, generate, mini transport",
     );
 
+    /* 11b — 简单模式, the default: in the frame, on a phone, with a paid service */
+    step = "simple mode";
+    const simple = await simpleJourney(
+      browser,
+      server.origin,
+      watch,
+      downloads,
+    );
+    const simplePhoneCsp = await simplePhone(browser, server.origin, watch);
+    pass(
+      "简单模式 (default): scene → plays → 快一点 → plain change line → 撤销 → 下载音乐 (48 kHz WAV) → 我的音乐 (one card, plays, delete + 撤销) → 专业模式 and back; phone layout",
+      { change: simple.change, seconds: simple.seconds },
+    );
+    if (fs.existsSync(path.join(DESKTOP_DIST, "index.html"))) {
+      step = "simple mode: paid service";
+      pass(
+        "简单模式 with an AI service: off by default, every paid request asked first, 下载音乐 saves the original, an unsaved paid result keeps its banner and question",
+        await simpleCloud(browser, server.origin),
+      );
+    }
+
     /* 12 — clean: no console errors, nothing but the static files requested */
     step = "clean";
-    const csp = [...(await frame.evaluate(() => window.__csp)), ...phoneCsp];
+    const csp = [
+      ...(await frame.evaluate(() => window.__csp)),
+      ...phoneCsp,
+      ...simple.csp,
+      ...simplePhoneCsp,
+    ];
     const allowed = new Set([
       PARENT_PATH,
       APP_PATH,

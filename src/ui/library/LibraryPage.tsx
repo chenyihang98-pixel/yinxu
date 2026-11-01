@@ -195,7 +195,7 @@ const WorkCard = memo(function WorkCard(props: {
   );
 });
 
-function DamagedSection(props: {
+export function DamagedSection(props: {
   records: readonly DamagedRecord[];
   actions: AppActions;
 }) {

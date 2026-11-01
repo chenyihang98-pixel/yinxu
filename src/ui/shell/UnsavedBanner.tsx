@@ -14,12 +14,16 @@ import { Button } from "../primitives/Button";
 export const UnsavedBanner = memo(function UnsavedBanner(props: {
   project: Project;
   exporting: boolean;
+  /** 简单模式: its words, and 下载音乐 saves the piece at once */
+  simple?: boolean;
   actions: AppActions;
 }) {
   const { project, actions } = props;
   const [retrying, setRetrying] = useState(false);
   const paid = project.provider !== "local";
   const original = paid && !!project.audioBlob;
+  const simple = props.simple === true;
+  const library = simple ? "「我的音乐」" : "「我的作品」";
   return (
     <div
       className="shell-banner unsaved-banner notice notice-danger"
@@ -33,9 +37,11 @@ export const UnsavedBanner = memo(function UnsavedBanner(props: {
           ? joinText(
               `《${project.title}》由`,
               providerName(project.provider),
-              "付费生成，但还没有保存到「我的作品」，现在只存在于当前窗口。请先导出原始音频，或重试保存。",
+              `付费生成，但还没有保存到${library}，现在只存在于当前窗口。请先导出原始音频，或重试保存。`,
             )
-          : `《${project.title}》还没有保存到「我的作品」，现在只存在于当前窗口。请先导出，或重试保存。`}
+          : simple
+            ? `《${project.title}》还没有保存到${library}，现在只存在于当前窗口。请先下载，或重试保存。`
+            : `《${project.title}》还没有保存到「我的作品」，现在只存在于当前窗口。请先导出，或重试保存。`}
       </span>
       <span className="shell-banner-actions unsaved-actions">
         <Button
@@ -60,10 +66,12 @@ export const UnsavedBanner = memo(function UnsavedBanner(props: {
           onClick={() =>
             original
               ? void actions.exportWork({ kind: "original" })
-              : actions.openModal("export")
+              : simple
+                ? void actions.exportWork({ kind: "mix", plainName: true })
+                : actions.openModal("export")
           }
         >
-          {original ? "导出原始音频" : "导出"}
+          {original ? "导出原始音频" : simple ? "下载音乐" : "导出"}
         </Button>
       </span>
     </div>

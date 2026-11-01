@@ -19,6 +19,7 @@ const { execFile } = require("node:child_process");
 const {
   selfSignedCertificate,
   until,
+  ensureMode,
   BILLING_PARTITION,
 } = require("../tests/helpers/electron-harness.cjs");
 
@@ -165,6 +166,8 @@ async function launch(root, appPath, profile, switches = []) {
     timeout: 15000,
   });
   await page.locator("#root").waitFor();
+  // these checks drive the v0.3 interface: 专业模式 (a fresh profile starts in 简单模式)
+  await ensureMode(page, "pro");
   return { desktop, page };
 }
 

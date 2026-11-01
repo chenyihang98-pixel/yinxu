@@ -5,12 +5,13 @@
  *   Space        play / pause          (not while typing or on a button)
  *   ← / →        seek −5 s / +5 s      (not on sliders or while typing)
  *   L            audition loop on/off
- *   Ctrl+Enter   send the composer
+ *   Ctrl+Enter   send the composer (简单模式: only to change a piece)
  *   Ctrl+N       新建创作
- *   Ctrl+E       导出
+ *   Ctrl+E       导出 (简单模式: 下载音乐, the whole piece at once)
  *   Esc          close the open modal
  */
 import { useEffect, useRef } from "react";
+import { downloadRequest } from "./scenes";
 import type { AppContextValue } from "./types";
 
 export type Shortcut =
@@ -146,6 +147,10 @@ export function useShortcuts(app: AppContextValue): void {
           actions.setLoopAudition(!player.loop);
           break;
         case "send":
+          // 简单模式's scene page starts a piece with its own button (and
+          // Enter in its one box): a description there is never sent with
+          // choices the page does not show.
+          if (ui.mode === "simple" && !studio.project) return;
           void actions.send();
           break;
         case "new-piece":
@@ -153,7 +158,9 @@ export function useShortcuts(app: AppContextValue): void {
           break;
         case "export":
           if (!studio.project) return;
-          actions.openModal("export");
+          if (ui.mode === "simple")
+            void actions.exportWork(downloadRequest(studio.project));
+          else actions.openModal("export");
           break;
       }
       event.preventDefault();

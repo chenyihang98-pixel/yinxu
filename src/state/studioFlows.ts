@@ -80,6 +80,7 @@ import type { Schedule } from "./logic";
 import {
   ENGINE_STARTING,
   activeBrain,
+  autoBrain,
   brainOptions,
   cancelText,
   durationRange,
@@ -88,9 +89,11 @@ import {
   fittingDuration,
   phaseText,
 } from "./options";
+import { NOTHING_CHANGED } from "./plain";
 import {
   buildAgentRequest,
   canSendPinsOnly,
+  cleanPins,
   enforcePins,
   honestPlan,
   inaudiblePlan,
@@ -134,6 +137,8 @@ const NOTE_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 const TEXT_TOAST = "composer-replaced";
 /** Toast key: the one "exported" notice, however many files were saved in a row. */
 const EXPORT_TOAST = "exported";
+/** 简单模式: the language model failed and the offline rules answered instead. */
+const FALLBACK_PLAIN = "已用内置方式完成。";
 /** What the banner adds to the reason a paid result is still waiting. */
 const DOWNLOAD_HINT = "也可以点「重新下载」再取一次，不会再次计费。";
 /**
@@ -443,6 +448,59 @@ export class StudioFlows {
 
   readonly send: AppActions["send"] = (text) =>
     this.generate({ kind: "message", ...(text !== undefined ? { text } : {}) });
+
+  readonly startPiece: AppActions["startPiece"] = async (pins, options) => {
+    const { studio } = this.kernel.state;
+    if (studio.project || this.running || this.kernel.questioning) return false;
+    const before = studio.pins;
+    const chosen = cleanPins(pins);
+    const same = (a: Pins, b: Pins) =>
+      JSON.stringify(cleanPins(a)) === JSON.stringify(cleanPins(b));
+    if (!same(before, chosen))
+      this.kernel.dispatch({ type: "composer/pins", pins: chosen });
+    const made = await this.generate({
+      kind: "message",
+      ...(options?.withText ? {} : { text: "" }),
+    });
+    // Nothing was made: the choices on screen are the ones from before.
+    const now = this.kernel.state.studio;
+    if (!made && !now.project && !now.job && same(now.pins, chosen))
+      this.kernel.dispatch({ type: "composer/pins", pins: before });
+    return made;
+  };
+
+  /**
+   * 简单模式 has no producer selector: the user's own language model plans
+   * when it is set up and usable, the offline rules otherwise. Only once the
+   * desktop settings are known — before that "not set up" means "not read".
+   */
+  followSettings(): void {
+    const { deps, state } = this.kernel;
+    if (!this.kernel.simple) return;
+    if (
+      state.settings.status !== "ready" &&
+      state.settings.status !== "unavailable"
+    )
+      return;
+    const brain = autoBrain(brainOptions(deps.platform, state.settings));
+    if (state.studio.brain === brain) return;
+    this.kernel.dispatch({ type: "composer/brain", brain });
+    this.kernel.writeSession();
+  }
+
+  /**
+   * Entering 简单模式: a new piece is made by the free local engine unless
+   * the user turns the AI service on there; the producer follows the
+   * settings.
+   */
+  enterSimple(): void {
+    const { studio } = this.kernel.state;
+    if (!studio.project && !this.running && studio.provider !== "local") {
+      this.chosenProvider = "local";
+      this.kernel.dispatch({ type: "composer/provider", provider: "local" });
+    }
+    this.followSettings();
+  }
 
   readonly pickSuggestion: AppActions["pickSuggestion"] = (text) => {
     const phrase = cleanMessage(text);
@@ -1294,7 +1352,10 @@ export class StudioFlows {
       };
       const notesFor = (turn: AgentTurn) =>
         Object.keys(note).length ? { [turn.id]: note } : undefined;
-      if (plan.fallbackReason && !asked) this.kernel.toast(plan.fallbackReason);
+      if (plan.fallbackReason && !asked)
+        this.kernel.toast(
+          this.kernel.simple ? FALLBACK_PLAIN : plan.fallbackReason,
+        );
 
       if (plan.unchanged) {
         // Nothing audible would change: answer, generate nothing.
@@ -1307,6 +1368,8 @@ export class StudioFlows {
           turns: [mine, reply],
           notes: notesFor(reply),
         });
+        // 简单模式 shows no conversation: the answer is said where it is seen.
+        if (this.kernel.simple) this.kernel.toast(NOTHING_CHANGED);
         return false;
       }
 
@@ -1488,6 +1551,8 @@ export class StudioFlows {
             refused ? message : `生成失败：${message}`,
             "error",
           );
+        if (!fetchable && !refused)
+          this.kernel.dispatch({ type: "studio/failure", text: message });
         this.giveBackText(job);
       }
       if (order && fetchable) this.offerDownload(order, stopped);
@@ -2379,7 +2444,9 @@ export class StudioFlows {
   private exportedToast(name: string): void {
     this.kernel.toast(
       this.kernel.deps.platform.isDesktop
-        ? "已导出到选定位置"
+        ? this.kernel.simple
+          ? "已保存"
+          : "已导出到选定位置"
         : `已开始下载「${name}」`,
       "info",
       undefined,

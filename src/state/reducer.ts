@@ -35,6 +35,8 @@ import {
   resetDraft,
   toggleMuteVolumes,
 } from "./logic";
+import { parseMode } from "./mode";
+import type { UiMode } from "./mode";
 import { cleanPins } from "./plan";
 import { upsertProject } from "./works";
 import type {
@@ -68,6 +70,7 @@ export interface AppState {
 }
 
 export type AppAction =
+  | { type: "ui/mode"; mode: UiMode }
   | { type: "ui/navigate"; page: Page }
   | {
       type: "ui/modal";
@@ -137,6 +140,8 @@ export type AppAction =
   | { type: "studio/pending"; pending: PendingResult | null }
   /** the paid results that exist only in this window, besides the loaded work */
   | { type: "studio/strays"; strays: StrayResult[] }
+  /** the last generation failed (text), or that is no longer news (null) */
+  | { type: "studio/failure"; text: string | null }
   | { type: "studio/peaks"; id: string; peaks: number[] }
   | { type: "mix/volume"; track: TrackName; value: number }
   | { type: "mix/mute"; track: TrackName; fallback: number }
@@ -216,9 +221,12 @@ export function initialState(options: {
   version: string;
   composerText?: string;
   brain?: BrainKind;
+  /** default 简单模式 */
+  mode?: UiMode;
 }): AppState {
   return {
     ui: {
+      mode: parseMode(options.mode),
       page: "studio",
       modal: null,
       settingsTab: "music",
@@ -238,6 +246,7 @@ export function initialState(options: {
       lastLoad: null,
       pending: null,
       strays: [],
+      failure: null,
     },
     library: {
       status: "loading",
@@ -342,6 +351,7 @@ function studioReducer(state: AppState, action: AppAction): AppState {
           ...studio,
           job: action.job,
           pendingTurn: action.pendingTurn ?? null,
+          failure: null,
         },
       };
     case "job/update":
@@ -408,6 +418,7 @@ function studioReducer(state: AppState, action: AppAction): AppState {
           saveState: action.saveState,
           provider: action.provider ?? studio.provider,
           pins: action.clearPins ? {} : studio.pins,
+          failure: null,
           lastLoad: {
             seq: (studio.lastLoad?.seq ?? 0) + 1,
             reason: action.reason,
@@ -418,7 +429,13 @@ function studioReducer(state: AppState, action: AppAction): AppState {
     case "studio/unloaded":
       return {
         ...state,
-        studio: { ...studio, ...EMPTY_STUDIO, pins: {}, composerText: "" },
+        studio: {
+          ...studio,
+          ...EMPTY_STUDIO,
+          pins: {},
+          composerText: "",
+          failure: null,
+        },
       };
 
     case "studio/solo":
@@ -449,6 +466,10 @@ function studioReducer(state: AppState, action: AppAction): AppState {
         : { ...state, studio: { ...studio, pending: action.pending } };
     case "studio/strays":
       return { ...state, studio: { ...studio, strays: action.strays } };
+    case "studio/failure":
+      return studio.failure === action.text
+        ? state
+        : { ...state, studio: { ...studio, failure: action.text } };
     case "studio/peaks":
       return studio.project?.id === action.id && studio.audio
         ? {
@@ -666,6 +687,10 @@ function settingsReducer(
 
 function uiReducer(ui: UiState, action: AppAction): UiState {
   switch (action.type) {
+    case "ui/mode": {
+      const mode = parseMode(action.mode);
+      return ui.mode === mode ? ui : { ...ui, mode };
+    }
     case "ui/navigate":
       return ui.page === action.page ? ui : { ...ui, page: action.page };
     case "ui/modal":

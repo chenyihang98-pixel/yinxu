@@ -13,6 +13,7 @@ import type {
 } from "../services/generation";
 import type { DamagedRecord, ProjectPatch } from "../storage";
 import type { DesktopAPI, Project, TrackName } from "../types";
+import type { ModeStore } from "./mode";
 import type { SessionStore } from "./session";
 import type { TabSync } from "./sync";
 import type { StemsAudio, StorageUsage } from "./types";
@@ -107,6 +108,11 @@ export interface CoreDeps {
   sync?: TabSync;
   /** undo window of a soft delete; default 8 s */
   undoMs?: number;
+  /**
+   * Where 简单模式 / 专业模式 is remembered; default: nowhere, and the app
+   * starts in 简单模式.
+   */
+  mode?: ModeStore;
 }
 
 /** Until the app's player is attached, playback requests go nowhere. */

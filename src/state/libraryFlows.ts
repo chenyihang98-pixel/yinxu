@@ -169,13 +169,19 @@ export class LibraryFlows {
       this.kernel.withdraw(UNDO_TOAST);
       return;
     }
+    // 简单模式 deletes a piece with all its versions: one piece, one name.
+    const onePiece =
+      this.kernel.simple &&
+      waiting.every(
+        (entry) => entry.project.title === waiting[0].project.title,
+      );
     this.kernel.toast(
-      waiting.length === 1
+      waiting.length === 1 || onePiece
         ? `已删除《${waiting[0].project.title}》`
         : `已删除 ${waiting.length} 首作品`,
       "info",
       {
-        label: waiting.length === 1 ? "撤销" : "全部撤销",
+        label: waiting.length === 1 || onePiece ? "撤销" : "全部撤销",
         run: () => this.undoRemove(),
       },
       undefined,

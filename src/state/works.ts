@@ -291,6 +291,62 @@ export function versionOfTurn(
   return holding[0] ?? (numbered.length === 1 ? numbered[0] : undefined);
 }
 
+/** One piece of music as 简单模式's list shows it: its newest version and how many there are. */
+export interface Piece {
+  /** the newest version: what the card plays, downloads and opens */
+  latest: Project;
+  /** every version of the piece, newest first */
+  versions: Project[];
+}
+
+/**
+ * The library as pieces instead of versions: works linked through parentId
+ * or a shared conversation turn (the same relation as lineageOf) are one
+ * piece. In the order of the list given (newest first): a piece stands
+ * where its most recently changed version stands.
+ */
+export function groupPieces(projects: readonly Project[]): Piece[] {
+  const parent = new Map<string, string>();
+  const find = (id: string): string => {
+    let root = id;
+    while (parent.get(root) !== root) root = parent.get(root) ?? root;
+    // flatten the path for the next lookups
+    for (let cursor = id; cursor !== root;) {
+      const next = parent.get(cursor) ?? root;
+      parent.set(cursor, root);
+      cursor = next;
+    }
+    return root;
+  };
+  const join = (a: string, b: string) => {
+    const left = find(a);
+    const right = find(b);
+    if (left !== right) parent.set(right, left);
+  };
+  for (const item of projects) parent.set(item.id, item.id);
+  const byTurn = new Map<string, string>();
+  for (const item of projects) {
+    if (item.parentId && parent.has(item.parentId))
+      join(item.id, item.parentId);
+    for (const turn of item.chat ?? []) {
+      const other = byTurn.get(turn.id);
+      if (other) join(item.id, other);
+      else byTurn.set(turn.id, item.id);
+    }
+  }
+  const groups = new Map<string, Project[]>();
+  for (const item of projects) {
+    const root = find(item.id);
+    const list = groups.get(root);
+    if (list) list.push(item);
+    else groups.set(root, [item]);
+  }
+  return [...groups.values()].map((list) => {
+    const versions = [...list].sort(newestFirst);
+    return { latest: versions[0], versions };
+  });
+}
+
 /**
  * Version number of the next work made from `base`: one more than the highest
  * in its lineage, so a version made from an earlier one never shares a number

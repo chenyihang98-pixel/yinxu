@@ -30,6 +30,7 @@ import {
 import { AppCore } from "./core";
 import type { CoreDeps } from "./ports";
 import { clampVolume } from "./logic";
+import { browserModeStore } from "./mode";
 import { browserSession } from "./session";
 import { browserSync } from "./sync";
 
@@ -99,6 +100,7 @@ export function browserDeps(): CoreDeps {
     },
     session: browserSession,
     sync: browserSync(),
+    mode: browserModeStore,
   };
 }
 

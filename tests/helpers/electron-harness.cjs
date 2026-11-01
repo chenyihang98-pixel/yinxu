@@ -53,6 +53,43 @@ async function until(read, test, description, timeout = 30000, every = 100) {
   }
 }
 
+/**
+ * Put the window into 简单模式 or 专业模式. A fresh profile starts in 简单模式
+ * (the default since v0.4); the suites written for v0.3 drive 专业模式. The
+ * preference lives in the page's localStorage (key muse-bgm:mode, read once
+ * at start), so it is written there and the page is loaded again — only when
+ * it differs. A build that has no 简单模式 (v0.3.0) is left as it is.
+ */
+async function ensureMode(page, mode = "pro") {
+  const ready = () =>
+    page.waitForFunction(
+      () =>
+        Boolean(window.museDesktop) &&
+        Boolean(
+          document.querySelector(
+            '[data-testid="nav-studio"], [data-testid="simple-nav-make"]',
+          ),
+        ),
+      null,
+      { timeout: 30000 },
+    );
+  await ready();
+  const current = await page.evaluate(
+    () => document.querySelector(".app")?.getAttribute("data-mode") ?? "pro",
+  );
+  if (current === mode) return;
+  await page.evaluate((value) => {
+    localStorage.setItem("muse-bgm:mode", value);
+  }, mode);
+  await page.reload();
+  await ready();
+  const now = await page.evaluate(
+    () => document.querySelector(".app")?.getAttribute("data-mode") ?? "pro",
+  );
+  if (now !== mode)
+    throw new Error(`the window did not switch to ${mode} mode (${now})`);
+}
+
 /** A plan the mocked language models answer with unless a test queues another one. */
 const DEFAULT_PLAN = Object.freeze({
   reasoning: ["雨天咖啡馆：慵懒、温暖", "不要鼓：鼓组设为无"],
@@ -354,6 +391,7 @@ async function inspectorClient(port) {
  *   executable     a packaged "Muse BGM.exe" to start instead of the source tree
  *   portable       the portable self-extractor to start instead (it is copied into the
  *                  profile first: the wrapper keeps its data next to itself)
+ *   mode           "pro" (default: the v0.3 suites) or "simple" — see ensureMode
  */
 async function launchApp(options) {
   const {
@@ -502,13 +540,7 @@ async function launchApp(options) {
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
   });
-  await page.waitForFunction(
-    () =>
-      Boolean(window.museDesktop) &&
-      Boolean(document.querySelector('[data-testid="nav-studio"]')),
-    null,
-    { timeout: 30000 },
-  );
+  await ensureMode(page, options.mode ?? "pro");
 
   const app = { desktop, page, profile, prefix, errors };
   app.$ = (id) => page.locator(`[data-testid="${id}"]`);
@@ -660,7 +692,11 @@ async function launchApp(options) {
     await page.waitForFunction(
       () =>
         Boolean(window.museDesktop) &&
-        Boolean(document.querySelector('[data-testid="nav-studio"]')),
+        Boolean(
+          document.querySelector(
+            '[data-testid="nav-studio"], [data-testid="simple-nav-make"]',
+          ),
+        ),
     );
   };
   /** Quit the app. The profile is removed unless it is needed for a relaunch. */
@@ -896,6 +932,7 @@ module.exports = {
   BILLING_PARTITION,
   sleep,
   until,
+  ensureMode,
   launchApp,
   removeProfile,
   selfSignedCertificate,
