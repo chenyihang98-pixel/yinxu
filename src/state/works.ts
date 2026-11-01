@@ -291,21 +291,34 @@ export function versionOfTurn(
   return holding[0] ?? (numbered.length === 1 ? numbered[0] : undefined);
 }
 
-/** One piece of music as 简单模式's list shows it: its newest version and how many there are. */
+/** One piece of music as 简单模式's list shows it: the version in use and how many there are. */
 export interface Piece {
-  /** the newest version: what the card plays, downloads and opens */
+  /**
+   * The version the user is on: the loaded one when it belongs to this
+   * piece, else the most recently made or chosen (撤销, 上一版 and 下一版
+   * mark the version they open — StudioFlows.choose). What the card plays,
+   * downloads and opens.
+   */
   latest: Project;
-  /** every version of the piece, newest first */
+  /** every version of the piece, highest version first */
   versions: Project[];
+}
+
+/** Most recently modified first; a tie goes to the higher version. */
+function recentFirst(a: Project, b: Project): number {
+  return time(b.updatedAt) - time(a.updatedAt) || newestFirst(a, b);
 }
 
 /**
  * The library as pieces instead of versions: works linked through parentId
  * or a shared conversation turn (the same relation as lineageOf) are one
- * piece. In the order of the list given (newest first): a piece stands
- * where its most recently changed version stands.
+ * piece. The piece used most recently comes first. `currentId`: the loaded
+ * work, which is its piece's version whatever the times say.
  */
-export function groupPieces(projects: readonly Project[]): Piece[] {
+export function groupPieces(
+  projects: readonly Project[],
+  currentId?: string | null,
+): Piece[] {
   const parent = new Map<string, string>();
   const find = (id: string): string => {
     let root = id;
@@ -341,10 +354,19 @@ export function groupPieces(projects: readonly Project[]): Piece[] {
     if (list) list.push(item);
     else groups.set(root, [item]);
   }
-  return [...groups.values()].map((list) => {
-    const versions = [...list].sort(newestFirst);
-    return { latest: versions[0], versions };
-  });
+  return [...groups.values()]
+    .map((list) => {
+      const recent = [...list].sort(recentFirst);
+      const latest =
+        (currentId && list.find((item) => item.id === currentId)) || recent[0];
+      return {
+        latest,
+        versions: [...list].sort(newestFirst),
+        last: time(recent[0].updatedAt),
+      };
+    })
+    .sort((a, b) => b.last - a.last)
+    .map(({ latest, versions }) => ({ latest, versions }));
 }
 
 /**

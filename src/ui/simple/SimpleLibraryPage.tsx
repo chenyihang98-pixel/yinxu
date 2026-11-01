@@ -19,8 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { useApp } from "../../state/context";
-import { plainSummary } from "../../state/plain";
-import { downloadRequest } from "../../state/scenes";
+import { plainSummary, plainWords } from "../../state/plain";
 import type { AppActions } from "../../state/types";
 import { groupPieces, queryProjects } from "../../state/works";
 import type { Piece } from "../../state/works";
@@ -99,7 +98,7 @@ const PieceCard = memo(function PieceCard(props: {
           aria-describedby={`simple-confirm-${latest.id}`}
         >
           <p id={`simple-confirm-${latest.id}`}>
-            这首是付费生成的，删除后找不回来。
+            这首是付费做的。删除后 8 秒内还能撤销，之后就找不回来了。
           </p>
           <div className="simple-card-actions">
             <Button autoFocus onClick={props.onCancelRemove}>
@@ -148,9 +147,11 @@ export function SimpleLibraryPage() {
   const [search, setSearch] = useState("");
   /** the piece waiting for its second click (paid audio) */
   const [confirming, setConfirming] = useState<string | null>(null);
+  const currentId = studio.project?.id ?? null;
+  // the loaded version stands for its piece (it is the one being listened to)
   const pieces = useMemo(
-    () => groupPieces(library.projects),
-    [library.projects],
+    () => groupPieces(library.projects, currentId),
+    [library.projects, currentId],
   );
   const shown = useMemo(() => {
     if (!search.trim()) return pieces;
@@ -159,29 +160,28 @@ export function SimpleLibraryPage() {
     );
   }, [pieces, search]);
   const busy = studio.busy;
-  const currentId = studio.project?.id ?? null;
   const total = pieces.length;
 
   const play = useCallback(
     (piece: Piece) => {
       const loaded = piece.versions.some((item) => item.id === currentId);
-      // The piece that is loaded plays (or pauses) right here.
+      // The piece that is loaded plays (or pauses); another one is opened
+      // and played — right here, the list stays where it is.
       if (loaded && studio.audio) player.toggle();
-      else void actions.openProject(piece.latest.id, { autoplay: true });
+      else
+        void actions.openProject(piece.latest.id, {
+          autoplay: true,
+          stay: true,
+        });
     },
     [actions, player, currentId, studio.audio],
   );
   const download = useCallback(
     (piece: Piece) => {
-      const { latest } = piece;
-      void (async () => {
-        // only the loaded piece can be saved: open it first (it shows)
-        if (currentId !== latest.id && !(await actions.openProject(latest.id)))
-          return;
-        await actions.exportWork(downloadRequest(latest));
-      })();
+      // another piece is opened first, without leaving 我的音乐
+      void actions.downloadMusic(piece.latest.id);
     },
-    [actions, currentId],
+    [actions],
   );
   const remove = useCallback(
     (piece: Piece, confirmed: boolean) => {
@@ -243,7 +243,7 @@ export function SimpleLibraryPage() {
         {library.status === "error" && (
           <div className="notice notice-danger" role="alert">
             <FileWarning size={16} aria-hidden />
-            <span className="grow">{library.error}</span>
+            <span className="grow">{plainWords(library.error ?? "")}</span>
             <Button size="sm" onClick={() => void actions.refreshLibrary()}>
               重试
             </Button>
@@ -306,7 +306,7 @@ export function SimpleLibraryPage() {
         )}
 
         {library.damaged.length > 0 && (
-          <DamagedSection records={library.damaged} actions={actions} />
+          <DamagedSection records={library.damaged} simple actions={actions} />
         )}
 
         {platform.isWeb && total > 0 && (

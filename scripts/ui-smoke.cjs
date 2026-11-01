@@ -951,6 +951,9 @@ async function main() {
         const target = file("simple-download.wav");
         const dialogs = (await app.state()).dialogs.length;
         await app.saveTo(target);
+        // notices left from the steps before are not this page's
+        if (await page.locator('[data-testid="toast"]').count())
+          await app.clearToasts();
         await $("simple-download").click();
         const state = await until(
           app.state,
@@ -970,7 +973,17 @@ async function main() {
         assert.equal(wav.sampleRate, 48000);
         assert.equal(wav.channels, 2);
         assert.ok(wav.seconds > 25, `${wav.seconds} s`);
-        await app.toast(/^已保存$/);
+        // said on the button itself; no toast over the buttons below it
+        await until(
+          () => $("simple-download").innerText(),
+          (text) => text.includes("已保存"),
+          "下载音乐 says 已保存",
+        );
+        assert.deepEqual(
+          await app.toasts(),
+          [],
+          "the result page needs no toast",
+        );
         // back to 专业模式: the same work, every version
         await $("pro-mode-link").click();
         await $("nav-studio").waitFor();

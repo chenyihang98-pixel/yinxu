@@ -26,6 +26,7 @@ import type { Platform } from "../platform";
 import type { Player } from "../player/usePlayer";
 import type { DamagedRecord } from "../storage";
 import type { UiMode } from "./mode";
+import type { TweakId } from "./scenes";
 import type {
   CloudProvider,
   MusicConfig,
@@ -315,6 +316,12 @@ export interface StudioState {
    * a cancelled job or a refusal is not a failure.
    */
   failure: string | null;
+  /**
+   * 简单模式's answer when a request changed nothing (a tweak at its limit,
+   * words with nothing to act on), shown where the change line goes.
+   * Cleared like `failure`.
+   */
+  notice: string | null;
 }
 
 export interface EngineOption {
@@ -550,6 +557,15 @@ export interface AppActions {
    */
   startPiece(pins: Pins, options?: { withText?: boolean }): Promise<boolean>;
   /**
+   * 简单模式's one-tap tweak of the loaded piece: the button's fixed
+   * sentence (tweaksFor, as the piece is now) planned by the offline rules —
+   * never by a language model, so the button does exactly what it says. A
+   * tweak that can change nothing (长一点 at the longest length) asks
+   * nothing and makes nothing: `studio.notice` says why. Every question of
+   * `send` (paid request, unsaved result) is asked the same way.
+   */
+  tweak(id: TweakId): Promise<boolean>;
+  /**
    * A suggestion chip. Local engine: the phrase is sent at once and the
    * composer keeps whatever was typed. Cloud engine: nothing is sent — the
    * phrase is added to the composer, next to the billing notice, for the
@@ -601,7 +617,19 @@ export interface AppActions {
    * Open a work from the library. `autoplay` is for quick-play buttons
    * (call from the click handler). A work that is already loaded just plays.
    */
-  openProject(id: string, options?: { autoplay?: boolean }): Promise<boolean>;
+  openProject(
+    id: string,
+    options?: {
+      autoplay?: boolean;
+      /** stay on the page shown (简单模式's 我的音乐 plays in place) */
+      stay?: boolean;
+      /**
+       * 简单模式: the user chose this version of its piece (撤销, 上一版,
+       * 下一版) — 我的音乐 shows it from now on.
+       */
+      choose?: boolean;
+    },
+  ): Promise<boolean>;
   /** Unchanged or empty titles write nothing. */
   rename(id: string, title: string): Promise<boolean>;
   toggleFavourite(id: string): Promise<boolean>;
@@ -615,7 +643,18 @@ export interface AppActions {
   ): "removed" | "confirm" | "refused";
   /** Put back one soft-deleted work, or every one still inside its window. */
   undoRemove(id?: string): void;
-  exportWork(request: ExportRequest): Promise<boolean>;
+  /**
+   * 简单模式's 下载音乐: the whole piece as one file named by its title
+   * (scenes.ts downloadRequest) — the loaded work, or the work `id`, which
+   * is opened first without leaving the page shown. `quiet` as for
+   * exportWork.
+   */
+  downloadMusic(id?: string, options?: { quiet?: boolean }): Promise<boolean>;
+  /** `quiet`: the caller confirms it on the spot, no toast. */
+  exportWork(
+    request: ExportRequest,
+    options?: { quiet?: boolean },
+  ): Promise<boolean>;
   /** 重试保存: store the loaded work whose save failed. */
   retrySave(): Promise<boolean>;
   /**

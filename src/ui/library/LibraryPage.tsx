@@ -197,9 +197,12 @@ const WorkCard = memo(function WorkCard(props: {
 
 export function DamagedSection(props: {
   records: readonly DamagedRecord[];
+  /** 简单模式: the same section in its words (no 原始数据 / 原始音频) */
+  simple?: boolean;
   actions: AppActions;
 }) {
   const { records, actions } = props;
+  const simple = props.simple === true;
   const [confirming, setConfirming] = useState<string | null>(null);
   return (
     <section
@@ -210,12 +213,14 @@ export function DamagedSection(props: {
       <div className="card-head">
         <h2 id="damaged-title">
           <FileWarning size={16} aria-hidden />
-          无法读取的记录
+          {simple ? "打不开的音乐" : "无法读取的记录"}
           <span className="muted">（{records.length}）</span>
         </h2>
       </div>
       <p className="damaged-lede">
-        这些记录不会影响其他作品。可以先导出原始数据（参数与对话，不含音频）留存，再删除；带有音频的记录请先导出原始音频。
+        {simple
+          ? "这几首坏了，打不开，但不影响别的音乐。删除前可以先存下来：「保存记录」存的是它的文字资料（没有声音），「下载声音」存的是它里面的音频。"
+          : "这些记录不会影响其他作品。可以先导出原始数据（参数与对话，不含音频）留存，再删除；带有音频的记录请先导出原始音频。"}
       </p>
       <ul className="damaged-list">
         {records.map((record) => (
@@ -229,15 +234,24 @@ export function DamagedSection(props: {
               <strong className="ellipsis">
                 {record.title || "未命名的记录"}
               </strong>
-              <p className="damaged-reason" data-testid="damaged-reason">
-                {record.reason}
-              </p>
-              {record.audio && (
-                <p className="damaged-audio" data-testid="damaged-audio-note">
-                  {record.paid ? "含付费生成的音频" : "含音频"}（
-                  {formatBytes(record.audio.size)}）。删除前请先导出原始音频。
+              {!simple && (
+                <p className="damaged-reason" data-testid="damaged-reason">
+                  {record.reason}
                 </p>
               )}
+              {record.audio &&
+                (simple ? (
+                  <p className="damaged-audio" data-testid="damaged-audio-note">
+                    {record.paid
+                      ? "里面有付费做的音频，删除前请先点「下载声音」存下来。"
+                      : "里面有音频，删除前请先点「下载声音」存下来。"}
+                  </p>
+                ) : (
+                  <p className="damaged-audio" data-testid="damaged-audio-note">
+                    {record.paid ? "含付费生成的音频" : "含音频"}（
+                    {formatBytes(record.audio.size)}）。删除前请先导出原始音频。
+                  </p>
+                ))}
               {confirming === record.id && (
                 <p
                   className="damaged-audio"
@@ -258,7 +272,7 @@ export function DamagedSection(props: {
                 data-testid="damaged-export"
                 onClick={() => void actions.exportDamaged(record.id)}
               >
-                导出原始数据
+                {simple ? "保存记录" : "导出原始数据"}
               </Button>
               {record.audio && (
                 <Button
@@ -267,7 +281,7 @@ export function DamagedSection(props: {
                   data-testid="damaged-export-audio"
                   onClick={() => void actions.exportDamagedAudio(record.id)}
                 >
-                  导出原始音频
+                  {simple ? "下载声音" : "导出原始音频"}
                 </Button>
               )}
               {confirming === record.id ? (

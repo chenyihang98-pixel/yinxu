@@ -47,7 +47,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 42px;
+  height: 44px;
   padding: 0 16px;
   border-radius: var(--r-lg);
   color: var(--text-soft);
@@ -90,8 +90,8 @@
 .simple-tool {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   border-radius: var(--r-lg);
   color: var(--text-soft);
   transition:
@@ -633,6 +633,7 @@
 }
 
 .simple-time {
+  white-space: nowrap;
   color: var(--text-soft);
   font-size: var(--t-14);
 }
@@ -667,6 +668,27 @@
 .simple-change .grow {
   flex: 1 1 260px;
   min-width: 0;
+}
+
+/* a tap that changed nothing, or 撤销: said quietly, not as news */
+.simple-change[data-kind="notice"],
+.simple-change[data-kind="undone"] {
+  border-color: var(--border-strong);
+  background: var(--panel);
+  color: var(--text-soft);
+}
+
+.simple-hint {
+  color: var(--muted);
+  font-size: var(--t-13);
+}
+
+/* 下载音乐 says 已保存 on the spot for a few seconds */
+.simple-actions .simple-download[data-done],
+.simple-actions .simple-download[data-done]:hover:not(:disabled) {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+  color: var(--ok);
 }
 
 .simple-actions {
@@ -765,7 +787,7 @@
 
 .search.simple-search {
   flex: 0 1 320px;
-  height: 44px;
+  height: 48px;
   padding-left: 14px;
   border-radius: var(--r-lg);
 }
@@ -1149,10 +1171,6 @@
     padding: 0 10px;
   }
 
-  .simple-tool {
-    width: 40px;
-  }
-
   .simple-input-row,
   .simple-say {
     flex-wrap: wrap;
@@ -1161,6 +1179,13 @@
   .simple-input-row .btn,
   .simple-say .btn {
     flex: 1 1 100%;
+  }
+}
+
+@media (max-width: 379px) {
+  /* the time stays on one line; the phone's own buttons set the volume */
+  .simple-volume {
+    display: none;
   }
 }
 
@@ -1189,8 +1214,68 @@
   }
 }
 
+/* touch: every control of 简单模式 is at least 44 px in both directions */
 @media (pointer: coarse) {
-  .simple-style {
+  /* on the root as well: modals and questions are portaled to <body> */
+  :root[data-mode="simple"],
+  .app[data-mode="simple"] {
+    --control: 44px;
+    --control-sm: 44px;
+    --control-lg: 44px;
+    --hit: 44px;
+    --slider-hit: 44px;
+  }
+
+  :root[data-mode="simple"] .tab {
     height: 44px;
+  }
+
+  .simple-style,
+  .simple-length .segmented button,
+  .title-input.simple-title,
+  .simple-change .btn {
+    height: 44px;
+  }
+
+  .simple-pro-link,
+  .simple-versions .link-btn,
+  .simple-card-title {
+    min-height: 44px;
+  }
+
+  .simple-pro-link,
+  .simple-versions .link-btn {
+    min-width: 44px;
+    justify-content: center;
+  }
+
+  .simple-card-title {
+    align-items: center;
+  }
+
+  .simple-volume .slider {
+    min-height: 44px;
+  }
+
+  .app[data-mode="simple"] .play-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* 简单模式: notices come in under the top bar, away from what the user is
+   about to tap — the scene cards, 下载音乐, the tweaks and the player all
+   sit below it. (The result page says its own news in place; see
+   SimpleResultPage.) */
+.app[data-mode="simple"] .toasts,
+.app[data-mode="simple"] .toasts[data-raised="true"] {
+  top: 72px;
+  bottom: auto;
+}
+
+@media (max-width: 719px) {
+  .app[data-mode="simple"] .toasts,
+  .app[data-mode="simple"] .toasts[data-raised="true"] {
+    top: 64px;
   }
 }

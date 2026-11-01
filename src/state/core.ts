@@ -20,6 +20,9 @@ import { NO_SYNC } from "./sync";
 import type { DesktopAPI } from "../types";
 import type { AppActions } from "./types";
 
+/** Toast key: the one "switched to … mode" notice. */
+const MODE_TOAST = "mode";
+
 export type { CoreDeps, PlayerPort, StoragePort, Timers } from "./ports";
 
 export class AppCore {
@@ -73,6 +76,8 @@ export class AppCore {
       setBrain: studio.setBrain,
       send: studio.send,
       startPiece: studio.startPiece,
+      tweak: studio.tweak,
+      downloadMusic: studio.downloadMusic,
       pickSuggestion: studio.pickSuggestion,
       answerDialog: kernel.answer,
       newPiece: studio.newPiece,
@@ -251,6 +256,11 @@ export class AppCore {
     const { kernel } = this;
     const next = mode === "pro" ? "pro" : "simple";
     if (kernel.state.ui.mode === next) return;
+    // Passing news of the other interface goes with it (it speaks that
+    // interface's words); errors, sticky notices and those with an action stay.
+    for (const toast of kernel.state.ui.toasts)
+      if (toast.kind === "info" && !toast.action && !toast.sticky)
+        kernel.dispatch({ type: "toast/dismiss", id: toast.id });
     kernel.dispatch({ type: "ui/mode", mode: next });
     kernel.deps.mode?.write(next);
     if (next === "simple") {
@@ -258,8 +268,18 @@ export class AppCore {
       if (kernel.state.ui.page === "inspiration")
         kernel.dispatch({ type: "ui/navigate", page: "studio" });
       this.studio.enterSimple();
-      kernel.toast("已切换到简单模式。");
-    } else kernel.toast("已切换到专业模式，可在设置里换回简单模式。");
+      kernel.toast("已切换到简单模式。", "info", undefined, undefined, {
+        key: MODE_TOAST,
+      });
+    } else
+      // one notice: switching back and forth never stacks them up
+      kernel.toast(
+        "已切换到专业模式，可在设置里换回简单模式。",
+        "info",
+        undefined,
+        undefined,
+        { key: MODE_TOAST },
+      );
   };
 
   private readonly openModal: AppActions["openModal"] = (modal, tab) => {

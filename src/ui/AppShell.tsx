@@ -127,6 +127,11 @@ export function AppShell() {
   useEffect(() => {
     document.title = title ? `${title} · 音序 Muse` : BASE_TITLE;
   }, [title]);
+  // Dialogs and modals are portaled to <body>: the interface mode is also
+  // set on the root, so 简单模式's sizes reach them too (simple.css).
+  useEffect(() => {
+    document.documentElement.setAttribute("data-mode", ui.mode);
+  }, [ui.mode]);
 
   return (
     <div

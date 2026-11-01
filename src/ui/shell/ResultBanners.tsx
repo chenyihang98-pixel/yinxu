@@ -23,6 +23,8 @@ export const PendingBanner = memo(function PendingBanner(props: {
   downloading: boolean;
   /** another job is running, or a question is open */
   locked: boolean;
+  /** 简单模式: plain words instead of the service's own account */
+  simple?: boolean;
   actions: AppActions;
 }) {
   const { pending, downloading, locked, actions } = props;
@@ -38,7 +40,9 @@ export const PendingBanner = memo(function PendingBanner(props: {
         <strong className="shell-banner-lead">
           {joinText(pending.name, "的一次付费生成还没有取回。")}
         </strong>
-        {pending.text}
+        {props.simple
+          ? "已经付过钱的音乐还没下载下来。点「重新下载」再取一次，不会再收费。"
+          : pending.text}
       </span>
       <span className="shell-banner-actions">
         <Button
@@ -67,6 +71,8 @@ export const PendingBanner = memo(function PendingBanner(props: {
 
 export const StrayBanner = memo(function StrayBanner(props: {
   stray: StrayResult;
+  /** 简单模式: its words (下载音乐 saves the same original file) */
+  simple?: boolean;
   actions: AppActions;
 }) {
   const { stray, actions } = props;
@@ -84,11 +90,17 @@ export const StrayBanner = memo(function StrayBanner(props: {
     >
       <TriangleAlert size={16} aria-hidden />
       <span className="grow">
-        {joinText(
-          `《${stray.title}》由`,
-          providerName(stray.provider),
-          "付费生成，在取消等待后才到达，还没有保存到「我的作品」，现在只存在于当前窗口。请先导出原始音频，或重试保存。",
-        )}
+        {props.simple
+          ? joinText(
+              `《${stray.title}》由`,
+              providerName(stray.provider),
+              "付费做好了，但在你取消等待之后才到，还没能存进「我的音乐」，现在只在这个窗口里。请先点「下载音乐」把它存下来，或者点「重试保存」。",
+            )
+          : joinText(
+              `《${stray.title}》由`,
+              providerName(stray.provider),
+              "付费生成，在取消等待后才到达，还没有保存到「我的作品」，现在只存在于当前窗口。请先导出原始音频，或重试保存。",
+            )}
       </span>
       <span className="shell-banner-actions">
         <Button
@@ -110,7 +122,7 @@ export const StrayBanner = memo(function StrayBanner(props: {
           disabled={working !== null}
           onClick={() => run("export", () => actions.exportStray(stray.id))}
         >
-          导出原始音频
+          {props.simple ? "下载音乐" : "导出原始音频"}
         </Button>
       </span>
     </div>

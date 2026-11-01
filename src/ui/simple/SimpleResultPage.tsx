@@ -5,8 +5,9 @@
  * — after each change — what changed, with 撤销. Nothing here names a tempo,
  * a key, a version number or an engine.
  */
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Check,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -23,9 +24,17 @@ import {
 } from "lucide-react";
 import type { Player } from "../../player/usePlayer";
 import { useApp } from "../../state/context";
-import { changeLine, newPieceLine, plainSummary } from "../../state/plain";
-import { downloadRequest, tweaksFor } from "../../state/scenes";
-import { scoreFacts, silentStem } from "../../state/score";
+import {
+  FALLBACK_NOTE,
+  UNDONE_LINE,
+  changeLine,
+  drumsHeard,
+  newPieceLine,
+  plainSummary,
+  plainWords,
+} from "../../state/plain";
+import { activeBrain } from "../../state/options";
+import { tweaksFor } from "../../state/scenes";
 import type { AppActions, LoadedAudio } from "../../state/types";
 import { lineage } from "../../state/works";
 import type { Project } from "../../types";
@@ -38,6 +47,7 @@ import { TitleInput } from "../studio/PlayerCard";
 import { TimeText } from "../studio/Transport";
 import { WaveformCanvas } from "../studio/Waveform";
 import {
+  LLM_HINT,
   PlainLine,
   ProLink,
   SimpleFailure,
@@ -97,16 +107,6 @@ const SimplePlayer = memo(function SimplePlayer(props: {
   );
 });
 
-/** Drums one can hear in this piece: 去掉鼓 or 加点鼓. */
-function hasDrums(project: Project, audio: LoadedAudio | null): boolean {
-  const { config } = project;
-  if (!(config.volumes.drums > 0)) return false;
-  if (project.provider !== "local") return true;
-  if (config.arrangement?.drums === "none") return false;
-  if (audio?.kind === "stems") return !silentStem(audio.stemPeaks?.drums);
-  return scoreFacts(config)?.playing.drums ?? true;
-}
-
 function VersionNav(props: {
   older: Project | undefined;
   newer: Project | undefined;
@@ -121,7 +121,7 @@ function VersionNav(props: {
         <LinkButton
           data-testid="simple-prev"
           disabled={props.disabled}
-          onClick={() => void actions.openProject(older.id)}
+          onClick={() => void actions.openProject(older.id, { choose: true })}
         >
           <ChevronLeft size={15} aria-hidden />
           上一版
@@ -131,7 +131,7 @@ function VersionNav(props: {
         <LinkButton
           data-testid="simple-next"
           disabled={props.disabled}
-          onClick={() => void actions.openProject(newer.id)}
+          onClick={() => void actions.openProject(newer.id, { choose: true })}
         >
           下一版
           <ChevronRight size={15} aria-hidden />
@@ -143,7 +143,7 @@ function VersionNav(props: {
 
 export function SimpleResultPage() {
   useRenderCount("SimpleResultPage");
-  const { studio, library, player, ui, actions } = useApp();
+  const { studio, library, player, ui, platform, actions } = useApp();
   const { project, audio, job, lastLoad } = studio;
   const page = useRef<HTMLDivElement>(null);
   const play = useRef<HTMLButtonElement>(null);
@@ -170,15 +170,37 @@ export function SimpleResultPage() {
     : undefined;
   const seconds = audio?.duration;
   const generated = lastLoad?.reason === "generated";
+  // The reply the version came with: did the language model fail?
+  const lastTurn = project?.chat?.at(-1)?.id;
+  const fellBack =
+    generated && !!lastTurn && !!studio.turnNotes[lastTurn]?.fallbackReason;
+  const saved = studio.saveState !== "failed";
   const line = useMemo(() => {
     if (!project || !generated) return null;
     if (parent) return changeLine(parent, project, seconds);
-    return project.parentId ? null : newPieceLine(project, seconds);
+    return project.parentId ? null : newPieceLine(saved);
     // what changed is about the music, not the title
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [generated, id, parent?.id, seconds]);
+  }, [generated, id, parent?.id, seconds, saved]);
+  // 撤销 went back to this version: say so where the change line was.
+  const [undone, setUndone] = useState<{ id: string; seq: number } | null>(
+    null,
+  );
+  const wasUndone =
+    !!undone &&
+    undone.id === id &&
+    lastLoad?.reason === "opened" &&
+    lastLoad.seq === undone.seq;
+  // 下载音乐 says it was saved on the button itself: a toast would cover
+  // the buttons below it.
+  const [downloaded, setDownloaded] = useState<string | null>(null);
+  useEffect(() => {
+    if (!downloaded) return;
+    const timer = setTimeout(() => setDownloaded(null), 4000);
+    return () => clearTimeout(timer);
+  }, [downloaded]);
   const drums = useMemo(
-    () => (project ? hasDrums(project, audio) : false),
+    () => (project ? drumsHeard(project, audio) : false),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [id, audio],
   );
@@ -195,6 +217,27 @@ export function SimpleResultPage() {
     void attempt(() => actions.send());
   };
   const downloadable = cloud ? !!project.audioBlob : !!audio;
+  const download = () => {
+    const piece = project.id;
+    void actions.downloadMusic(undefined, { quiet: true }).then((ok) => {
+      if (ok) setDownloaded(piece);
+    });
+  };
+  const undo = (to: Project) => {
+    setUndone({ id: to.id, seq: (lastLoad?.seq ?? 0) + 1 });
+    void actions.openProject(to.id, { choose: true });
+  };
+  // One line under the player: what this tap did, or why it did nothing.
+  const message = studio.notice
+    ? { text: studio.notice, kind: "notice" as const }
+    : line
+      ? {
+          text: fellBack ? `${line}${FALLBACK_NOTE}` : line,
+          kind: "change" as const,
+        }
+      : wasUndone
+        ? { text: UNDONE_LINE, kind: "undone" as const }
+        : null;
 
   return (
     <div
@@ -233,7 +276,7 @@ export function SimpleResultPage() {
           </header>
           {studio.audioError && (
             <p className="notice notice-danger" role="alert">
-              {studio.audioError}
+              {plainWords(studio.audioError)}
             </p>
           )}
           {audio && (
@@ -241,16 +284,21 @@ export function SimpleResultPage() {
           )}
         </section>
 
-        {line && (
-          <p className="simple-change" data-testid="simple-change">
-            <span className="grow">{line}</span>
-            {parent && (
+        {message && (
+          <p
+            className="simple-change"
+            data-testid="simple-change"
+            data-kind={message.kind}
+            role="status"
+          >
+            <span className="grow">{message.text}</span>
+            {message.kind === "change" && parent && (
               <Button
                 size="sm"
                 data-testid="simple-undo"
                 icon={<Undo2 size={14} aria-hidden />}
                 disabled={locked}
-                onClick={() => void actions.openProject(parent.id)}
+                onClick={() => undo(parent)}
               >
                 撤销
               </Button>
@@ -262,21 +310,36 @@ export function SimpleResultPage() {
           <SimpleProgress job={job} actions={actions} />
         ) : (
           <>
-            {studio.failure && <SimpleFailure busy={locked} />}
+            {studio.failure && (
+              <SimpleFailure
+                busy={locked}
+                message={studio.failure}
+                cloud={studio.provider !== "local"}
+              />
+            )}
             <div className="simple-actions">
               <Button
                 variant="primary"
                 size="lg"
                 className="simple-download"
                 data-testid="simple-download"
-                icon={<Download size={18} aria-hidden />}
+                icon={
+                  downloaded === project.id ? (
+                    <Check size={18} aria-hidden />
+                  ) : (
+                    <Download size={18} aria-hidden />
+                  )
+                }
+                data-done={downloaded === project.id || undefined}
                 busy={studio.exporting}
                 disabled={!downloadable || studio.exporting}
-                onClick={() =>
-                  void actions.exportWork(downloadRequest(project))
-                }
+                onClick={download}
               >
-                下载音乐
+                {downloaded === project.id
+                  ? platform.isDesktop
+                    ? "已保存"
+                    : "已开始下载"
+                  : "下载音乐"}
               </Button>
               <Button
                 size="lg"
@@ -320,7 +383,7 @@ export function SimpleResultPage() {
                       data-testid={`tweak-${tweak.id}`}
                       disabled={locked}
                       onClick={() =>
-                        void attempt(() => actions.send(tweak.phrase))
+                        void attempt(() => actions.tweak(tweak.id))
                       }
                     >
                       {tweak.label}
@@ -360,6 +423,11 @@ export function SimpleResultPage() {
                   发送
                 </Button>
               </div>
+              {activeBrain(studio.brain, studio.brains) === "llm" && (
+                <p className="simple-hint" data-testid="simple-llm-hint">
+                  {LLM_HINT}
+                </p>
+              )}
             </section>
           </>
         )}

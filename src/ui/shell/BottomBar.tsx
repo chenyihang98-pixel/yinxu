@@ -9,7 +9,6 @@ import { styleLabel } from "../../music/catalog";
 import type { Player } from "../../player/usePlayer";
 import { formatTime } from "../../state/format";
 import { plainPhase, plainSummary } from "../../state/plain";
-import { downloadRequest } from "../../state/scenes";
 import type { AppActions, Job } from "../../state/types";
 import type { Project } from "../../types";
 import { useRenderCount } from "../hooks/useRenderCount";
@@ -131,7 +130,7 @@ export const BottomBar = memo(function BottomBar(props: BottomBarProps) {
               data-testid="mini-export"
               onClick={() =>
                 simple
-                  ? void actions.exportWork(downloadRequest(mini))
+                  ? void actions.downloadMusic()
                   : actions.openModal("export")
               }
             >

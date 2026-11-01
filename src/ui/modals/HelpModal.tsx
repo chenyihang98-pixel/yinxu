@@ -58,10 +58,15 @@ function Key(props: { keys: string[]; children: ReactNode }) {
 
 /** 简单模式's guide: three steps with pictures, and what to do when it is not right. */
 function SimpleHelp() {
-  const { actions, platform, settings } = useApp();
+  const { actions, platform, settings, studio } = useApp();
   const cloud =
     platform.isDesktop &&
     Object.values(settings.providers).some((status) => status.configured);
+  // the user's own language model reads what they type (scenes and the
+  // one-tap buttons never use it)
+  const llm = studio.brains.some(
+    (option) => option.id === "llm" && option.available,
+  );
   const steps = [
     {
       icon: <MousePointerClick size={26} />,
@@ -113,7 +118,10 @@ function SimpleHelp() {
           <p>
             音乐就在
             {platform.isDesktop ? "这台电脑" : "这个浏览器"}
-            上做，不联网、不收费，做好的都在「我的音乐」里。
+            上做，不收费，做好的都在「我的音乐」里。
+            {llm
+              ? "场景和按钮不用联网；你自己写的话，会交给你在设置里接入的大模型来理解。"
+              : "不用联网。"}
             {cloud
               ? "只有打开「用 AI 服务生成」时，才会按次付费，每次都会先问你。"
               : ""}

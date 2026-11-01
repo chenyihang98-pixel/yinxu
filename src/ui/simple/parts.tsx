@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { AudioLines, RotateCw, TriangleAlert } from "lucide-react";
 import { formatTime } from "../../state/format";
-import { plainPhase } from "../../state/plain";
+import { plainFailure, plainPhase } from "../../state/plain";
 import type { AppActions, Job } from "../../state/types";
 import { Button, LinkButton } from "../primitives/Button";
 import { Progress } from "../primitives/Controls";
@@ -31,6 +31,10 @@ export function canRetry(): boolean {
 export function retry(): void {
   if (lastRequest) void lastRequest();
 }
+
+/** Under a box for one's own words, when a language model will read them. */
+export const LLM_HINT =
+  "你写的话会交给你在设置里接入的大模型来理解，可能要多等一会儿。";
 
 /** Seconds since the job started, for waits of unknown length. */
 function Waited(props: { since: number }) {
@@ -89,8 +93,17 @@ export function SimpleProgress(props: {
   );
 }
 
-/** The last generation failed: one plain sentence and 再试一次. */
-export function SimpleFailure(props: { busy: boolean }) {
+/**
+ * The last generation failed: why, in one plain sentence (plainFailure —
+ * a wrong key is not "a passing problem"), and 再试一次.
+ */
+export function SimpleFailure(props: {
+  busy: boolean;
+  /** studio.failure: the app's own account of what went wrong */
+  message: string;
+  /** an AI service was asked */
+  cloud: boolean;
+}) {
   return (
     <div
       className="simple-failure notice notice-danger"
@@ -98,7 +111,7 @@ export function SimpleFailure(props: { busy: boolean }) {
       data-testid="simple-failure"
     >
       <TriangleAlert size={18} aria-hidden />
-      <span className="grow">这次没做成，可能是临时出了点问题。</span>
+      <span className="grow">{plainFailure(props.message, props.cloud)}</span>
       {canRetry() && (
         <Button
           variant="primary"

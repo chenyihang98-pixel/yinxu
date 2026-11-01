@@ -30,6 +30,7 @@
  *    tab that read the library earlier cannot undo what another tab did.
  */
 import { buildCloudPrompt } from "../agent/cloudPrompt";
+import { planWithRules } from "../agent/rules";
 import type { AgentPlan, AgentTurn, BrainKind, LlmKind } from "../agent/types";
 import { REFERENCE_VOLUMES } from "../audio/render-types";
 import { DEFAULT_CONFIG, DEFAULT_VOLUMES } from "../music/defaults";
@@ -89,7 +90,14 @@ import {
   fittingDuration,
   phaseText,
 } from "./options";
-import { NOTHING_CHANGED } from "./plain";
+import {
+  NOTHING_CHANGED,
+  drumsHeard,
+  plainDuration,
+  sayAnswer,
+  tweakAnswer,
+} from "./plain";
+import { downloadRequest, tweaksFor } from "./scenes";
 import {
   buildAgentRequest,
   canSendPinsOnly,
@@ -137,8 +145,6 @@ const NOTE_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 const TEXT_TOAST = "composer-replaced";
 /** Toast key: the one "exported" notice, however many files were saved in a row. */
 const EXPORT_TOAST = "exported";
-/** 简单模式: the language model failed and the offline rules answered instead. */
-const FALLBACK_PLAIN = "已用内置方式完成。";
 /** What the banner adds to the reason a paid result is still waiting. */
 const DOWNLOAD_HINT = "也可以点「重新下载」再取一次，不会再次计费。";
 /**
@@ -211,7 +217,18 @@ interface CloudOrder {
 }
 
 type Intent =
-  | { kind: "message"; text?: string }
+  | {
+      kind: "message";
+      text?: string;
+      /**
+       * A ready-made sentence the offline rules understand exactly (a
+       * 简单模式 tweak button): planned by the rules even when a language
+       * model is set up, so the button does what it says, at once and free.
+       */
+      rules?: true;
+      /** 简单模式: what to say if it changes nothing (a tweak at its limit) */
+      answer?: string;
+    }
   | { kind: "draft" }
   | { kind: "variation" };
 
@@ -449,6 +466,47 @@ export class StudioFlows {
   readonly send: AppActions["send"] = (text) =>
     this.generate({ kind: "message", ...(text !== undefined ? { text } : {}) });
 
+  readonly tweak: AppActions["tweak"] = async (id) => {
+    const { project, audio, thread, provider } = this.kernel.state.studio;
+    if (!project || this.running || this.kernel.questioning) return false;
+    // The buttons as they are for the loaded piece now (换个乐器 names the
+    // next lead, 去掉鼓 / 加点鼓 follows what can be heard).
+    const drums = drumsHeard(project, audio);
+    const choice = tweaksFor(project.config, drums).find(
+      (item) => item.id === id,
+    );
+    if (!choice) return false;
+    const answer = tweakAnswer(choice.id, project.config, drums);
+    // The offline rules are asked first, instantly and before any question:
+    // a button that can change nothing (长一点 at the longest length) says
+    // why, and a paid piece is never put to a paid question for nothing.
+    let unchanged = false;
+    try {
+      unchanged = planWithRules(
+        buildAgentRequest({
+          text: choice.phrase,
+          project,
+          thread,
+          pins: {},
+          provider,
+          nextSeed: 0,
+        }),
+      ).unchanged;
+    } catch {
+      /* generate() asks the rules again and answers the same way */
+    }
+    if (unchanged) {
+      this.kernel.dispatch({ type: "studio/notice", text: answer });
+      return false;
+    }
+    return this.generate({
+      kind: "message",
+      text: choice.phrase,
+      rules: true,
+      answer,
+    });
+  };
+
   readonly startPiece: AppActions["startPiece"] = async (pins, options) => {
     const { studio } = this.kernel.state;
     if (studio.project || this.running || this.kernel.questioning) return false;
@@ -495,10 +553,12 @@ export class StudioFlows {
    */
   enterSimple(): void {
     const { studio } = this.kernel.state;
-    if (!studio.project && !this.running && studio.provider !== "local") {
-      this.chosenProvider = "local";
+    // Also with a work loaded: the next new piece (after 重新挑) is free
+    // again, whatever engine 专业模式 had chosen. The loaded work keeps
+    // refining on its own engine.
+    this.chosenProvider = "local";
+    if (!studio.project && !this.running && studio.provider !== "local")
       this.kernel.dispatch({ type: "composer/provider", provider: "local" });
-    }
     this.followSettings();
   }
 
@@ -828,6 +888,29 @@ export class StudioFlows {
   ): Promise<boolean> {
     const name = providerName(provider);
     const range = durationRange(provider);
+    if (this.kernel.simple) {
+      const said = (seconds: number) => plainDuration(seconds);
+      const { choice } = await this.kernel.ask({
+        kind: "duration",
+        title: joinText(name, "做不了这个长度"),
+        body: [
+          joinText(
+            name,
+            range
+              ? `能做 ${said(range[0])}到 ${said(range[1])}的音乐，`
+              : "做不了这个长度，",
+            `这次要的是 ${said(asked)}。`,
+          ),
+          `可以改成 ${said(fitting)}再做，或者取消、换一个长度。还没有发送任何付费请求。`,
+        ],
+        choices: [
+          { id: "cancel", label: "取消" },
+          { id: "fit", label: `改成 ${said(fitting)}`, variant: "primary" },
+        ],
+        cancel: "cancel",
+      });
+      return choice === "fit";
+    }
     const { choice } = await this.kernel.ask({
       kind: "duration",
       title: joinText(name, "不支持这个时长"),
@@ -950,7 +1033,14 @@ export class StudioFlows {
       /* the bridge is gone: nothing to cancel */
     }
     this.giveBackText(running);
-    this.kernel.toast(cancelText(job));
+    // 简单模式: a local job that stops is seen stopping (the page is back
+    // as it was); only a paid wait that was left needs saying.
+    if (
+      !this.kernel.simple ||
+      job.stage === "cloud" ||
+      job.stage === "downloading"
+    )
+      this.kernel.toast(cancelText(job));
   };
 
   /** The user's own words return to an empty composer, exactly as typed. */
@@ -1044,11 +1134,13 @@ export class StudioFlows {
     } else this.kernel.player.unload();
     if (returnedText) this.setComposerText(returnedText);
     this.kernel.writeSession();
-    if (carried)
+    // 简单模式 has no 「声音微调」: edits left there in 专业模式 wait
+    // silently for the user's return to it.
+    if (carried && !this.kernel.simple)
       this.kernel.toast(
         `「声音微调」里还有 ${carried} 项没有应用的修改，已保留在新版本上。`,
       );
-    if (returned)
+    if (returned && !this.kernel.simple)
       this.kernel.toast(
         `上次在这首作品的「声音微调」里有 ${returned} 项修改没有应用，已经放回来了。`,
       );
@@ -1227,7 +1319,7 @@ export class StudioFlows {
     // Everything the job needs is read from the current state here, before
     // the first await: the committed work, its thread, the pins, the draft.
     const brain: BrainKind =
-      intent.kind === "message"
+      intent.kind === "message" && !intent.rules
         ? activeBrain(studio.brain, brainOptions(deps.platform, settings))
         : "rules";
     const llm = brain === "llm" ? deps.desktop?.agentPlan : undefined;
@@ -1305,24 +1397,55 @@ export class StudioFlows {
           if (!plan.fallbackReason || provider === "local" || plan.unchanged)
             break;
           this.stage(job, "asking", { cancellable: false });
-          const { choice } = await this.kernel.ask({
-            kind: "fallback",
-            title: "大模型没有给出编曲方案",
-            body: [
-              `${plan.fallbackReason.replace(/[，,]\s*已改用离线规则[。.]?$/, "")}。`,
-              joinText(
-                "可以改用离线规则的方案继续（会向",
-                providerName(provider),
-                "发送付费请求），重试大模型，或者取消这次生成。",
-              ),
-            ],
-            choices: [
-              { id: "cancel", label: "取消" },
-              { id: "retry", label: "重试大模型" },
-              { id: "rules", label: "用离线规则继续", variant: "primary" },
-            ],
-            cancel: "cancel",
-          });
+          // 简单模式 says it without the model's error text and the words
+          // of the trade (编曲方案, 离线规则).
+          const { choice } = await this.kernel.ask(
+            this.kernel.simple
+              ? {
+                  kind: "fallback",
+                  title: "大模型这次没有回应",
+                  body: [
+                    "你在设置里接入的大模型这次没有给出结果，可能是网络或设置的问题。还没有发送任何付费请求。",
+                    joinText(
+                      "可以改用内置的方式理解你的话，接着请",
+                      providerName(provider),
+                      "来做（会按次付费）；也可以再试一次大模型，或者取消。",
+                    ),
+                  ],
+                  choices: [
+                    { id: "cancel", label: "取消" },
+                    { id: "retry", label: "再试一次" },
+                    {
+                      id: "rules",
+                      label: "用内置方式继续",
+                      variant: "primary",
+                    },
+                  ],
+                  cancel: "cancel",
+                }
+              : {
+                  kind: "fallback",
+                  title: "大模型没有给出编曲方案",
+                  body: [
+                    `${plan.fallbackReason.replace(/[，,]\s*已改用离线规则[。.]?$/, "")}。`,
+                    joinText(
+                      "可以改用离线规则的方案继续（会向",
+                      providerName(provider),
+                      "发送付费请求），重试大模型，或者取消这次生成。",
+                    ),
+                  ],
+                  choices: [
+                    { id: "cancel", label: "取消" },
+                    { id: "retry", label: "重试大模型" },
+                    {
+                      id: "rules",
+                      label: "用离线规则继续",
+                      variant: "primary",
+                    },
+                  ],
+                  cancel: "cancel",
+                },
+          );
           if (!this.alive(job)) return false;
           asked = true;
           if (choice === "rules") break;
@@ -1352,10 +1475,10 @@ export class StudioFlows {
       };
       const notesFor = (turn: AgentTurn) =>
         Object.keys(note).length ? { [turn.id]: note } : undefined;
-      if (plan.fallbackReason && !asked)
-        this.kernel.toast(
-          this.kernel.simple ? FALLBACK_PLAIN : plan.fallbackReason,
-        );
+      // 简单模式 says it under the result instead (FALLBACK_NOTE, from the
+      // reply's note): a toast there would cover the buttons.
+      if (plan.fallbackReason && !asked && !this.kernel.simple)
+        this.kernel.toast(plan.fallbackReason);
 
       if (plan.unchanged) {
         // Nothing audible would change: answer, generate nothing.
@@ -1368,8 +1491,16 @@ export class StudioFlows {
           turns: [mine, reply],
           notes: notesFor(reply),
         });
-        // 简单模式 shows no conversation: the answer is said where it is seen.
-        if (this.kernel.simple) this.kernel.toast(NOTHING_CHANGED);
+        // 简单模式 shows no conversation: the answer is said in place of
+        // the change line, where the user is looking.
+        if (this.kernel.simple)
+          this.kernel.dispatch({
+            type: "studio/notice",
+            text:
+              intent.kind !== "message"
+                ? NOTHING_CHANGED
+                : (intent.answer ?? sayAnswer(plan.reply)),
+          });
         return false;
       }
 
@@ -1454,8 +1585,7 @@ export class StudioFlows {
           autoplay: shouldAutoplay(gestureAt, deps.now()),
           clearPins: !base,
         });
-        if (await this.saveNew(project))
-          this.kernel.toast("创作完成，已保存到「我的作品」");
+        if (await this.saveNew(project)) this.madeToast(project);
         return true;
       }
 
@@ -1545,14 +1675,21 @@ export class StudioFlows {
               ),
             ],
           });
-        if (!fetchable)
+        const failed = !fetchable && !refused;
+        if (failed)
+          this.kernel.dispatch({ type: "studio/failure", text: message });
+        if (refused)
           // a refusal before anything was sent is not a failed generation
+          this.kernel.toast(message, "error");
+        else if (failed && !this.kernel.simple)
+          this.kernel.toast(`生成失败：${message}`, "error");
+        else if (failed && this.kernel.state.ui.page !== "studio")
+          // 简单模式 says it on 做音乐 with 再试一次 (SimpleFailure); from
+          // elsewhere the user is told where to look, in plain words.
           this.kernel.toast(
-            refused ? message : `生成失败：${message}`,
+            "这次没做成。回到「做音乐」可以看到原因，再试一次。",
             "error",
           );
-        if (!fetchable && !refused)
-          this.kernel.dispatch({ type: "studio/failure", text: message });
         this.giveBackText(job);
       }
       if (order && fetchable) this.offerDownload(order, stopped);
@@ -1689,7 +1826,7 @@ export class StudioFlows {
       );
       this.scheduleRetry(project.id);
     } else if (!result.audio) this.kernel.toast(DECODE_FAILED, "error");
-    else this.kernel.toast("创作完成，已保存到「我的作品」");
+    else this.madeToast(project);
     return true;
   }
 
@@ -2031,18 +2168,44 @@ export class StudioFlows {
 
   /* ---------------- opening ---------------- */
 
-  readonly openProject: AppActions["openProject"] = (id, options) =>
-    this.open(id, { reason: "opened", autoplay: options?.autoplay === true });
+  readonly openProject: AppActions["openProject"] = async (id, options) => {
+    const opened = await this.open(id, {
+      reason: "opened",
+      autoplay: options?.autoplay === true,
+      ...(options?.stay ? { stay: true } : {}),
+    });
+    if (opened && options?.choose) this.choose(id);
+    return opened;
+  };
+
+  /**
+   * 简单模式 made `id` the version of its piece (撤销, 上一版, 下一版): it
+   * is marked as the most recently used one, so 我的音乐 and 最近做的 show,
+   * play and download that version from now on (works.ts groupPieces). The
+   * mark is the work's modification time; a failed write only loses that.
+   */
+  private choose(id: string): void {
+    if (!this.kernel.find(id)) return;
+    const updatedAt = this.kernel.iso();
+    this.kernel.dispatch({ type: "project/patch", id, patch: { updatedAt } });
+    void this.kernel.patch(id, { updatedAt }).catch(() => {});
+  }
 
   async open(
     id: string,
-    options: { reason: LoadEvent["reason"]; autoplay: boolean },
+    options: {
+      reason: LoadEvent["reason"];
+      autoplay: boolean;
+      /** stay on the page that is shown (简单模式's 我的音乐 plays in place) */
+      stay?: boolean;
+    },
   ): Promise<boolean> {
     const { deps } = this.kernel;
     const { studio, library } = this.kernel.state;
     if (studio.project?.id === id && studio.audio && !this.running) {
       // Already loaded: no need to render or decode it again.
-      this.kernel.dispatch({ type: "ui/navigate", page: "studio" });
+      if (!options.stay)
+        this.kernel.dispatch({ type: "ui/navigate", page: "studio" });
       if (options.autoplay) void this.kernel.player.play();
       return true;
     }
@@ -2084,7 +2247,7 @@ export class StudioFlows {
     );
     if (!job) return false;
     if (options.autoplay) this.kernel.player.unlock();
-    if (options.reason === "opened")
+    if (options.reason === "opened" && !options.stay)
       this.kernel.dispatch({ type: "ui/navigate", page: "studio" });
     try {
       let audio: LoadedAudio | null = null;
@@ -2445,7 +2608,7 @@ export class StudioFlows {
     this.kernel.toast(
       this.kernel.deps.platform.isDesktop
         ? this.kernel.simple
-          ? "已保存"
+          ? `已保存「${name}」`
           : "已导出到选定位置"
         : `已开始下载「${name}」`,
       "info",
@@ -2453,6 +2616,20 @@ export class StudioFlows {
       undefined,
       { key: EXPORT_TOAST },
     );
+  }
+
+  /**
+   * A new version is made and stored. 简单模式's result page says so in its
+   * own line — a toast there would cover the buttons the user is about to
+   * tap — so only a user who went elsewhere meanwhile hears it.
+   */
+  private madeToast(project: Project): void {
+    if (!this.kernel.simple) {
+      this.kernel.toast("创作完成，已保存到「我的作品」");
+      return;
+    }
+    if (this.kernel.state.ui.page === "studio") return;
+    this.kernel.toast(`《${project.title}》做好了，已经存进「我的音乐」。`);
   }
 
   /** First save of a freshly generated local work. */
@@ -2733,7 +2910,26 @@ export class StudioFlows {
 
   /* ---------------- export ---------------- */
 
-  readonly exportWork: AppActions["exportWork"] = async (request) => {
+  readonly downloadMusic: AppActions["downloadMusic"] = async (id, options) => {
+    const target = id ?? this.kernel.state.studio.project?.id;
+    if (!target) return false;
+    // Only the loaded work can be saved: another one is opened first, on
+    // the page the user is on.
+    if (
+      this.kernel.state.studio.project?.id !== target &&
+      !(await this.open(target, {
+        reason: "opened",
+        autoplay: false,
+        stay: true,
+      }))
+    )
+      return false;
+    const { project, audio } = this.kernel.state.studio;
+    if (!project || project.id !== target) return false;
+    return this.exportWork(downloadRequest(project, audio), options);
+  };
+
+  readonly exportWork: AppActions["exportWork"] = async (request, options) => {
     // Always the committed work: its faders, its stems, its stored bytes.
     const { project, audio, exporting } = this.kernel.state.studio;
     if (!project || exporting) return false;
@@ -2754,7 +2950,8 @@ export class StudioFlows {
         )
           this.exported.add(project.id);
         this.kernel.riskChanged();
-        this.exportedToast(result.name);
+        // The caller says it on the spot (简单模式's 下载音乐 button).
+        if (!options?.quiet) this.exportedToast(result.name);
       }
       return result.saved;
     } catch (error) {

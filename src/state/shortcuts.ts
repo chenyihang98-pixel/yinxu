@@ -11,7 +11,6 @@
  *   Esc          close the open modal
  */
 import { useEffect, useRef } from "react";
-import { downloadRequest } from "./scenes";
 import type { AppContextValue } from "./types";
 
 export type Shortcut =
@@ -158,8 +157,7 @@ export function useShortcuts(app: AppContextValue): void {
           break;
         case "export":
           if (!studio.project) return;
-          if (ui.mode === "simple")
-            void actions.exportWork(downloadRequest(studio.project));
+          if (ui.mode === "simple") void actions.downloadMusic();
           else actions.openModal("export");
           break;
       }

@@ -13,6 +13,7 @@ import { UNDO_WINDOW_MS, cleanTitle, errorText } from "./logic";
 import type { StudioFlows } from "./studioFlows";
 import type { SyncMessage } from "./sync";
 import type { AppActions } from "./types";
+import { groupPieces, lineageOf } from "./works";
 
 const MAX_IMPORT_BYTES = 1024 * 1024;
 /** The one undo notice: it lists every deletion that can still be undone. */
@@ -105,7 +106,14 @@ export class LibraryFlows {
     const next = cleanTitle(title);
     // Nothing typed, or nothing changed: no write at all.
     if (!work || !next || next === work.title) return false;
-    return this.patchAndSave(id, { title: next }, "新名称");
+    const renamed = await this.patchAndSave(id, { title: next }, "新名称");
+    // 简单模式 knows a piece, not its versions: one name for all of them,
+    // so 上一版 / 下一版, 我的音乐 and the downloaded files all agree.
+    if (renamed && this.kernel.simple)
+      for (const version of lineageOf(work, this.kernel.state.library.projects))
+        if (version.id !== id && version.title !== next)
+          await this.patchAndSave(version.id, { title: next }, "新名称");
+    return renamed;
   };
 
   readonly toggleFavourite: AppActions["toggleFavourite"] = async (id) => {
@@ -169,19 +177,17 @@ export class LibraryFlows {
       this.kernel.withdraw(UNDO_TOAST);
       return;
     }
-    // 简单模式 deletes a piece with all its versions: one piece, one name.
-    const onePiece =
-      this.kernel.simple &&
-      waiting.every(
-        (entry) => entry.project.title === waiting[0].project.title,
-      );
+    // 简单模式 deletes a piece with all its versions: counted in pieces.
+    const count = this.kernel.simple
+      ? groupPieces(waiting.map((entry) => entry.project)).length
+      : waiting.length;
     this.kernel.toast(
-      waiting.length === 1 || onePiece
+      count === 1
         ? `已删除《${waiting[0].project.title}》`
-        : `已删除 ${waiting.length} 首作品`,
+        : `已删除 ${count} 首作品`,
       "info",
       {
-        label: waiting.length === 1 || onePiece ? "撤销" : "全部撤销",
+        label: count === 1 ? "撤销" : "全部撤销",
         run: () => this.undoRemove(),
       },
       undefined,
@@ -263,8 +269,14 @@ export class LibraryFlows {
       }
     }
     if (failed.length === 0) {
+      // 简单模式 counts pieces: the versions of one piece come back as one.
+      const pieces = this.kernel.simple ? groupPieces(works) : [];
       this.kernel.toast(
-        works.length > 1 ? `已恢复 ${works.length} 首作品` : "已恢复",
+        pieces.length === 1
+          ? `已恢复《${pieces[0].latest.title}》`
+          : works.length > 1
+            ? `已恢复 ${this.kernel.simple ? pieces.length : works.length} 首作品`
+            : "已恢复",
       );
       // Back where it was, paused; the page the user is on stays.
       if (reopen && !this.kernel.state.studio.project && !this.kernel.busy)

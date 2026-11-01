@@ -1902,6 +1902,31 @@ function plainText(frame) {
   );
 }
 
+/** Runs in the page: toasts that lie over a visible button or field of the page. */
+function toastsOverControls() {
+  const covered = [];
+  const controls = [
+    ...document.querySelectorAll(".app-body button, .app-body input"),
+  ].filter((node) => {
+    const box = node.getBoundingClientRect();
+    return box.width > 0 && box.bottom > 0 && box.top < innerHeight;
+  });
+  for (const toast of document.querySelectorAll('[data-testid="toast"]')) {
+    const a = toast.getBoundingClientRect();
+    for (const node of controls) {
+      const b = node.getBoundingClientRect();
+      if (
+        Math.min(a.right, b.right) - Math.max(a.left, b.left) > 2 &&
+        Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 2
+      )
+        covered.push(
+          `${toast.innerText.trim()} → ${node.getAttribute("data-testid") || node.textContent.trim()}`,
+        );
+    }
+  }
+  return covered;
+}
+
 /**
  * 简单模式 as a first visitor meets it, inside the portal's frame: a scene →
  * music plays → 快一点 → what changed, in plain words → 撤销 → 下载音乐 (a
@@ -1970,8 +1995,14 @@ async function simpleJourney(browser, origin, watch, downloads) {
     await $("simple-summary").innerText(),
     "慵懒放松 · 1 分钟 · 可以循环播放",
   );
-  assert.match(await $("simple-change").innerText(), /^做好了：慵懒放松/);
+  // not the description once more: what to do next
+  assert.equal(
+    await $("simple-change").innerText(),
+    "做好了，已经存进「我的音乐」。满意就点「下载音乐」；想改哪里，点下面的按钮。",
+  );
   assert.equal(await $("simple-undo").count(), 0, "nothing to undo yet");
+  // the result page says it itself: no toast lies over the buttons
+  assert.equal(await frame.locator('[data-testid="toast"]').count(), 0);
   assert.doesNotMatch(await plainText(frame), JARGON, "result page");
   assert.deepEqual(await frame.evaluate(layoutProblems), [], "result page");
 
@@ -1994,6 +2025,11 @@ async function simpleJourney(browser, origin, watch, downloads) {
   assert.equal(await $("simple-prev").count(), 1, "上一版 is offered");
   const second = (await records(frame)).find((item) => item.revision === 2);
   assert.ok(second && second.config.bpm > first.config.bpm);
+  // the length agrees with the player's clock: "约 1 分钟" next to 1:02, never "1 分 3 秒"
+  const summary = await $("simple-summary").innerText();
+  const clock = (await $("simple-time").innerText()).split("/")[1].trim();
+  assert.match(summary, /· (?:约 )?1 分钟 ·/, `${summary} / ${clock}`);
+  assert.deepEqual(await frame.evaluate(toastsOverControls), []);
   if ((await $("simple-play").getAttribute("aria-pressed")) === "true")
     await $("simple-play").click();
 
@@ -2004,7 +2040,8 @@ async function simpleJourney(browser, origin, watch, downloads) {
     { timeout: 120000 },
   );
   await $("simple-progress").waitFor({ state: "detached", timeout: 120000 });
-  assert.equal(await $("simple-change").count(), 0);
+  assert.equal(await $("simple-change").innerText(), "已撤销，回到了上一版。");
+  assert.equal(await $("simple-undo").count(), 0);
   assert.equal(await $("simple-next").count(), 1, "下一版 leads back");
 
   // 下载音乐: the whole piece at once, named by its title
@@ -2018,6 +2055,13 @@ async function simpleJourney(browser, origin, watch, downloads) {
     `${title}.wav`,
     "no version in the name",
   );
+  // said on the button itself, no toast over the buttons below it
+  await until(
+    () => $("simple-download").innerText(),
+    (text) => text.includes("已开始下载"),
+    "下载音乐 says it started",
+  );
+  assert.equal(await frame.locator('[data-testid="toast"]').count(), 0);
   const target = path.join(downloads, "simple.wav");
   await file.saveAs(target);
   const wav = wavInfo(fs.readFileSync(target));
@@ -2034,6 +2078,8 @@ async function simpleJourney(browser, origin, watch, downloads) {
   await $("simple-library").waitFor();
   assert.equal(await $("simple-card").count(), 1);
   assert.equal(await $("simple-card-versions").innerText(), "共 2 版");
+  // after 撤销 the piece is the version gone back to — on its card too
+  assert.equal(await $("simple-card").getAttribute("data-project"), first.id);
   assert.doesNotMatch(await plainText(frame), JARGON, "我的音乐");
   assert.deepEqual(await frame.evaluate(layoutProblems), [], "我的音乐");
   await $("simple-card-play").click();
@@ -2057,6 +2103,11 @@ async function simpleJourney(browser, origin, watch, downloads) {
   assert.equal(await undo.locator("> span").innerText(), `已删除《${title}》`);
   await undo.locator('[data-testid="toast-action"]').click();
   await $("simple-card").waitFor();
+  await until(
+    () => frame.locator('[data-testid="toast"] > span').allInnerTexts(),
+    (list) => list.includes(`已恢复《${title}》`),
+    "one piece comes back, by its name",
+  );
   await until(
     async () => (await records(frame)).length,
     (count) => count === 2,
@@ -2123,6 +2174,26 @@ async function simplePhone(browser, origin, watch) {
   assert.equal(made.config.duration, 60);
   if ((await $("simple-play").getAttribute("aria-pressed")) === "true")
     await $("simple-play").tap();
+  assert.deepEqual(await phone.evaluate(toastsOverControls), []);
+  // every control of 简单模式 is a 44 px target on a touch screen
+  const small = await phone.evaluate(() =>
+    [
+      ...document.querySelectorAll(
+        ".app-body button, .app-body input, .app-body [role=slider]",
+      ),
+    ]
+      .filter((node) => !node.closest(".sr-only, .skip-link"))
+      .map((node) => ({
+        id: node.getAttribute("data-testid") || node.textContent.trim(),
+        box: node.getBoundingClientRect(),
+      }))
+      .filter(({ box }) => box.width > 0 && (box.width < 44 || box.height < 44))
+      .map(
+        ({ id, box }) =>
+          `${id} ${Math.round(box.width)}x${Math.round(box.height)}`,
+      ),
+  );
+  assert.deepEqual(small, [], "touch targets");
   for (const id of [
     "simple-play",
     "simple-download",
@@ -2139,6 +2210,44 @@ async function simplePhone(browser, origin, watch) {
   await $("simple-nav-library").tap();
   await $("simple-library").waitFor();
   assert.deepEqual(await phone.evaluate(layoutProblems), [], "我的音乐");
+  // the dialogs are portaled out of the app: their controls are 44 px too
+  await $("settings-button").tap();
+  await $("settings-modal").waitFor();
+  const modalSmall = await phone.evaluate(() =>
+    [...document.querySelectorAll('[role="dialog"] button')]
+      .map((node) => ({
+        id: node.getAttribute("data-testid") || node.textContent.trim(),
+        box: node.getBoundingClientRect(),
+      }))
+      .filter(({ box }) => box.width > 0 && (box.width < 44 || box.height < 44))
+      .map(
+        ({ id, box }) =>
+          `${id} ${Math.round(box.width)}x${Math.round(box.height)}`,
+      ),
+  );
+  assert.deepEqual(modalSmall, [], "settings on a touch screen");
+  await $("modal-close").tap();
+  // the length picked stays picked for the next piece (重新挑 comes back to it)
+  await $("simple-nav-make").tap();
+  await $("simple-restart").tap();
+  await $("simple-make").waitFor();
+  await $("length-30").tap();
+  await phone.locator('[data-testid="scene-card"][data-scene="vlog"]').tap();
+  await phone.waitForSelector(
+    '[data-testid="simple-result"][data-revision="1"][data-audio="stems"]',
+    { timeout: 120000 },
+  );
+  await $("simple-progress").waitFor({ state: "detached", timeout: 120000 });
+  const [short] = (await records(phone)).sort((a, b) =>
+    String(b.createdAt).localeCompare(String(a.createdAt)),
+  );
+  assert.equal(short.config.mood, "bright");
+  assert.equal(short.config.duration, 30, "the scene took the picked length");
+  if ((await $("simple-play").getAttribute("aria-pressed")) === "true")
+    await $("simple-play").tap();
+  await $("simple-restart").tap();
+  await $("simple-make").waitFor();
+  assert.equal(await $("length-30").getAttribute("aria-checked"), "true");
   const csp = await phone.evaluate(() => window.__csp);
   await context.close();
   return csp;
@@ -2239,8 +2348,9 @@ async function simpleCloud(browser, origin) {
   await $("unsaved-banner").waitFor();
   assert.match(
     await $("unsaved-banner").innerText(),
-    /付费生成，但还没有保存到「我的音乐」/,
+    /由腾讯云 TokenHub 付费做好了，但还没能存进「我的音乐」[\s\S]*「下载音乐」/,
   );
+  assert.equal(await $("unsaved-export").innerText(), "下载音乐");
   await $("simple-restart").click();
   await $("dialog-unsaved").waitFor();
   await page.keyboard.press("Escape");

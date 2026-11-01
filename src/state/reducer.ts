@@ -142,6 +142,8 @@ export type AppAction =
   | { type: "studio/strays"; strays: StrayResult[] }
   /** the last generation failed (text), or that is no longer news (null) */
   | { type: "studio/failure"; text: string | null }
+  /** 简单模式: a request changed nothing, and why (or null: no longer news) */
+  | { type: "studio/notice"; text: string | null }
   | { type: "studio/peaks"; id: string; peaks: number[] }
   | { type: "mix/volume"; track: TrackName; value: number }
   | { type: "mix/mute"; track: TrackName; fallback: number }
@@ -247,6 +249,7 @@ export function initialState(options: {
       pending: null,
       strays: [],
       failure: null,
+      notice: null,
     },
     library: {
       status: "loading",
@@ -352,6 +355,7 @@ function studioReducer(state: AppState, action: AppAction): AppState {
           job: action.job,
           pendingTurn: action.pendingTurn ?? null,
           failure: null,
+          notice: null,
         },
       };
     case "job/update":
@@ -419,6 +423,7 @@ function studioReducer(state: AppState, action: AppAction): AppState {
           provider: action.provider ?? studio.provider,
           pins: action.clearPins ? {} : studio.pins,
           failure: null,
+          notice: null,
           lastLoad: {
             seq: (studio.lastLoad?.seq ?? 0) + 1,
             reason: action.reason,
@@ -435,6 +440,7 @@ function studioReducer(state: AppState, action: AppAction): AppState {
           pins: {},
           composerText: "",
           failure: null,
+          notice: null,
         },
       };
 
@@ -470,6 +476,10 @@ function studioReducer(state: AppState, action: AppAction): AppState {
       return studio.failure === action.text
         ? state
         : { ...state, studio: { ...studio, failure: action.text } };
+    case "studio/notice":
+      return studio.notice === action.text
+        ? state
+        : { ...state, studio: { ...studio, notice: action.text } };
     case "studio/peaks":
       return studio.project?.id === action.id && studio.audio
         ? {

@@ -8,8 +8,9 @@ import { planWithRules } from "../agent/rules";
 import { INSTRUMENT_IDS, instrumentLabel, styleLabel } from "../music/catalog";
 import type { InstrumentId, StyleId } from "../music/catalog";
 import type { MusicConfig, Project } from "../types";
+import { exportChoices } from "../services/exporter";
 import { newPieceBase } from "./plan";
-import type { ExportRequest, Pins } from "./types";
+import type { ExportRequest, LoadedAudio, Pins } from "./types";
 
 export interface Scene {
   /** data-scene of the card */
@@ -310,12 +311,16 @@ export function tweaksFor(
 /**
  * 下载音乐: the whole piece as one file, named by its title — the mix as WAV
  * for a local piece, the audio exactly as the service sent it for one made
- * by an AI service.
+ * by an AI service. A v0.2 piece with an ending gets the short fade in and
+ * out 专业模式's 导出 gives it by default (exportChoices.canFade).
  */
 export function downloadRequest(
-  project: Pick<Project, "provider">,
+  project: Project,
+  audio?: LoadedAudio | null,
 ): ExportRequest {
-  return project.provider === "local"
-    ? { kind: "mix", plainName: true }
-    : { kind: "original", plainName: true };
+  if (project.provider !== "local")
+    return { kind: "original", plainName: true };
+  return exportChoices(project, audio ?? null).canFade
+    ? { kind: "mix", plainName: true, fade: true }
+    : { kind: "mix", plainName: true };
 }

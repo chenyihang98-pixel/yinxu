@@ -21,15 +21,19 @@ import {
   parseMode,
 } from "../src/state/mode";
 import { autoBrain, brainOptions } from "../src/state/options";
+import { formatTime } from "../src/state/format";
 import {
   NOTHING_CHANGED,
   changeLine,
   newPieceLine,
   plainChanges,
   plainDuration,
+  plainFailure,
   plainPhase,
   plainSummary,
   plainWords,
+  sayAnswer,
+  tweakAnswer,
 } from "../src/state/plain";
 import {
   buildAgentRequest,
@@ -97,16 +101,38 @@ const base: MusicConfig = {
 
 /* ---------------- plain words ---------------- */
 
-test("plainDuration says lengths the way people do", () => {
+test("plainDuration says lengths the way people do, and agrees with the player's clock", () => {
   assert.equal(plainDuration(30), "30 秒");
   assert.equal(plainDuration(15.2), "15 秒");
   assert.equal(plainDuration(60), "1 分钟");
-  assert.equal(plainDuration(61.4), "1 分钟", "a loop fitted to whole bars");
-  assert.equal(plainDuration(58.6), "1 分钟");
   assert.equal(plainDuration(90), "1 分 30 秒");
   assert.equal(plainDuration(63), "1 分 3 秒");
   assert.equal(plainDuration(120), "2 分钟");
   assert.equal(plainDuration(Number.NaN), "0 秒");
+  // asked for one minute, a loop fitted to whole bars: about one minute —
+  // never "1 分 3 秒" next to a player that shows 1:02
+  assert.equal(plainDuration(62.6, 60), "约 1 分钟");
+  assert.equal(plainDuration(58.6, 60), "约 1 分钟");
+  assert.equal(plainDuration(60.3, 60), "1 分钟");
+  assert.equal(plainDuration(91.4, 90), "约 1 分 30 秒");
+  assert.equal(plainDuration(30.4, 30), "30 秒");
+  // further off than a bar: the real length, in the player's whole seconds
+  assert.equal(plainDuration(3.1, 30), "3 秒");
+  assert.equal(plainDuration(34.8, 30), "34 秒");
+  for (const seconds of [62.6, 59.9, 61.4, 75.99, 119.7]) {
+    const clock = formatTime(seconds); // "1:02"
+    const [minutes, rest] = clock.split(":").map(Number);
+    const said = plainDuration(seconds);
+    assert.equal(
+      said,
+      rest === 0
+        ? `${minutes} 分钟`
+        : minutes === 0
+          ? `${rest} 秒`
+          : `${minutes} 分 ${rest} 秒`,
+      `${seconds} s: the player shows ${clock}`,
+    );
+  }
 });
 
 test("plainChanges: each kind of change in plain words, melody last", () => {
@@ -173,8 +199,34 @@ test("plainChanges: each kind of change in plain words, melody last", () => {
   assert.equal(say({ seed: 78 }, "new"), "改好了：换了一段新旋律。");
   assert.equal(say({ seed: 78 }, "rhythm"), "改好了：换了一段新旋律。");
   assert.equal(say({}), NOTHING_CHANGED);
-  // a nudge nobody hears is not a change
-  assert.equal(say({ energy: 0.63 }), NOTHING_CHANGED);
+  assert.equal(
+    say({ prompt: "别的话" }),
+    NOTHING_CHANGED,
+    "the words are not the music",
+  );
+  // A version was made: even a nudge below what is usually worth saying is
+  // said (更安静 from 0.02 to 0 made a version that read "nothing changed").
+  assert.equal(say({ energy: 0.63 }), "改好了：更有活力了，旋律没变。");
+  assert.equal(
+    plainChanges({ ...base, energy: 0.02 }, { ...base, energy: 0 }, "adapted"),
+    "改好了：更安静了，旋律大体没变。",
+  );
+  assert.equal(
+    say({ arrangement: { layers: { pad: true } } }),
+    "改好了：伴奏换了一种写法，旋律没变。",
+  );
+  assert.equal(
+    say({ title: "x" } as Partial<MusicConfig>),
+    "改好了：变化很细微，旋律没变。",
+    "something else differs: never 'nothing changed' for a new version",
+  );
+  // the new length is said the way the summary says it
+  assert.equal(
+    plainChanges(base, { ...base, duration: 90 }, "adapted", {
+      seconds: 91.4,
+    }),
+    "改好了：变长了，现在约 1 分 30 秒，旋律大体没变。",
+  );
 });
 
 test("plainChanges: at most four items, then 等; never a number but a length", () => {
@@ -245,9 +297,21 @@ test("changeLine and newPieceLine: what the simple result page says", () => {
     "改好了：节奏快了一点，换了一段新旋律。",
     "an AI service always writes a new tune",
   );
+  // after a new piece: what to do next, not its description once more
+  // (that is right above it)
   assert.equal(
-    newPieceLine(localProject("c", {}, { ...base, loop: true }), 60.2),
-    "做好了：轻快明亮 · 1 分钟 · 可以循环播放",
+    newPieceLine(),
+    "做好了，已经存进「我的音乐」。满意就点「下载音乐」；想改哪里，点下面的按钮。",
+  );
+  assert.equal(
+    newPieceLine(false),
+    "做好了。满意就点「下载音乐」；想改哪里，点下面的按钮。",
+    "not saved: no claim that it is",
+  );
+  assertPlain(newPieceLine());
+  assert.equal(
+    plainSummary(localProject("c", {}, { ...base, loop: true }), 62.6),
+    "轻快明亮 · 约 1 分钟 · 可以循环播放",
   );
   assert.equal(
     plainSummary(localProject("d", {}, { ...base, mood: "guofeng" }), 30),
@@ -295,7 +359,102 @@ test("plainPhase and plainWords keep the app's messages plain", () => {
     plainWords("可以在「导出」里保存原始音频"),
     "可以在「下载音乐」里保存原始音频",
   );
-  assert.equal(plainWords("已取消本地生成"), "已取消本地生成");
+  assert.equal(plainWords("已取消本地生成"), "已取消");
+  // every message 专业模式 has, in 简单模式's words (brand names untouched)
+  for (const [pro, simple] of [
+    [
+      "音乐已生成，但没能保存到「我的作品」：暂时无法写入。它只存在于当前窗口，请先导出；稍后会自动再试一次保存。",
+      "音乐已生成，但没能保存到「我的音乐」：暂时无法写入。它只存在于当前窗口，请先下载；稍后会自动再试一次保存。",
+    ],
+    ["导出失败，请重试。", "下载失败，请重试。"],
+    ["找不到这首作品，它可能已被删除。", "找不到这首音乐，它可能已被删除。"],
+    [
+      "正在生成或打开作品，完成或取消后再试。",
+      "正在生成或打开音乐，完成或取消后再试。",
+    ],
+    [
+      "云端结果在取消后到达，已保存到「我的作品」。",
+      "AI 服务的结果在取消后到达，已保存到「我的音乐」。",
+    ],
+    [
+      "大模型设置已加密保存，制作人已切换为大模型。",
+      "大模型设置已加密保存，之后你写的话会交给它来理解。",
+    ],
+    ["先告诉制作人想怎么改。", "先写下想怎么改。"],
+    [
+      "火山引擎没有返回音乐，请稍后重试。",
+      "火山引擎没有返回音乐，请稍后重试。",
+    ],
+    ["已删除 3 首作品", "已删除 3 首音乐"],
+  ])
+    assert.equal(plainWords(pro), simple);
+});
+
+test("plainFailure: why it failed, in plain words; sayAnswer and tweakAnswer for a tap that changed nothing", () => {
+  assert.match(
+    plainFailure(
+      "腾讯云 TokenHub 拒绝了请求（401）：fixture unauthorized",
+      true,
+    ),
+    /密钥不对/,
+  );
+  assert.match(
+    plainFailure("API Key 格式不正确，请粘贴完整密钥。", true),
+    /密钥/,
+  );
+  assert.match(plainFailure("余额不足，请充值", true), /余额不足/);
+  assert.match(plainFailure("网络连接超时", true), /网络好像不通/);
+  assert.match(
+    plainFailure("音乐服务返回了空文件", true),
+    /AI 服务这次没有做成/,
+  );
+  assert.match(plainFailure("合成失败", false), /这次没做成/);
+  assert.match(plainFailure(null, false), /这次没做成/);
+  for (const text of [
+    plainFailure("HTTP 401 Unauthorized", true),
+    plainFailure("ECONNRESET", true),
+    plainFailure("boom", false),
+  ])
+    assertPlain(text.replace(/AI/g, ""));
+
+  assert.match(sayAnswer("很高兴你喜欢，作品保持不变。"), /很高兴你喜欢/);
+  assert.match(
+    sayAnswer("这句话里我没有听出要调整什么，作品保持不变。可以试试：…"),
+    /没听出这句话想怎么改/,
+  );
+  assert.equal(
+    sayAnswer("已经是循环片段。作品保持不变。"),
+    "这首已经是这样了，没有可以改的地方。",
+  );
+
+  assert.equal(
+    tweakAnswer("longer", { loop: false }, true),
+    "已经是最长的 2 分钟了。想一直放的话，可以点「做成循环」。",
+  );
+  assert.match(tweakAnswer("longer", { loop: true }, true), /想放多久都行/);
+  assert.equal(
+    tweakAnswer("shorter", { loop: false }, true),
+    "已经是最短的 15 秒了。",
+  );
+  assert.match(tweakAnswer("faster", { loop: false }, true), /最快/);
+  assert.match(tweakAnswer("slower", { loop: false }, true), /最慢/);
+  assert.match(tweakAnswer("happier", { loop: false }, true), /最欢快/);
+  assert.match(tweakAnswer("calmer", { loop: false }, true), /最安静/);
+  assert.match(tweakAnswer("drums", { loop: false }, false), /不太适合加鼓/);
+  assert.equal(
+    tweakAnswer("structure", { loop: false }, true),
+    NOTHING_CHANGED,
+  );
+  for (const id of [
+    "longer",
+    "shorter",
+    "faster",
+    "slower",
+    "happier",
+    "calmer",
+    "drums",
+  ])
+    assertPlain(tweakAnswer(id, { loop: false }, id !== "drums"));
 });
 
 /* ---------------- scenes ---------------- */
@@ -436,14 +595,30 @@ test("the tweak buttons: fixed sentences the rules understand, following the pie
     );
     assert.equal(plan.unchanged, false, tweak.phrase);
   }
-  assert.deepEqual(downloadRequest({ provider: "local" }), {
+  assert.deepEqual(downloadRequest(localProject("l", {}, { ...base })), {
     kind: "mix",
     plainName: true,
   });
-  assert.deepEqual(downloadRequest({ provider: "tencent" }), {
-    kind: "original",
+  assert.deepEqual(
+    downloadRequest({ ...localProject("t"), provider: "tencent" }),
+    { kind: "original", plainName: true },
+  );
+  // a v0.2 piece with an ending: the 1 s fade 专业模式 exports by default
+  const old = localProject("o", {}, { ...base, engine: 1, loop: false });
+  const v1audio = {
+    kind: "stems" as const,
+    engine: 1 as const,
+  } as unknown as Parameters<typeof downloadRequest>[1];
+  assert.deepEqual(downloadRequest(old, v1audio), {
+    kind: "mix",
     plainName: true,
+    fade: true,
   });
+  assert.deepEqual(
+    downloadRequest({ ...old, config: { ...old.config, loop: true } }, v1audio),
+    { kind: "mix", plainName: true },
+    "a loop never fades",
+  );
   const v3 = localProject("x", { revision: 3, title: "晴天" });
   assert.equal(exportName(v3, { kind: "mix" }), "晴天 v3");
   assert.equal(exportName(v3, { kind: "mix", plainName: true }), "晴天");
@@ -611,7 +786,11 @@ test("startPiece: exactly the scene's pins, used up on success, put back when no
   );
   assert.deepEqual(studio(h).pins, { duration: 60 });
   assert.ok(studio(h).failure, "the failure is kept for 再试一次");
-  assert.match(toasts(h).at(-1) ?? "", /^生成失败/);
+  assert.deepEqual(
+    toasts(h),
+    [],
+    "said on the page with 再试一次 (SimpleFailure), not in a toast",
+  );
   h.renderError.current = null;
   const again = h.core.actions.startPiece(scenePins(SCENES[0], 60));
   assert.equal(studio(h).failure, null, "cleared as the next job starts");
@@ -658,25 +837,33 @@ test("a cancelled start is not a failure; a failed one gives the typed words bac
   assert.ok(studio(h).failure);
 });
 
-test("简单模式 messages: plain toasts, an unchanged tweak says so, a failed model is quiet", async () => {
+test("简单模式 messages: the result page says it in place — no toast over the buttons; a tweak that cannot apply says why", async () => {
   const h = harness({ mode: "simple" });
   await h.core.start();
   assert.equal(await h.core.actions.startPiece(scenePins(SCENES[3])), true);
-  assert.equal(toasts(h).at(-1), "做好了，已保存到「我的音乐」");
-  // 加个结尾 on a piece that already ends: nothing to make, a plain answer
-  const ending = tweaksFor(studio(h).project!.config, true).find(
-    (tweak) => tweak.id === "structure",
+  assert.deepEqual(
+    toasts(h),
+    [],
+    "made on 做音乐: its result page says so, no toast covers the tweaks",
   );
-  assert.equal(ending?.phrase, "做成循环");
+  assert.equal(studio(h).notice, null);
+  // words with nothing to act on: answered in place, nothing made
   assert.equal(await h.core.actions.send("加个结尾"), false);
-  assert.equal(toasts(h).at(-1), NOTHING_CHANGED);
+  assert.equal(studio(h).notice, "这首已经是这样了，没有可以改的地方。");
   assert.equal(studio(h).failure, null, "nothing to change is not a failure");
-  // a real tweak
+  assert.deepEqual(toasts(h), []);
+  // a real tweak, by its button: a new version, and the notice is gone
   const before = studio(h).project!;
-  assert.equal(await h.core.actions.send("快一点"), true);
+  assert.equal(await h.core.actions.tweak("faster"), true);
   const after = studio(h).project!;
   assert.equal(after.parentId, before.id);
+  assert.equal(studio(h).notice, null);
   assert.match(changeLine(before, after), /^改好了：节奏快了/);
+  assert.deepEqual(toasts(h), []);
+  // made while the user was on 我的音乐: then a toast says so
+  h.core.actions.navigate("library");
+  assert.equal(await h.core.actions.tweak("slower"), true);
+  assert.match(toasts(h).at(-1) ?? "", /做好了，已经存进「我的音乐」/);
   // 专业模式 keeps its own words
   const pro = harness();
   await pro.core.start();
@@ -684,7 +871,90 @@ test("简单模式 messages: plain toasts, an unchanged tweak says so, a failed 
   assert.match(toasts(pro).at(-1) ?? "", /^创作完成，已保存到「我的作品」/);
 });
 
-test("简单模式 on the desktop: the producer follows the settings; a failed model says 已用内置方式完成", async () => {
+test("tweak(): the button's own sentence, planned by the rules; at a limit it asks nothing, makes nothing and says why", async () => {
+  // the longest length: 长一点 cannot apply
+  const long = localProject(
+    "long",
+    {},
+    { ...base, duration: 120, loop: false },
+  );
+  const h = harness({ mode: "simple", records: [long] });
+  await h.core.start();
+  assert.equal(await h.core.actions.openProject("long"), true);
+  const renders = h.renders.length;
+  assert.equal(await h.core.actions.tweak("longer"), false);
+  assert.equal(h.renders.length, renders, "nothing rendered");
+  assert.equal(
+    studio(h).notice,
+    "已经是最长的 2 分钟了。想一直放的话，可以点「做成循环」。",
+  );
+  assert.equal(h.core.getState().library.projects.length, 1, "no new version");
+  // the fastest tempo, the slowest, the shortest
+  for (const [id, config, said] of [
+    ["faster", { bpm: 200 }, /最快/],
+    ["slower", { bpm: 50 }, /最慢/],
+    ["shorter", { duration: 15 }, /最短的 15 秒/],
+  ] as const) {
+    const work = localProject(`w-${id}`, {}, { ...base, ...config });
+    const t = harness({ mode: "simple", records: [work] });
+    await t.core.start();
+    await t.core.actions.openProject(work.id);
+    assert.equal(await t.core.actions.tweak(id), false, id);
+    assert.match(studio(t).notice ?? "", said, id);
+  }
+  // pressed again and again, 更安静 ends at the quietest and says so —
+  // every version it made on the way says what changed
+  const q = harness({ mode: "simple" });
+  await q.core.start();
+  await q.core.actions.startPiece(scenePins(SCENES[0]));
+  let made = 0;
+  for (let i = 0; i < 8; i++) {
+    const was = studio(q).project!;
+    if (!(await q.core.actions.tweak("calmer"))) break;
+    made++;
+    assert.notEqual(
+      changeLine(was, studio(q).project!),
+      NOTHING_CHANGED,
+      "a new version never reads 'nothing changed'",
+    );
+  }
+  assert.ok(made >= 2 && made < 8, `made ${made}`);
+  assert.equal(studio(q).notice, "已经是最安静的了。");
+});
+
+test("tweak() on a paid piece: a tweak that cannot apply never reaches the paid question", async () => {
+  const paid: Project = {
+    ...localProject("paid", {}, { ...base, duration: 120 }),
+    provider: "tencent",
+    audioBlob: new Blob([MP3_BYTES], { type: "audio/mpeg" }),
+  };
+  const h = harness({ kind: "desktop", mode: "simple", records: [paid] });
+  assert.ok(h.bridge);
+  h.bridge.settings = {
+    ...h.bridge.settings,
+    providers: {
+      ...h.bridge.settings.providers,
+      tencent: { configured: true, model: "minimax-music-v3.0" },
+    },
+  };
+  await h.core.start();
+  assert.equal(await h.core.actions.openProject("paid"), true);
+  assert.equal(await h.core.actions.tweak("longer"), false);
+  assert.equal(ui(h).dialog, null, "no paid question for nothing");
+  assert.match(studio(h).notice ?? "", /最长/);
+  // a tweak that can apply is asked about first; 取消 sends nothing
+  const running = h.core.actions.tweak("slower");
+  await settle();
+  assert.equal(ui(h).dialog?.kind, "paid");
+  h.core.actions.answerDialog(ui(h).dialog!.id, "cancel");
+  assert.equal(await running, false);
+  assert.equal(
+    h.bridge.calls.filter((call) => call.startsWith("generateMusic")).length,
+    0,
+  );
+});
+
+test("简单模式 on the desktop: the producer follows the settings; tweak buttons never ask it; a failed model is said under the result", async () => {
   const h = harness({ kind: "desktop", mode: "simple" });
   assert.ok(h.bridge);
   h.bridge.settings = {
@@ -697,15 +967,24 @@ test("简单模式 on the desktop: the producer follows the settings; a failed m
   // a scene has no words to read: the rules plan it at once
   assert.equal(await h.core.actions.startPiece(scenePins(SCENES[0])), true);
   assert.ok(!h.bridge.calls.includes("agentPlan"));
-  // a tweak is read by the model; it fails, the rules answer, and the user
-  // hears only that it worked
-  assert.equal(await h.core.actions.send("快一点"), true);
-  assert.ok(h.bridge.calls.includes("agentPlan"));
+  // a tweak button is a fixed sentence: the rules plan it, the model is not asked
+  assert.equal(await h.core.actions.tweak("faster"), true);
   assert.ok(
-    toasts(h).includes("已用内置方式完成。"),
-    JSON.stringify(toasts(h)),
+    !h.bridge.calls.includes("agentPlan"),
+    "buttons never ask the model",
   );
-  assert.ok(!toasts(h).some((text) => text.includes("离线规则")));
+  assert.equal(
+    h.plans.at(-1)?.llm,
+    false,
+    "planned by the rules although a model is set up",
+  );
+  // words the user typed are read by the model; it fails, the rules answer,
+  // and the result page says so under the result — no toast, no jargon
+  assert.equal(await h.core.actions.send("再快一点"), true);
+  assert.ok(h.bridge.calls.includes("agentPlan"));
+  const reply = studio(h).project!.chat!.at(-1)!;
+  assert.ok(studio(h).turnNotes[reply.id]?.fallbackReason);
+  assert.deepEqual(toasts(h), [], JSON.stringify(toasts(h)));
   assert.equal(await h.core.actions.removeLlm().then((r) => r.ok), true);
   assert.equal(studio(h).brain, "rules");
   assert.equal(
@@ -790,7 +1069,7 @@ test("我的音乐: one card per piece, its newest version first; deleting a pie
     parentId: "gone",
     revision: 3,
     chat: [turn],
-    updatedAt: "2026-10-01T07:00:00.000Z",
+    updatedAt: "2026-10-01T10:00:00.000Z",
     createdAt: "2026-10-01T10:00:00.000Z",
   });
   const a2chat = { ...a2, chat: [turn] };
@@ -806,6 +1085,18 @@ test("我的音乐: one card per piece, its newest version first; deleting a pie
     ],
   );
   assert.deepEqual(groupPieces([]), []);
+  // 撤销 to a2 marks it as the version in use (its time is now): the card
+  // plays, downloads and opens a2 from then on, not the newest version
+  const chosen = { ...a2chat, updatedAt: "2026-10-01T11:00:00.000Z" };
+  assert.equal(groupPieces([chosen, b1, a1, a3])[0].latest.id, "a2");
+  // the loaded version stands for its piece whatever the times say
+  assert.equal(groupPieces([a2chat, b1, a1, a3], "a1")[0].latest.id, "a1");
+  // the piece used most recently comes first
+  const touchedB = { ...b1, updatedAt: "2026-10-01T12:00:00.000Z" };
+  assert.deepEqual(
+    groupPieces([a2chat, touchedB, a1, a3]).map((piece) => piece.latest.id),
+    ["b1", "a3"],
+  );
 
   const h = harness({ mode: "simple", records: [a1, a2] });
   await h.core.start();
@@ -820,4 +1111,231 @@ test("我的音乐: one card per piece, its newest version first; deleting a pie
   undo?.action?.run();
   await settle();
   assert.equal(h.core.getState().library.projects.length, 2);
+});
+
+/* ---------------- review round (2026-11-02): flows ---------------- */
+
+test("撤销 and 上一版 / 下一版 choose the version: 我的音乐 then shows, plays and downloads that one", async () => {
+  const h = harness({ mode: "simple" });
+  await h.core.start();
+  assert.equal(await h.core.actions.startPiece(scenePins(SCENES[1])), true);
+  const v1 = studio(h).project!;
+  h.clock.advance(1000);
+  assert.equal(await h.core.actions.tweak("faster"), true);
+  const v2 = studio(h).project!;
+  h.clock.advance(1000);
+  // 撤销: back to v1, marked as the version in use
+  assert.equal(await h.core.actions.openProject(v1.id, { choose: true }), true);
+  await settle();
+  const listed = h.core.getState().library.projects;
+  assert.equal(groupPieces(listed)[0].latest.id, v1.id, "not the newest, v2");
+  assert.equal(
+    h.storage.records.get(v1.id)?.updatedAt,
+    listed.find((item) => item.id === v1.id)?.updatedAt,
+    "remembered in the library, so it survives a restart",
+  );
+  // 下一版 chooses v2 again
+  h.clock.advance(1000);
+  assert.equal(await h.core.actions.openProject(v2.id, { choose: true }), true);
+  await settle();
+  assert.equal(
+    groupPieces(h.core.getState().library.projects)[0].latest.id,
+    v2.id,
+  );
+  // a plain open (最近做的, a card's title) chooses nothing
+  h.clock.advance(1000);
+  assert.equal(await h.core.actions.openProject(v1.id), true);
+  await settle();
+  assert.equal(
+    groupPieces(h.core.getState().library.projects)[0].latest.id,
+    v2.id,
+  );
+});
+
+test("我的音乐 plays and downloads in place: another piece is opened without leaving the page", async () => {
+  const a = localProject("a", { title: "甲" }, { ...base });
+  const b = localProject("b", { title: "乙" }, { ...base, mood: "jazz" });
+  const h = harness({ mode: "simple", records: [a, b] });
+  await h.core.start();
+  h.core.actions.navigate("library");
+  assert.equal(
+    await h.core.actions.openProject("a", { autoplay: true, stay: true }),
+    true,
+  );
+  assert.equal(ui(h).page, "library", "▶ on a card stays on 我的音乐");
+  assert.equal(studio(h).project?.id, "a");
+  // 下载 on another card: opened in place, then saved whole, named by its title
+  assert.equal(await h.core.actions.downloadMusic("b"), true);
+  assert.equal(ui(h).page, "library");
+  assert.equal(studio(h).project?.id, "b");
+  assert.equal(h.files.at(-1)?.name, "乙");
+  assert.equal(h.files.at(-1)?.format, "wav");
+  assert.match(toasts(h).at(-1) ?? "", /^已开始下载「乙」/);
+  // the result page's own button says it on the spot: no toast
+  const before = toasts(h).length;
+  assert.equal(
+    await h.core.actions.downloadMusic(undefined, { quiet: true }),
+    true,
+  );
+  assert.equal(toasts(h).length, before);
+  // opening from a title still goes to the piece
+  assert.equal(await h.core.actions.openProject("a"), true);
+  assert.equal(ui(h).page, "studio");
+});
+
+test("简单模式 renames the piece: every version gets the name; deleting and restoring count pieces", async () => {
+  const h = harness({ mode: "simple" });
+  await h.core.start();
+  assert.equal(await h.core.actions.startPiece(scenePins(SCENES[0])), true);
+  assert.equal(await h.core.actions.tweak("slower"), true);
+  assert.equal(await h.core.actions.tweak("calmer"), true);
+  const loaded = studio(h).project!;
+  assert.equal(await h.core.actions.rename(loaded.id, "店里的歌"), true);
+  await settle();
+  const titles = h.core.getState().library.projects.map((item) => item.title);
+  assert.deepEqual(titles, ["店里的歌", "店里的歌", "店里的歌"]);
+  for (const record of h.storage.records.values())
+    assert.equal(record.title, "店里的歌", "written, not only shown");
+  // a piece deleted with its three versions comes back as one, by name
+  h.core.actions.newPiece();
+  for (const item of h.core.getState().library.projects)
+    h.core.actions.removeProject(item.id, true);
+  const undo = ui(h).toasts.find((toast) => toast.action);
+  assert.equal(undo?.text, "已删除《店里的歌》");
+  undo?.action?.run();
+  await settle();
+  assert.ok(
+    toasts(h).includes("已恢复《店里的歌》"),
+    JSON.stringify(toasts(h)),
+  );
+  assert.ok(!toasts(h).some((text) => /作品/.test(text)));
+  // 专业模式 keeps renaming one version
+  const pro = harness({ records: [...h.storage.records.values()] });
+  await pro.core.start();
+  const one = pro.core.getState().library.projects[0];
+  assert.equal(await pro.core.actions.rename(one.id, "只改这一版"), true);
+  await settle();
+  assert.equal(
+    pro.core
+      .getState()
+      .library.projects.filter((item) => item.title === "只改这一版").length,
+    1,
+  );
+});
+
+test("简单模式: a local cancel needs no toast; a failure away from 做音乐 is told in plain words", async () => {
+  const h = harness({ mode: "simple" });
+  await h.core.start();
+  const gate = defer<void>();
+  h.gate.current = gate;
+  const running = h.core.actions.startPiece(scenePins(SCENES[0]));
+  await settle();
+  h.core.actions.cancelJob();
+  gate.resolve();
+  assert.equal(await running, false);
+  assert.deepEqual(toasts(h), [], "the page itself shows it stopped");
+  h.gate.current = null;
+  // a failure while the user is on 我的音乐
+  h.renderError.current = new Error("合成失败");
+  const failing = h.core.actions.startPiece(scenePins(SCENES[0]));
+  h.core.actions.navigate("library");
+  assert.equal(await failing, false);
+  assert.equal(
+    toasts(h).at(-1),
+    "这次没做成。回到「做音乐」可以看到原因，再试一次。",
+  );
+  assert.ok(studio(h).failure);
+  // 专业模式 still says 生成失败：…
+  const pro = harness();
+  await pro.core.start();
+  pro.renderError.current = new Error("合成失败");
+  assert.equal(await pro.core.actions.send("夏日海边"), false);
+  assert.match(toasts(pro).at(-1) ?? "", /^生成失败/);
+});
+
+test("简单模式's questions in its own words: the length a service cannot make, a model that does not answer a paid request", async () => {
+  const h = harness({ kind: "desktop", mode: "simple" });
+  assert.ok(h.bridge);
+  h.bridge.settings = {
+    ...h.bridge.settings,
+    providers: {
+      ...h.bridge.settings.providers,
+      volcengine: { configured: true, billingMode: "postpaid" },
+    },
+    llm: { configured: true, kind: "openai", preset: "deepseek", model: "m" },
+  };
+  await h.core.start();
+  h.core.actions.setProvider("volcengine");
+  // 15 s picked: the service (30–120 s) is asked about before any payment
+  const running = h.core.actions.startPiece(scenePins(SCENES[3], 15));
+  await settle();
+  const length = ui(h).dialog;
+  assert.equal(length?.kind, "duration");
+  const said = [length!.title, ...length!.body].join("");
+  assert.match(said, /做不了这个长度/);
+  assert.match(said, /还没有发送任何付费请求/);
+  assert.doesNotMatch(said, /时长|生成引擎/);
+  h.core.actions.answerDialog(length!.id, "cancel");
+  assert.equal(await running, false);
+  // typed words, a paid request, the model fails: asked in plain words
+  h.core.actions.setComposerText("下雨天的咖啡馆");
+  const typed = h.core.actions.startPiece({ duration: 60 }, { withText: true });
+  await settle();
+  const paid = ui(h).dialog;
+  assert.equal(paid?.kind, "paid");
+  h.core.actions.answerDialog(paid!.id, "confirm");
+  await settle(40);
+  const fallback = ui(h).dialog;
+  assert.equal(fallback?.kind, "fallback");
+  const text = [fallback!.title, ...fallback!.body].join("");
+  assert.match(text, /大模型这次没有回应/);
+  assert.match(text, /还没有发送任何付费请求/);
+  assert.doesNotMatch(text, /离线规则|编曲方案|还没有配置/);
+  assert.deepEqual(
+    fallback!.choices.map((choice) => choice.label),
+    ["取消", "再试一次", "用内置方式继续"],
+  );
+  h.core.actions.answerDialog(fallback!.id, "cancel");
+  assert.equal(await typed, false);
+  assert.equal(
+    h.bridge.calls.filter((call) => call.startsWith("generateMusic")).length,
+    0,
+    "nothing was sent",
+  );
+  assert.equal(studio(h).composerText, "下雨天的咖啡馆", "the words come back");
+});
+
+test("entering 简单模式 with a cloud piece loaded: the next new piece is free again; mode notices do not pile up", async () => {
+  const paid: Project = {
+    ...localProject("p"),
+    provider: "tencent",
+    audioBlob: new Blob([MP3_BYTES], { type: "audio/mpeg" }),
+  };
+  const h = harness({ kind: "desktop", records: [paid] });
+  assert.ok(h.bridge);
+  h.bridge.settings = {
+    ...h.bridge.settings,
+    providers: {
+      ...h.bridge.settings.providers,
+      tencent: { configured: true, model: "minimax-music-v3.0" },
+    },
+  };
+  await h.core.start();
+  h.core.actions.setProvider("tencent");
+  assert.equal(await h.core.actions.openProject("p"), true);
+  h.core.actions.setMode("simple");
+  assert.equal(
+    studio(h).provider,
+    "tencent",
+    "the paid piece refines on its service",
+  );
+  assert.equal(h.core.actions.newPiece(), true);
+  assert.equal(studio(h).provider, "local", "重新挑: free and offline again");
+  // switching back and forth leaves one notice, not a pile
+  h.core.actions.setMode("pro");
+  h.core.actions.setMode("simple");
+  assert.equal(
+    toasts(h).filter((text) => text.startsWith("已切换到")).length,
+    1,
+  );
 });

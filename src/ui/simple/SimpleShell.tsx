@@ -126,11 +126,17 @@ export function SimpleBody(props: { app: AppContextValue; inert: boolean }) {
                 pending={studio.pending}
                 downloading={job?.stage === "downloading"}
                 locked={job !== null || ui.dialog !== null}
+                simple
                 actions={actions}
               />
             )}
             {studio.strays.map((stray) => (
-              <StrayBanner key={stray.id} stray={stray} actions={actions} />
+              <StrayBanner
+                key={stray.id}
+                stray={stray}
+                simple
+                actions={actions}
+              />
             ))}
             {studio.unsaved && project && (
               <UnsavedBanner

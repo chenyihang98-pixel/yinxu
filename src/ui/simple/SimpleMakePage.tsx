@@ -5,7 +5,7 @@
  * is set up — the switch to use it. While the first version is being made
  * the cards make room for its progress.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   BookOpen,
@@ -26,6 +26,7 @@ import { LIMITS } from "../../music/catalog";
 import { providerName } from "../../providers";
 import { useApp } from "../../state/context";
 import { joinText } from "../../state/logic";
+import { activeBrain } from "../../state/options";
 import { plainSummary } from "../../state/plain";
 import {
   LENGTH_CHOICES,
@@ -40,7 +41,13 @@ import { useRenderCount } from "../hooks/useRenderCount";
 import { Cover } from "../primitives/Art";
 import { Button } from "../primitives/Button";
 import { Segmented } from "../primitives/Controls";
-import { ProLink, SimpleFailure, SimpleProgress, attempt } from "./parts";
+import {
+  LLM_HINT,
+  ProLink,
+  SimpleFailure,
+  SimpleProgress,
+  attempt,
+} from "./parts";
 
 const ICONS: Record<string, ReactNode> = {
   vlog: <Camera size={22} aria-hidden />,
@@ -59,6 +66,9 @@ const ICONS: Record<string, ReactNode> = {
 
 type LengthValue = "auto" | number;
 
+/** The length last picked on the scene page (null: 自动), for this session. */
+let pickedLength: number | null = null;
+
 const LENGTH_OPTIONS = LENGTH_CHOICES.map((choice) => ({
   value: (choice.value ?? "auto") as LengthValue,
   label: choice.label,
@@ -68,20 +78,24 @@ const LENGTH_OPTIONS = LENGTH_CHOICES.map((choice) => ({
 export function SimpleMakePage() {
   useRenderCount("SimpleMakePage");
   const { studio, library, platform, ui, actions } = useApp();
-  const { pins, composerText: text, job } = studio;
+  const { composerText: text, job } = studio;
   const locked = studio.busy || ui.dialog !== null;
   const creating = job?.kind === "generate";
-  // A length chosen here; anything else (a pin left by 专业模式) is 自动.
-  const length = LENGTH_CHOICES.some(
-    (choice) => choice.value !== null && choice.value === pins.duration,
-  )
-    ? (pins.duration ?? null)
-    : null;
+  // The length picked here stays picked for the next piece (重新挑 comes
+  // back to it) for as long as the app is open; a pin left by 专业模式 is
+  // not this choice. Scenes and 做一首 send it as their own pin.
+  const [length, setLength] = useState<number | null>(pickedLength);
+  const pick = (value: number | null) => {
+    pickedLength = value;
+    setLength(value);
+  };
   // The AI service a new piece could be made by (desktop, once set up).
   const service = platform.canUseCloud
     ? studio.engines.find((option) => option.id !== "local" && option.available)
     : undefined;
   const aiOn = studio.provider !== "local";
+  // Words typed here go to the user's own language model, when one is set up.
+  const llm = activeBrain(studio.brain, studio.brains) === "llm";
   const aiName = aiOn ? providerName(studio.provider) : (service?.label ?? "");
   const recent = useMemo(
     () => groupPieces(library.projects).slice(0, 3),
@@ -120,7 +134,13 @@ export function SimpleMakePage() {
           <SimpleProgress job={job} actions={actions} />
         ) : (
           <>
-            {studio.failure && <SimpleFailure busy={locked} />}
+            {studio.failure && (
+              <SimpleFailure
+                busy={locked}
+                message={studio.failure}
+                cloud={studio.provider !== "local"}
+              />
+            )}
             <section
               className="simple-scenes"
               aria-labelledby="simple-scenes-title"
@@ -139,12 +159,7 @@ export function SimpleMakePage() {
                     value={length ?? "auto"}
                     options={LENGTH_OPTIONS}
                     disabled={locked}
-                    onChange={(value) =>
-                      actions.setPin(
-                        "duration",
-                        value === "auto" ? undefined : value,
-                      )
-                    }
+                    onChange={(value) => pick(value === "auto" ? null : value)}
                   />
                 </div>
               </div>
@@ -230,6 +245,11 @@ export function SimpleMakePage() {
                   做一首
                 </Button>
               </div>
+              {llm && (
+                <p className="simple-hint" data-testid="simple-llm-hint">
+                  {LLM_HINT}
+                </p>
+              )}
             </div>
 
             {(service || aiOn) && (
