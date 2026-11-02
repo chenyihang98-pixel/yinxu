@@ -453,7 +453,7 @@ function standInBridge({ mp3Base64 }) {
       },
       llm: { configured: false },
       dataPath: "C:\\stand-in",
-      version: "0.3.0-smoke",
+      version: "0.4.0-smoke",
       pendingResult: held() ? { provider: held() } : null,
     }),
     saveProviderCredentials: async () => {},

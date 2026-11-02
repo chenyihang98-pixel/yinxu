@@ -248,6 +248,7 @@ export function SimpleResultPage() {
       data-revision={project.revision}
       data-audio={audio?.kind ?? "none"}
       data-duration={audio ? audio.duration.toFixed(3) : "0"}
+      data-render-path={audio?.kind === "stems" ? audio.renderPath : undefined}
     >
       <div className="page-inner simple-inner simple-result">
         <h1 className="sr-only">{project.title}</h1>

@@ -527,7 +527,7 @@ test("settings: unavailable on the web, loaded and merged on desktop", () => {
   assert.equal(reducer(web, { type: "settings/failed", error: "x" }), web);
   let desktop = initialState({
     desktop: true,
-    version: "0.3.0",
+    version: "0.4.0",
     brain: "llm",
     composerText: "上次写的",
   });

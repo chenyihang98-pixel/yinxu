@@ -388,7 +388,7 @@ export function platformOf(kind: "web" | "desktop"): Platform {
     isDesktop: desktop,
     isWeb: !desktop,
     isEmbedded: false,
-    version: "0.3.0-test",
+    version: "0.4.0-test",
     canUseCloud: desktop,
     canUseLlm: desktop,
     downloadUrl: "https://example.test/download",
@@ -407,7 +407,7 @@ export function desktopSettings(
     },
     llm: { configured: false },
     dataPath: "C:\\Users\\test\\AppData\\Roaming\\Muse BGM",
-    version: "0.3.0-test",
+    version: "0.4.0-test",
     ...patch,
   };
 }

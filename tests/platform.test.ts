@@ -89,13 +89,13 @@ test("the desktop build with its bridge can use cloud music and the LLM", () => 
     top: null as unknown,
   };
   host.self = host.top = host;
-  const result = createPlatform({ web: false, version: "0.3.0", host });
+  const result = createPlatform({ web: false, version: "0.4.0", host });
   assert.equal(result.desktop, api);
   assert.deepEqual(result.platform, {
     isDesktop: true,
     isWeb: false,
     isEmbedded: false,
-    version: "0.3.0",
+    version: "0.4.0",
     canUseCloud: true,
     canUseLlm: true,
     downloadUrl: DOWNLOAD_URL,
@@ -106,7 +106,7 @@ test("an older preload without the agent still allows cloud music", () => {
   const { agentPlan: _agentPlan, ...old } = bridge();
   const result = createPlatform({
     web: false,
-    version: "0.3.0",
+    version: "0.4.0",
     host: { museDesktop: old },
   });
   assert.equal(result.platform.isDesktop, true);
@@ -117,7 +117,7 @@ test("an older preload without the agent still allows cloud music", () => {
 test("the web build never has cloud or LLM, whatever is called museDesktop", () => {
   const result = createPlatform({
     web: true,
-    version: "0.3.0",
+    version: "0.4.0",
     host: { museDesktop: bridge() },
   });
   assert.equal(result.desktop, undefined);
@@ -203,21 +203,21 @@ test("the build constants decide the module's own answer", async () => {
   host.self = host.top = host;
   let restore = define({
     window: host,
-    __APP_VERSION__: "0.3.0",
+    __APP_VERSION__: "0.4.0",
     __MUSE_WEB__: false,
   });
   try {
     const desktopBuild = await freshModule();
     assert.equal(desktopBuild.desktop, api);
     assert.equal(desktopBuild.platform.isDesktop, true);
-    assert.equal(desktopBuild.platform.version, "0.3.0");
+    assert.equal(desktopBuild.platform.version, "0.4.0");
     assert.equal(desktopBuild.platform.canUseLlm, true);
   } finally {
     restore();
   }
   restore = define({
     window: host,
-    __APP_VERSION__: "0.3.0",
+    __APP_VERSION__: "0.4.0",
     __MUSE_WEB__: true,
   });
   try {
@@ -226,7 +226,7 @@ test("the build constants decide the module's own answer", async () => {
     assert.equal(webBuild.platform.isWeb, true);
     assert.equal(webBuild.platform.canUseCloud, false);
     assert.equal(webBuild.platform.canUseLlm, false);
-    assert.equal(webBuild.platform.version, "0.3.0");
+    assert.equal(webBuild.platform.version, "0.4.0");
   } finally {
     restore();
   }

@@ -16,7 +16,9 @@
 // bridge, the production Content-Security-Policy, a local piece composed in
 // the render worker, playback, a refinement, a WAV through the save path,
 // credentials through real Windows safeStorage, the bundled Claude SDK inside
-// app.asar, and a full process restart.
+// app.asar, and a full process restart. Those checks drive the v0.3 interface
+// (专业模式); before them, win-unpacked is started once as a user first sees
+// it — no mode chosen, so 简单模式 — for a scene tap and 下载音乐.
 //
 // Nothing leaves the machine. The app is started with MUSE_NETWORK=node — the
 // documented troubleshooting switch, honoured by packaged builds too — and the
@@ -802,6 +804,149 @@ async function checkBuild(run, label, launch, shared) {
   shared.app = null;
 }
 
+/**
+ * A first start as a user sees it. Every other launch of this suite puts the
+ * window into 专业模式 (launchApp's default, for the v0.3 checks); this one
+ * writes no preference at all (mode: null), so the window must open in
+ * 简单模式 — the default since v0.4. One tap on a scene card makes a piece in
+ * the render worker and plays it; 下载音乐 writes the whole piece through the
+ * (stubbed) save dialog as a 48 kHz WAV named by its title.
+ */
+async function checkFirstStart(run, label, launch, shared) {
+  await run.step(
+    `${label}: a first start opens in 简单模式; one scene tap plays a piece made in the worker, 下载音乐 writes a 48 kHz WAV`,
+    async () => {
+      const app = await launch();
+      shared.app = app;
+      shared.profiles.push(app.profile);
+      const { page, $ } = app;
+      assert.equal(
+        await page.locator(".app").getAttribute("data-mode"),
+        "simple",
+        "a fresh profile opens in 简单模式",
+      );
+      assert.equal(
+        await page.evaluate(() => localStorage.getItem("muse-bgm:mode")),
+        null,
+        "nothing chose the mode",
+      );
+      await $("simple-make").waitFor();
+      assert.equal(await $("nav-studio").count(), 0, "no 专业模式 navigation");
+      assert.equal(await $("scene-card").count(), 12);
+      await page
+        .locator('[data-testid="scene-card"][data-scene="cafe"]')
+        .click();
+      await page.waitForSelector(
+        '[data-testid="simple-result"][data-revision="1"][data-audio="stems"]',
+        { timeout: 120000 },
+      );
+      await $("simple-progress").waitFor({
+        state: "detached",
+        timeout: 120000,
+      });
+      assert.equal(
+        await $("simple-result").getAttribute("data-render-path"),
+        "worker",
+        "diagnostics.path of the render",
+      );
+      const workers = page.workers().map((worker) => worker.url());
+      assert.ok(
+        workers.some((url) => /app\.asar\/dist\/assets\/.*\.js$/.test(url)),
+        `the worker is the app's own bundled chunk: ${JSON.stringify(workers)}`,
+      );
+      const id = await $("simple-result").getAttribute("data-project");
+      const work = (await app.records()).find((record) => record.id === id);
+      assert.deepEqual(
+        [
+          work.provider,
+          work.config.engine,
+          work.config.mood,
+          work.config.duration,
+          work.config.loop,
+        ],
+        ["local", 2, "chill", 60, true],
+        "咖啡馆: 慵懒放松, 1 minute, a loop",
+      );
+      // the tap that asked for the piece also starts it
+      await until(
+        () => $("simple-play").getAttribute("aria-pressed"),
+        (value) => value === "true",
+        "playback starts with the tap",
+      );
+      await until(
+        async () => Number(await $("waveform").getAttribute("aria-valuenow")),
+        (value) => value >= 1,
+        "the playhead moves",
+      );
+      await $("simple-play").click();
+      assert.equal(
+        await $("simple-play").getAttribute("aria-pressed"),
+        "false",
+      );
+      // 下载音乐: the system's save dialog at once, named by the title
+      const seconds = Number(
+        await $("simple-result").getAttribute("data-duration"),
+      );
+      const title = await $("simple-title").inputValue();
+      const file = path.join(app.profile, "first-start.wav");
+      const dialogs = (await app.state()).dialogs.length;
+      await app.saveTo(file);
+      await $("simple-download").click();
+      const state = await until(
+        app.state,
+        (value) => value.dialogs.length > dialogs,
+        "the save dialog",
+        60000,
+      );
+      const dialog = state.dialogs.at(-1);
+      assert.equal(path.basename(dialog.defaultPath), `${title}.wav`);
+      assert.deepEqual(dialog.filters[0].extensions, ["wav"]);
+      await until(
+        () => $("simple-download").innerText(),
+        (text) => text.includes("已保存"),
+        "下载音乐 says 已保存",
+        60000,
+      );
+      const info = wavInfo(fs.readFileSync(file));
+      assert.deepEqual(
+        [
+          info.riff,
+          info.wave,
+          info.format,
+          info.channels,
+          info.sampleRate,
+          info.bits,
+        ],
+        ["RIFF", "WAVE", 1, 2, 48000, 16],
+      );
+      assert.equal(info.riffSize, info.fileBytes - 8);
+      assert.ok(
+        Math.abs(info.seconds - seconds) < 0.001,
+        `${info.seconds} s vs ${seconds} s`,
+      );
+      assert.ok(info.rms > 0.01 && info.rms < 0.7, `audible: ${info.rms}`);
+      const after = await app.state();
+      assert.deepEqual(
+        app.errors.filter((text) => !PROBE_NOISE.test(text)),
+        [],
+      );
+      assert.deepEqual(after.denied, [], "Chromium requests");
+      assert.deepEqual(after.unknown, []);
+      assert.deepEqual(after.requests, [], "nothing left the machine");
+      await app.close({ keepProfile: true });
+      shared.app = null;
+      const facts = {
+        title,
+        seconds: +info.seconds.toFixed(3),
+        bpm: work.config.bpm,
+        rms: +info.rms.toFixed(4),
+      };
+      shared.builds[`${label} first start`] = facts;
+      return facts;
+    },
+  );
+}
+
 async function main() {
   const only = process.argv.includes("--unpacked")
     ? "unpacked"
@@ -916,7 +1061,19 @@ async function main() {
         },
       };
     });
-    if (only !== "portable")
+    if (only !== "portable") {
+      await checkFirstStart(
+        run,
+        "win-unpacked",
+        () =>
+          launchApp({
+            prefix: PREFIX,
+            mock: true,
+            executable: UNPACKED,
+            mode: null,
+          }),
+        shared,
+      );
       await checkBuild(
         run,
         "win-unpacked",
@@ -929,6 +1086,7 @@ async function main() {
           }),
         shared,
       );
+    }
     if (only !== "unpacked")
       await checkBuild(
         run,

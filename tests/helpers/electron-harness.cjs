@@ -59,6 +59,8 @@ async function until(read, test, description, timeout = 30000, every = 100) {
  * preference lives in the page's localStorage (key muse-bgm:mode, read once
  * at start), so it is written there and the page is loaded again — only when
  * it differs. A build that has no 简单模式 (v0.3.0) is left as it is.
+ * `null` only waits for the window: it stays in the mode it opened in (what a
+ * user sees on the first start), and no preference is written.
  */
 async function ensureMode(page, mode = "pro") {
   const ready = () =>
@@ -74,6 +76,7 @@ async function ensureMode(page, mode = "pro") {
       { timeout: 30000 },
     );
   await ready();
+  if (mode === null) return;
   const current = await page.evaluate(
     () => document.querySelector(".app")?.getAttribute("data-mode") ?? "pro",
   );
@@ -391,7 +394,8 @@ async function inspectorClient(port) {
  *   executable     a packaged "Muse BGM.exe" to start instead of the source tree
  *   portable       the portable self-extractor to start instead (it is copied into the
  *                  profile first: the wrapper keeps its data next to itself)
- *   mode           "pro" (default: the v0.3 suites) or "simple" — see ensureMode
+ *   mode           "pro" (default: the v0.3 suites), "simple", or null: leave the
+ *                  window in the mode it opens in (a first start) — see ensureMode
  */
 async function launchApp(options) {
   const {
@@ -540,7 +544,7 @@ async function launchApp(options) {
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
   });
-  await ensureMode(page, options.mode ?? "pro");
+  await ensureMode(page, options.mode === undefined ? "pro" : options.mode);
 
   const app = { desktop, page, profile, prefix, errors };
   app.$ = (id) => page.locator(`[data-testid="${id}"]`);
