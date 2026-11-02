@@ -713,8 +713,10 @@ function LlmTab() {
 /* ---------------- 关于 ---------------- */
 
 function AboutTab() {
-  const { settings, library, platform, actions } = useApp();
+  const { settings, library, platform, ui, actions } = useApp();
   const storage = library.storage;
+  // 简单模式 reads the same facts without the words of the trade
+  const simple = ui.mode === "simple";
   return (
     <div className="settings-pane about" data-testid="about">
       <div className="about-head">
@@ -731,24 +733,29 @@ function AboutTab() {
       </div>
       <dl className="facts">
         <div>
-          <dt>本地作曲引擎</dt>
+          <dt>{simple ? "怎么做音乐" : "本地作曲引擎"}</dt>
           <dd>
-            {STYLES.length} 种风格、{INSTRUMENT_LIST.length} 种主奏乐器、
-            {KEYS.length} 个调；48 kHz 立体声，四条分轨。
+            {simple
+              ? `在${platform.isDesktop ? "这台电脑" : "这个浏览器"}上作曲：${STYLES.length} 种风格、${INSTRUMENT_LIST.length} 种主奏乐器；48 kHz 立体声。`
+              : `${STYLES.length} 种风格、${INSTRUMENT_LIST.length} 种主奏乐器、${KEYS.length} 个调；48 kHz 立体声，四条分轨。`}
           </dd>
         </div>
         <div>
-          <dt>离线</dt>
+          <dt>{simple ? "不用联网" : "离线"}</dt>
           <dd>
-            本地作曲不联网，不需要账号、显卡或下载模型；同样的参数和种子总是得到同样的音乐。
+            {simple
+              ? "不需要账号、显卡或下载模型；同样的设置总是得到同样的音乐。"
+              : "本地作曲不联网，不需要账号、显卡或下载模型；同样的参数和种子总是得到同样的音乐。"}
           </dd>
         </div>
         <div>
-          <dt>制作人</dt>
+          <dt>{simple ? "理解你的话" : "制作人"}</dt>
           <dd>
-            默认使用内置的离线规则。
+            {simple ? "默认用内置的方式。" : "默认使用内置的离线规则。"}
             {platform.isDesktop
-              ? "可以在「制作人大模型」里接入你自己的模型。"
+              ? simple
+                ? "可以在「制作人大模型」里接入你自己的大模型。"
+                : "可以在「制作人大模型」里接入你自己的模型。"
               : "桌面版可以接入你自己的大模型。"}
           </dd>
         </div>
@@ -761,7 +768,7 @@ function AboutTab() {
           </div>
         ) : (
           <div data-testid="storage-info">
-            <dt>作品存放</dt>
+            <dt>{simple ? "音乐存放" : "作品存放"}</dt>
             <dd>
               只保存在这个浏览器的本地存储里，清除网站数据会丢失。
               {storage && (
@@ -789,7 +796,9 @@ function AboutTab() {
             下载 Windows 桌面版
           </a>
         )}
-        <Button onClick={() => actions.openModal("help")}>使用指南</Button>
+        <Button onClick={() => actions.openModal("help")}>
+          {simple ? "怎么用" : "使用指南"}
+        </Button>
       </div>
     </div>
   );

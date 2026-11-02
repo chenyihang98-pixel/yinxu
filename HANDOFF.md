@@ -17,8 +17,8 @@
 - **数据**：作品在 IndexedDB `muse-bgm` / `projects`；桌面数据目录 `%APPDATA%\Muse BGM`，凭据在其中的 `music-credentials.json`（Windows safeStorage 加密）。开发时不需要读取或清空它们；测试和套件都用临时目录。
 - **不要运行旧程序**：`release/` 里的 0.1.0 / 0.2.0 EXE 与之后的版本共用数据目录和数据库，会把作品改写成旧引擎作品并丢掉对话（S11）。`启动音序.cmd` 只启动与 `package.json` 版本一致的便携版（现在是 0.4.0）。
 - **最低开发动作**：`npm run typecheck`、`npm test`（约 1 分钟；`npm run test:fast` 几秒）。改了界面或主进程：`npm run build` 后跑相应的 Electron 套件；`npm run test:all` 是完整回归（约 5.5 分钟，不含打包）。
-- **仓库**：本地 Git，没有远端，什么都没有推送；全部工作都由负责人提交在本地（`git log --oneline`）。基线 `634c650` 是 v0.2.0；`a5cb422` 打出 0.3.0；`292590c`、`a4a755c` 加了简单模式并复查；紧接 `a4a755c` 的那个提交（v0.4.0：版本号、结果页的一个诊断属性、发行程序冒烟的新一步、发布记录和文档）就是打出 0.4.0 发行物的代码。文本固定为 LF，代码用 Prettier。
-- **发行物**：`release/` 里有 0.4.0 的安装版和便携版（文件名、大小、哈希见 S10），以及留档的 0.3.0、0.2.0、0.1.0。**什么都没有发布**：没有 GitHub 仓库和 release，门户页面没有上线（门户的草稿分支在 `.scratch/site/`，已导入 0.4.0 的网页版，全部没有提交）。
+- **仓库**：本地 Git，没有远端，什么都没有推送；全部工作都由负责人提交在本地（`git log --oneline`）。基线 `634c650` 是 v0.2.0；`a5cb422` 打出 0.3.0；`292590c`、`a4a755c` 加了简单模式并复查；紧接 `a4a755c` 的 `8b90eea`（v0.4.0：版本号、结果页的一个诊断属性、发行程序冒烟的新一步、发布记录和文档）加上最终验收的四个文案文件和一项测试，就是打出 0.4.0 发行物的代码。文本固定为 LF，代码用 Prettier。
+- **发行物**：`release/` 里有 0.4.0 的安装版和便携版（2026-11-02 17:03 最终验收后重新打出；文件名、大小、哈希见 S10），以及留档的 0.3.0、0.2.0、0.1.0。**什么都没有发布**：没有 GitHub 仓库和 release，门户页面没有上线（门户的草稿分支在 `.scratch/site/`，已导入 0.4.0 的网页版，全部没有提交）。
 - **最该先做的事**（S11 第一组和第 35 条）：请一两个真正不懂音乐的人用一次简单模式；仓库主人听一遍 `demos/` 的 22 段示例；用真实账号各做一次最便宜的云端生成和一次托管大模型的规划；运行一次安装包。
 
 ## S01｜阅读与改动导航
@@ -543,7 +543,9 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 
 ## S09｜测试
 
-**v0.4.0 最后一轮的结果**（2026-11-02；最终的工作区；Windows 11、Node 24.18.0、Electron 41.10.7、20 核）：
+**v0.4.0 最终验收（2026-11-02 晚，重新打包）的结果**：类型检查 243 个文件 0 错误；Prettier 全部通过；`npm test` TypeScript 825 / 825、CommonJS 252 / 252（与构建并行时 ND-4 超时一次，单独重跑通过）；`test:web` 29 步 104.3 秒；`desktop:smoke` 通过；`test:desktop` 15 步 21.9 秒；`test:cloud` 23 步 77.7 秒、0 个真实外部请求；`npm run dist` 122 秒；`test:packaged` 24 步 33.8 秒。这一轮只改了四个文案文件（简单模式的「关于」、「怎么用」一句、标题框的无障碍名称）和一项测试；四类角色的走查记录在 `docs/QA.md` 第一节。
+
+**v0.4.0 上一轮的结果**（2026-11-02 上午；Windows 11、Node 24.18.0、Electron 41.10.7、20 核）：
 
 | 命令 | 结果 |
 | --- | --- |
@@ -730,16 +732,16 @@ Anthropic 相关的环境变量被有意屏蔽（S07）。
 - `Muse-BGM-Portable-<版本>-x64.exe`——单文件，每次启动先自解压到临时目录。
 - 两者都没有代码签名，首次运行会有 SmartScreen 提示。
 
-当前的发行物（2026-11-02 08:31 从最终的工作区打出，`npm run dist` 退出码 0，126 秒；代码就是紧接 `a4a755c` 的那个本地提交，由负责人在这之后提交，什么都没有推送）：
+当前的发行物（2026-11-02 17:03 从最终验收后的工作区打出，`npm run dist` 退出码 0，122 秒；代码 = `8b90eea` + 最终验收的四个文案文件和一项测试，由负责人在这之后提交，什么都没有推送）：
 
 | 文件 | 字节 | SHA-256 |
 | --- | --- | --- |
-| `release/Muse-BGM-Setup-0.4.0-x64.exe` | 81,990,165（82.0 MB） | `d6892b6861b19f2db8a3fc626574eea676a232cd7bf7d3668cc682e2205618ed` |
-| `release/Muse-BGM-Portable-0.4.0-x64.exe` | 81,824,770（81.8 MB） | `21c387c1dfde1eb4aeb04358015922cd93b51a6aedcd8611052d27b83768a783` |
+| `release/Muse-BGM-Setup-0.4.0-x64.exe` | 81,988,538（82.0 MB） | `170c41e51bf4ec9ecdad24d3141be25057959798729b8d27a51d785002c4ab99` |
+| `release/Muse-BGM-Portable-0.4.0-x64.exe` | 81,823,144（81.8 MB） | `95243126c65e5a86bc6ad1951a3edf8845cdeb1206c0999a888204482f77f7de` |
 
-`release/` 里还有 `win-unpacked/`（318,412,670 字节，0.4.0，安装包装到磁盘上的就是它）、`SHA256SUMS.txt`（只列上面两个文件）、`RELEASE-NOTES-0.4.0.md`、`builder-debug.yml`；留档的 0.3.0（`Muse-BGM-Setup-0.3.0-x64.exe` 81,973,608 字节 `efcb42d6…8597`、`Muse-BGM-Portable-0.3.0-x64.exe` 81,808,209 字节 `3bd2ac65…962a`，由 `a5cb422` 打出，完整哈希在 `RELEASE-NOTES-0.3.0.md` 末尾）；以及**不要运行、也不要随 0.4.0 上传的** `Muse-BGM-0.1.0-Windows.exe` 和 `Muse-BGM-0.2.0-Windows.exe`（及各自的 `.sha256`）。`npm run dist` 只新增 0.4.0 的两个 EXE、改写 `win-unpacked/` 和 `builder-debug.yml`；旧文件打包前后哈希相同。
+`release/` 里还有 `win-unpacked/`（318,413,150 字节，0.4.0，安装包装到磁盘上的就是它）、`SHA256SUMS.txt`（只列上面两个文件）、`RELEASE-NOTES-0.4.0.md`、`builder-debug.yml`；留档的 0.3.0（`Muse-BGM-Setup-0.3.0-x64.exe` 81,973,608 字节 `efcb42d6…8597`、`Muse-BGM-Portable-0.3.0-x64.exe` 81,808,209 字节 `3bd2ac65…962a`，由 `a5cb422` 打出，完整哈希在 `RELEASE-NOTES-0.3.0.md` 末尾）；以及**不要运行、也不要随 0.4.0 上传的** `Muse-BGM-0.1.0-Windows.exe` 和 `Muse-BGM-0.2.0-Windows.exe`（及各自的 `.sha256`）。`npm run dist` 只新增 0.4.0 的两个 EXE、改写 `win-unpacked/` 和 `builder-debug.yml`；旧文件打包前后哈希相同。
 
-**包里有什么**：`build.files` 只收 `dist/`、`electron/`、`package.json` 和生产依赖（Claude SDK 及其依赖），并排除依赖里从不运行的文件——源码映射、TypeScript 源码与声明、README、SDK `src/` 下的 `tsconfig.json` 和 `.keep`。`app.asar` 因此是 4,893,190 字节、1156 个条目（1051 个文件，其中 SDK 573 个；0.3.0 时是 4,824,742 字节）；第一次打包时测过，不过滤的话是 1300 万字节上下、3005 个条目。SDK 的 `.js` / `.mjs` 全部保留；`src/internal/qs/LICENSE.md`（随包分发的 qs 代码的许可证）有意保留。
+**包里有什么**：`build.files` 只收 `dist/`、`electron/`、`package.json` 和生产依赖（Claude SDK 及其依赖），并排除依赖里从不运行的文件——源码映射、TypeScript 源码与声明、README、SDK `src/` 下的 `tsconfig.json` 和 `.keep`。`app.asar` 因此是 4,893,670 字节、1156 个条目（1051 个文件，其中 SDK 573 个；0.3.0 时是 4,824,742 字节）；第一次打包时测过，不过滤的话是 1300 万字节上下、3005 个条目。SDK 的 `.js` / `.mjs` 全部保留；`src/internal/qs/LICENSE.md`（随包分发的 qs 代码的许可证）有意保留。
 
 **重新打包**：
 

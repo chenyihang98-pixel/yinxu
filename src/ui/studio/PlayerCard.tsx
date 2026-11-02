@@ -81,6 +81,8 @@ export function TitleInput(props: {
   /** default work-title */
   testId?: string;
   className?: string;
+  /** what the field is called to assistive technology (default 作品名称) */
+  label?: string;
 }) {
   const { project, actions } = props;
   const [title, setTitle] = useState(project.title);
@@ -98,7 +100,7 @@ export function TitleInput(props: {
     <input
       className={props.className ?? "title-input"}
       data-testid={props.testId ?? "work-title"}
-      aria-label="作品名称"
+      aria-label={props.label ?? "作品名称"}
       data-tip="点击修改名称"
       maxLength={MAX_TITLE_CHARS}
       spellCheck={false}

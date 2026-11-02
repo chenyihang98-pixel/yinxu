@@ -11,6 +11,7 @@ import {
   instrumentLabel,
   styleLabel,
 } from "../src/music/catalog";
+import { melodyContinuity } from "../src/music/compose";
 import type { MelodyContinuity } from "../src/music/compose";
 import { DEFAULT_CONFIG } from "../src/music/defaults";
 import { exportName } from "../src/services/exporter";
@@ -25,6 +26,7 @@ import { formatTime } from "../src/state/format";
 import {
   NOTHING_CHANGED,
   changeLine,
+  drumsHeard,
   newPieceLine,
   plainChanges,
   plainDuration,
@@ -39,6 +41,7 @@ import {
   buildAgentRequest,
   enforcePins,
   truthfulTiming,
+  withAskedDrums,
 } from "../src/state/plan";
 import { initialState, reducer } from "../src/state/reducer";
 import {
@@ -508,6 +511,73 @@ test("every scene starts the style, length and structure it promises (offline ru
     LENGTH_CHOICES.map((choice) => choice.value),
     [null, 30, 60, 120],
   );
+});
+
+test("加点鼓 / 去掉鼓: on every scene the drum button changes what is heard, and the line says so", () => {
+  const silentScenes: string[] = [];
+  for (const scene of [...SCENES, ...MORE_STYLES]) {
+    const first = planWithRules(
+      buildAgentRequest({
+        text: "",
+        project: null,
+        thread: [],
+        pins: scenePins(scene, null),
+        provider: "local",
+        nextSeed: 1,
+      }),
+    );
+    const project = localProject(scene.id, {}, { ...first.config });
+    const drums = drumsHeard(project);
+    if (!drums) silentScenes.push(scene.id);
+    const button = tweaksFor(first.config, drums).find(
+      (tweak) => tweak.id === "drums",
+    )!;
+    assert.equal(button.label, drums ? "去掉鼓" : "加点鼓", scene.id);
+    // exactly what generate() does with the rules' plan: the score, not the
+    // fader, decides whether a kit has to be written in (withAskedDrums)
+    const plan = withAskedDrums(
+      planWithRules(
+        buildAgentRequest({
+          text: button.phrase,
+          project,
+          thread: [],
+          pins: {},
+          provider: "local",
+          nextSeed: 2,
+        }),
+      ),
+      first.config,
+    );
+    assert.equal(plan.unchanged, false, scene.id);
+    const after = { ...project, config: plan.config };
+    assert.equal(drumsHeard(after), !drums, `${scene.id}: drums now heard`);
+    const line = plainChanges(
+      first.config,
+      plan.config,
+      melodyContinuity(first.config, plan.config),
+    );
+    assert.match(line, drums ? /去掉了鼓/ : /加上了鼓/, `${scene.id}: ${line}`);
+    assertPlain(line);
+    if (!drums) {
+      // a calm style brings its kit in only above an energy the piece never
+      // reaches: the fader alone would change nothing, so a light kit is written in
+      assert.equal(plan.config.arrangement?.drums, "light", scene.id);
+      assert.equal(
+        plan.config.volumes.drums,
+        first.config.volumes.drums,
+        scene.id,
+      );
+      assert.equal(
+        tweaksFor(plan.config, drumsHeard(after)).find(
+          (tweak) => tweak.id === "drums",
+        )?.label,
+        "去掉鼓",
+        `${scene.id}: the button follows`,
+      );
+    } else assert.notEqual(plan.config.arrangement?.drums, "light", scene.id);
+  }
+  // the scenes that start without drums, so the check above covered 加点鼓
+  assert.deepEqual(silentScenes.sort(), ["dreamy", "romantic", "sad", "sleep"]);
 });
 
 test("换个乐器: a fixed turn through the leads that suit the style, understood by the rules", () => {

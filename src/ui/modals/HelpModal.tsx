@@ -117,8 +117,8 @@ function SimpleHelp() {
         <Section icon={<ShieldCheck size={16} />} title="放心用">
           <p>
             音乐就在
-            {platform.isDesktop ? "这台电脑" : "这个浏览器"}
-            上做，不收费，做好的都在「我的音乐」里。
+            {platform.isDesktop ? "这台电脑上" : "这个浏览器里"}
+            做，不收费，做好的都在「我的音乐」里。
             {llm
               ? "场景和按钮不用联网；你自己写的话，会交给你在设置里接入的大模型来理解。"
               : "不用联网。"}

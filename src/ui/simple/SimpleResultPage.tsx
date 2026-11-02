@@ -262,6 +262,7 @@ export function SimpleResultPage() {
                 project={project}
                 actions={actions}
                 testId="simple-title"
+                label="音乐名称"
                 className="title-input simple-title"
               />
               <p className="simple-summary" data-testid="simple-summary">
