@@ -17,8 +17,8 @@
 - **数据**：作品在 IndexedDB `muse-bgm` / `projects`；桌面数据目录 `%APPDATA%\Muse BGM`，凭据在其中的 `music-credentials.json`（Windows safeStorage 加密）。开发时不需要读取或清空它们；测试和套件都用临时目录。
 - **不要运行旧程序**：`release/` 里的 0.1.0 / 0.2.0 EXE 与之后的版本共用数据目录和数据库，会把作品改写成旧引擎作品并丢掉对话（S11）。`启动音序.cmd` 只启动与 `package.json` 版本一致的便携版（现在是 0.4.0）。
 - **最低开发动作**：`npm run typecheck`、`npm test`（约 1 分钟；`npm run test:fast` 几秒）。改了界面或主进程：`npm run build` 后跑相应的 Electron 套件；`npm run test:all` 是完整回归（约 5.5 分钟，不含打包）。
-- **仓库**：本地 Git，没有远端，什么都没有推送；全部工作都由负责人提交在本地（`git log --oneline`）。基线 `634c650` 是 v0.2.0；`a5cb422` 打出 0.3.0；`292590c`、`a4a755c` 加了简单模式并复查；紧接 `a4a755c` 的 `8b90eea`（v0.4.0：版本号、结果页的一个诊断属性、发行程序冒烟的新一步、发布记录和文档）加上最终验收的四个文案文件和一项测试，就是打出 0.4.0 发行物的代码。文本固定为 LF，代码用 Prettier。
-- **发行物**：`release/` 里有 0.4.0 的安装版和便携版（2026-11-02 17:03 最终验收后重新打出；文件名、大小、哈希见 S10），以及留档的 0.3.0、0.2.0、0.1.0。**什么都没有发布**：没有 GitHub 仓库和 release，门户页面没有上线（门户的草稿分支在 `.scratch/site/`，已导入 0.4.0 的网页版，全部没有提交）。
+- **仓库**：公开仓库 https://github.com/chenyihang98-pixel/yinxu（2026-11-02 由负责人按仓库主人的指示创建并推送，`main` 跟踪 `origin/main`；`release/`、`demos/`、`.scratch/` 被忽略，不在仓库里）。基线 `634c650` 是 v0.2.0；`a5cb422` 打出 0.3.0；`292590c`、`a4a755c` 加了简单模式并复查；紧接 `a4a755c` 的 `8b90eea`（v0.4.0：版本号、结果页的一个诊断属性、发行程序冒烟的新一步、发布记录和文档）加上最终验收的四个文案文件和一项测试，就是打出 0.4.0 发行物的代码。文本固定为 LF，代码用 Prettier。
+- **发行物**：`release/` 里有 0.4.0 的安装版和便携版（2026-11-02 17:03 最终验收后重新打出；文件名、大小、哈希见 S10），以及留档的 0.3.0、0.2.0、0.1.0。**已发布**：GitHub release [v0.4.0](https://github.com/chenyihang98-pixel/yinxu/releases/tag/v0.4.0)（非草稿，附两个 EXE 和 `SHA256SUMS.txt`，正文为 `RELEASE-NOTES-0.4.0.md` 全文）；门户页面 https://starwright.xyz/tools/yinxu/ 与网页版 https://starwright.xyz/play/yinxu/ 已于 2026-11-02 上线（门户仓库的 `add-yinxu` 已并入 `main`，Cloudflare Pages 部署完成并核对过页面、下载链接和响应头）。
 - **最该先做的事**（S11 第一组和第 35 条）：请一两个真正不懂音乐的人用一次简单模式；仓库主人听一遍 `demos/` 的 22 段示例；用真实账号各做一次最便宜的云端生成和一次托管大模型的规划；运行一次安装包。
 
 ## S01｜阅读与改动导航
@@ -755,9 +755,9 @@ npm run test:packaged   # 校验值没改对会在第一步失败
 
 `SHA256SUMS.txt` 每行 `<小写 sha256><两个空格><文件名>`，LF 换行（`sha256sum -c` 可用）。没有脚本生成这些文件。改版本号只改 `package.json`；界面和主进程都从它读取。
 
-**发布到 GitHub（给仓库主人的步骤；目前什么都没有发布）**：
+**发布到 GitHub（0.4.0 已按下面的步骤完成：仓库 https://github.com/chenyihang98-pixel/yinxu，release [v0.4.0](https://github.com/chenyihang98-pixel/yinxu/releases/tag/v0.4.0)；以后发新版照此办理）**：
 
-1. 仓库现在只有本地提交、没有远端。`release/` 里的两个 0.4.0 EXE 由紧接 `a4a755c` 的那个提交（v0.4.0）的代码打出，`v0.4.0` 标签应当打在它或其后只改文档的提交上（想同时留下 0.3.0 的记录，可以另给 `a5cb422` 打 `v0.3.0` 标签，但门户只认最新的 release）。然后在 GitHub 建仓库（门户那边的占位名是 `chenyihang98-pixel/yinxu`，可以改，改了要同步告诉门户的 `content/tools.json`）并推送。`release/`、`demos/`、`.scratch/` 都被忽略，不会进仓库。
+1. （首次已完成）远端是 `origin`，推送 `main`。`release/` 里的两个 0.4.0 EXE 由紧接 `a4a755c` 的那个提交（v0.4.0）的代码打出，`v0.4.0` 标签应当打在它或其后只改文档的提交上（想同时留下 0.3.0 的记录，可以另给 `a5cb422` 打 `v0.3.0` 标签，但门户只认最新的 release）。然后在 GitHub 建仓库（门户那边的占位名是 `chenyihang98-pixel/yinxu`，可以改，改了要同步告诉门户的 `content/tools.json`）并推送。`release/`、`demos/`、`.scratch/` 都被忽略，不会进仓库。
 2. 打标签并创建**非草稿**的 release，标签等于版本号（`v0.4.0`，门户要求它与网页版的版本一致）。上传三个文件：两个 0.4.0 的 EXE 和 `SHA256SUMS.txt`。文件名必须保持 `Muse-BGM-Setup-0.4.0-x64.exe` / `Muse-BGM-Portable-0.4.0-x64.exe`——门户靠 `setup` / `portable` 识别安装版和便携版。
 3. release 的正文用 `release/RELEASE-NOTES-0.4.0.md` 的**全文**；它以 `### SHA-256` 小节的代码块结尾，里面是和 `SHA256SUMS.txt` 相同的两行「哈希、两个空格、文件名」。例如：
 
@@ -771,20 +771,21 @@ npm run test:packaged   # 校验值没改对会在第一步失败
 
 **网页版**：`npm run build:web` → `dist-web/`（`index.html` + `assets/` 里带内容哈希的一个主包、一个 CSS、一个 Worker 包）。纯静态、相对路径，可以原样部署到任何静态目录；不发任何网络请求（`web-smoke` 的最后一步核对了只请求静态文件）。作品存在浏览器的 IndexedDB 里，与 Windows 版不共享。网页版打开同样是简单模式（没有 AI 开关）。云端引擎和大模型在界面上显示为「桌面版可用」，链接到 `https://starwright.xyz/tools/yinxu/#download`（`src/platform.ts` 的 `DOWNLOAD_URL`，`target="_top"`）；简单模式的页面上没有这个链接，它在「设置」的两个 AI 标签页和「关于」里。
 
-**门户嵌入（starwright.xyz；还没有上线）**：
+**门户嵌入（starwright.xyz；2026-11-02 已上线）**：
 
 - 目标：工具页 `https://starwright.xyz/tools/yinxu/`，其中的 iframe 加载 `https://starwright.xyz/play/yinxu/`。桌面上框宽最多 1098 px、高 560–860 px，手机上是 390 / 320 px 通栏。界面按 320 px 起不出现横向滚动来设计（≥ 1100 px 是侧栏加双列；以下是顶栏加单列；720 px 以下风格改为一行横向滚动、弹窗变成全屏；520 px 以下导航只剩图标）；第二轮的截图审计覆盖到 320 px，最后一轮的 `web-smoke` 核对的是 390×780 的触屏和 1000×760 的框架。
 - 门户是另一个私有仓库（`chenyihang98-pixel/ai-creation-platform`）。它的克隆在 `.scratch/site/ai-creation-platform`，分支 `add-yinxu`（基于 `4aaa7cd`），**全部改动都没有提交、暂存或推送**；`.scratch/site-kit/` 里有 `site.patch` 和 `site-untracked.tar.gz`（在 `4aaa7cd` 的全新克隆上重现这些改动）、交接笔记 `NOTES.md`、四张截图和验证脚本。这些都在被忽略的草稿区里，需要的话先另存。
 - 第四轮里门户那边做到了哪一步（来自那一轮的报告，这次没有重跑）：导入了当时的 v0.3.0 网页版，按最终的应用和 `docs/QA.md` 重写了页面，`verify-embed.cjs`（10 / 10）和 `verify-behaviour.cjs`（33 / 33）在导入的真实构建上通过；发布说明里校验值的读取改成了按行解析（所以发布说明不再需要任何额外的隐藏内容）；`downloads` 仍为空、页面标着「Windows 版待发布」。
 - 0.3.0 的最后一轮之后导入过当时的最终构建（1048 = 796 + 252 等数字）。
 - **v0.4.0（2026-11-02）已重新导入**：克隆里 `public/play/yinxu/` 是 0.4.0 的 `dist-web/`（`index-CcjGp3iR.js` 1,056,455、`index-DWq_sHiC.css` 90,805、`worker-BrbxvWFD.js` 343,179、`index.html` 2,266 字节，共 1,492,705 字节，`gzip -9` 约 0.50 MB）；四张图换成简单模式的截图（`.scratch/site-kit/capture-simple.cjs` → `captures/` → `npm run import:assets -- yinxu`；同样的图在 `test-results/v0.4/`）；`content/tools.json` 的 `yinxu` 是版本 0.4.0、标语「点一个场景，就能做出背景音乐」、测试数字 1076 = 824 + 252、网页 29、界面 15、云端 23、发行程序 24，仍然 `downloads: []` + `downloadsPending`、没有 `github`；`tools/yinxu/index.html` 和星璇的提示以简单模式开头，「已验证 / 请留意」按 `docs/QA.md`。三个验证脚本改成简单模式的选择器（框里点第一张场景卡片 → 作好 → 自动播放 →「下载音乐」）后，在本机预览上 `verify-embed.cjs` 10 / 10、`verify-behaviour.cjs` 33 / 33、`check-release-checksums.mjs` 37 / 37。`site.patch`、`site-untracked.tar.gz` 已重新生成并在全新克隆上重放核对过。克隆仍然**全部没有提交、暂存和推送**，交接说明在 `.scratch/site-kit/NOTES.md`。注意：发布说明里没有隐藏注释，所以门户必须先用上这个分支里按行解析的 `sync-releases.mjs`，再同步音序的发布。
-- 剩下的步骤（详见 NOTES）：
+- 2026-11-02 上线记录：`add-yinxu` 先变基到门户 `main` 当时的最新提交（期间主分支新增了「拾趣牌社」与星璇伴随组件，冲突按主分支的约定解决），`npm run sync:releases` 对着真实 release 读到了正确的大小和哈希，以便携版为首选下载；快进合并进 `main` 并推送后约 60 秒部署完成；线上核对：工具页与 `/play/yinxu/` 均 200，`/play/yinxu/assets/worker-*.js` 带 `cache-control: public, max-age=31536000, immutable` 与 `x-content-type-options: nosniff`，在真实页面的 iframe 里点场景能出声。公开仓库 `starwright` 的 README 与 CHANGELOG 已加上音序。
+- 以后更新时的步骤（详见 NOTES）：
   1. （0.4.0 已完成，见上一条）以后应用再有改动时：`npm run build:web`，然后在门户仓库里 `npm run import:yinxu`、核对 `content/tools.json` 里 `yinxu` 的测试数字、`npm run build`、`npm run preview`，再跑 `verify-embed.cjs` 和 `verify-behaviour.cjs`。
   2. GitHub release 存在之后，在 `content/tools.json` 的 `yinxu` 项里补上 `github` 和 `releasesUrl`，换掉「Windows 版待发布」的标记，`npm run sync:releases`（它没有对着真实的 release 跑过）。
   3. 决定安装版是否仍然作为首选下载：它从未运行过，被测试的是便携版和 `win-unpacked`。
   4. 提交、推送分支、合并；Cloudflare Pages 的真实构建和响应头没有验证过。
 - 已知的嵌入问题：专业模式里作品生成完成时应用调用 `scrollIntoView`（`src/ui/studio/PlayerCard.tsx`、`StudioPage.tsx`、`shell/BottomBar.tsx`；简单模式的结果页只滚动自己的元素），在同源的 iframe 里它会把**门户页面**也一起滚动。门户的克隆里加了一个只对同源框架有效的补丁（`keepPageStill()`）；应用这边没有改（应当改成只滚动自己的滚动容器），见 S11。
-- 在门户页面上线之前，网页版里所有「桌面版可用 · 下载 Windows 版」的链接（`https://starwright.xyz/tools/yinxu/#download`）都是 404（FQ-12）：先上线页面，再发布网页版。
+- 网页版里「桌面版可用 · 下载 Windows 版」的链接指向 `https://starwright.xyz/tools/yinxu/#download`，页面上线后已可打开（FQ-12 已不成立）。
 
 ## S11｜已知限制、风险与下一步
 

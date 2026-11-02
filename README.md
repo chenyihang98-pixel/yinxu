@@ -108,7 +108,7 @@ npm run desktop      # 构建并打开桌面版
 
 ## 网页版
 
-`npm run build:web` 生成 `dist-web/`：纯静态、相对路径、完全离线，只有本地作曲，可以直接放进 iframe（计划嵌在 `https://starwright.xyz/play/yinxu/`；门户页面尚未上线，所以网页版里「下载 Windows 版」的链接目前打不开）。界面按 320 px 起不出现横向滚动来设计，端到端套件核对的是 390 px 宽的触屏和 1000×760 的内嵌框架。作品保存在浏览器里，多个标签页之间会同步，与 Windows 版不共享。云端服务和大模型在网页版里显示为「桌面版可用」。
+`npm run build:web` 生成 `dist-web/`：纯静态、相对路径、完全离线，只有本地作曲，可以直接放进 iframe（已嵌在 https://starwright.xyz/tools/yinxu/ ，直接访问是 https://starwright.xyz/play/yinxu/ ）。界面按 320 px 起不出现横向滚动来设计，端到端套件核对的是 390 px 宽的触屏和 1000×760 的内嵌框架。作品保存在浏览器里，多个标签页之间会同步，与 Windows 版不共享。云端服务和大模型在网页版里显示为「桌面版可用」。
 
 ## 示例与试听
 
@@ -141,5 +141,7 @@ npm run desktop      # 构建并打开桌面版
 | `src/storage.ts`、`src/platform.ts` | 作品库与桌面 / 网页适配 |
 | `electron/` | 主进程：IPC、凭据、云端服务适配、大模型调用、关闭确认 |
 | `tests/`、`scripts/` | 单元测试；端到端套件、音频测量和示例渲染 |
+
+下载与源码：[GitHub release v0.4.0](https://github.com/chenyihang98-pixel/yinxu/releases/tag/v0.4.0)（安装版 / 便携版 / `SHA256SUMS.txt`）· [仓库](https://github.com/chenyihang98-pixel/yinxu) · [在星匠网站上使用网页版](https://starwright.xyz/tools/yinxu/)。
 
 文档：[HANDOFF.md](HANDOFF.md)（架构、契约、测试、发布）· [docs/API配置指南.md](docs/API配置指南.md) · [docs/QA.md](docs/QA.md) · [docs/research-minimax.md](docs/research-minimax.md) · [docs/research-volcengine.md](docs/research-volcengine.md)。许可证：MIT。设计参考：[Modelwright](https://github.com/chenyihang98-pixel/Modelwright)。
